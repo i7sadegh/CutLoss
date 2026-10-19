@@ -139,6 +139,11 @@ class MainActivity : AppCompatActivity() {
             openProjectLauncher.launch(arrayOf("*/*"))
         }
 
+        binding.btnFfmpegMix.setBounceClickListener {
+            Log.d("ButtonClick", "FFmpeg Mix card clicked.")
+            showToast("FFmpeg Mix — coming soon")
+        }
+
         // Initialize bottom navigation tab backgrounds
         val attrs = intArrayOf(android.R.attr.selectableItemBackgroundBorderless)
         val ta = obtainStyledAttributes(attrs)
