@@ -1,4 +1,4 @@
-# LibreCuts
+# CutStudio
 
 <div align="center">
   <img src="src/images/featureGraphic.png" alt="LibreCuts Banner" width="100%"/>
