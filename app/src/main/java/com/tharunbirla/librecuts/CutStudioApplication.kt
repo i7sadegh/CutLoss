@@ -5,7 +5,7 @@ import android.content.Intent
 import android.util.Log
 import com.tharunbirla.librecuts.utils.ErrorCode
 
-class LibreCutsApplication : Application() {
+class CutStudioApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         setupGlobalCrashHandler()
@@ -15,7 +15,7 @@ class LibreCutsApplication : Application() {
         val oldHandler = Thread.getDefaultUncaughtExceptionHandler()
 
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            Log.e("LibreCutsCrash", "CRITICAL CRASH IN APPLICATION", throwable)
+            Log.e("CutStudioCrash", "CRITICAL CRASH IN APPLICATION", throwable)
 
             // Start a dedicated Error Activity to show the dialog
             val intent = Intent(this, ErrorDisplayActivity::class.java).apply {

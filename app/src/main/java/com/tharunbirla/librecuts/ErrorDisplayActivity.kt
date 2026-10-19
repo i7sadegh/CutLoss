@@ -32,7 +32,7 @@ class ErrorDisplayActivity : AppCompatActivity() {
 
         val fullDiagnosticLog = """
             ==================================================
-                        LIBRECUTS CRASH REPORT               
+                        CUTSTUDIO CRASH REPORT               
             ==================================================
             App Version : $appVersion
             Device      : ${Build.MANUFACTURER} ${Build.MODEL} (Android ${Build.VERSION.RELEASE}, API ${Build.VERSION.SDK_INT})

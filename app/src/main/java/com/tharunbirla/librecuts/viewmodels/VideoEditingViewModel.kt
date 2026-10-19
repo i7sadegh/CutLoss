@@ -1284,7 +1284,7 @@ class VideoEditingViewModel : ViewModel() {
             if (_exportAudioOnly.value) {
                 if (!audioMuted) {
                     cmd.append(" -map \"$currentAudioLabel\"")
-                    // LibreCuts ffmpeg might have libmp3lame, fallback to libmp3lame or default mp3 encoder
+                    // CutStudio ffmpeg might have libmp3lame, fallback to libmp3lame or default mp3 encoder
                     cmd.append(" -c:a libmp3lame -b:a 192k")
                 } else {
                     cmd.append(" -an")
