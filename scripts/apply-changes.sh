@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  CutStudio change pipeline -- scripts/apply-changes.sh
-#  ROUND 5 + ROUND 6 + ROUND 7 -- text tool WYSIWYG, stroke/shadow tabs,
-#  Duplicate restored, amber theme, capsule back button
+#  ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 -- text tool WYSIWYG,
+#  stroke/shadow tabs, Duplicate restored, capsule back button and
+#  the ORIGINAL Electric Pink theme (amber recolor reverted)
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
@@ -43,22 +44,26 @@
 #      before Keyframes) with its original behaviour -- copying the
 #      selected text overlay. If an older round-6 script already removed
 #      it, this round re-adds it automatically.
-#   2. Theme recolor: Electric Pink / red -> amber #F9B10B everywhere
-#      (primary, secondary, containers, active tools, nav pill, timeline
-#      selection + handles, seeker, mask handles, app icon, banner,
-#      progress spinner, record button). The "on" colors flip to dark
-#      #1A1A20 so text/icons stay readable on the bright amber.
-#      Destructive actions (Delete / Discard / Remove) intentionally keep
-#      their warning red.
+#   2. (superseded by round 8) the round-7 amber recolor is reverted:
+#      the app keeps its ORIGINAL Electric Pink / red theme.
 #   3. Editor top bar: the back arrow gets a dark capsule background
 #      (48x36dp, tap ripple kept) -- same 36dp height and mirrored edge
 #      position as the Export capsule on the other side.
-#   4. Play/pause capsule icon gets a dark tint for contrast on amber.
+#   4. (superseded by round 8) play/pause icon tint follows the theme.
+#
+#  Round 8 contents:
+#   1. Theme colors are back to the ORIGINAL Electric Pink / red palette.
+#      The round-7 amber #F9B10B recolor is fully reverted (colors.xml,
+#      nav pill, save/app/banner icons, spinner, record button, timeline
+#      selection + handles, seeker, mask handles, text track color).
+#      Forks that never went amber simply skip this step. The capsule
+#      back button and the restored text Duplicate button stay as they
+#      are -- only the colors are reverted.
 #
 #  Idempotent: every patch checks its own marker and skips if applied.
 #  Requires: the v3 export panel state (works with or without round 4).
 #  Round 5 steps run first (skipped when already applied), then round 6,
-#  then round 7.
+#  then round 7, then round 8.
 # ==========================================================================
 set -uo pipefail
 
@@ -3057,82 +3062,16 @@ CUTPY
 }
 
 # ---------------------------------------------------------------------------
-#  R7 STEP 2 -- theme recolor: Electric Pink / red -> amber #F9B10B
-#  (primary + secondary + containers + active tool + nav pill + timeline
-#   selection + seeker + mask handles + app icon + banner + spinner +
-#   record button; "on" colors flip to dark #1A1A20 for contrast on the
-#   bright amber. Destructive actions -- Delete / Discard / Remove --
-#   intentionally keep their warning red.)
+#  R7 STEP 2 -- (superseded by round 8) originally recolored the theme to
+#  amber #F9B10B. Round 8 reverts every color to the original Electric
+#  Pink, so this step is now a no-op (kept so old state stays readable).
+
 #
 r7_step2() {
-  echo "== r7 step 2: theme color pink/red -> amber #F9B10B"
-  python3 - <<'CUTPY'
-import os, sys
-
-def sub(path, pairs):
-    if not os.path.exists(path):
-        print('   [FAIL] missing file: ' + path)
-        sys.exit(1)
-    s = open(path, encoding='utf-8', newline='').read()
-    n = 0
-    for old, new in pairs:
-        n += s.count(old)
-        s = s.replace(old, new)
-    open(path, 'w', encoding='utf-8', newline='').write(s)
-    print('   [ok]   %-64s %d sub(s)' % (path, n))
-
-# 1) theme palette (colors.xml)
-sub('app/src/main/res/values/colors.xml', [
-    ('<!-- PRIMARY: Electric Pink -->',                     '<!-- PRIMARY: Amber -->'),
-    ('<!-- SECONDARY: Bright Pink Accent -->',              '<!-- SECONDARY: Amber Accent -->'),
-    ('<!-- Subtle pink tint for active tool -->',           '<!-- Subtle amber tint for active tool -->'),
-    ('<color name="colorPrimary">#FF2A6D</color>',         '<color name="colorPrimary">#F9B10B</color>'),
-    ('<color name="colorPrimaryVariant">#C81D52</color>',  '<color name="colorPrimaryVariant">#C28A09</color>'),
-    ('<color name="colorOnPrimary">#FFFFFF</color>',       '<color name="colorOnPrimary">#1A1A20</color>'),
-    ('<color name="colorSecondary">#FF2A6D</color>',       '<color name="colorSecondary">#F9B10B</color>'),
-    ('<color name="colorSecondaryVariant">#C81D52</color>','<color name="colorSecondaryVariant">#C28A09</color>'),
-    ('<color name="colorOnSecondary">#FFFFFF</color>',     '<color name="colorOnSecondary">#1A1A20</color>'),
-    ('<color name="primaryContainer">#FF2A6D</color>',     '<color name="primaryContainer">#F9B10B</color>'),
-    ('<color name="onPrimaryContainer">#FFFFFF</color>',   '<color name="onPrimaryContainer">#1A1A20</color>'),
-    ('<color name="activeTool">#FF2A6D</color>',           '<color name="activeTool">#F9B10B</color>'),
-    ('<color name="activeToolBackground">#2A1118</color>', '<color name="activeToolBackground">#2A2210</color>'),
-    ('<color name="toolTextActive">#FF2A6D</color>',       '<color name="toolTextActive">#F9B10B</color>'),
-])
-
-# 2) drawables (nav pill, save icon, app icon, banner)
-sub('app/src/main/res/drawable/bg_nav_active_pill.xml',
-    [('#20FF2A6D', '#20F9B10B'), ('#4DFF2A6D', '#4DF9B10B')])
-sub('app/src/main/res/drawable/ic_save_color_24.xml',      [('#FF4081', '#F9B10B')])
-sub('app/src/main/res/drawable/ic_launcher_foreground.xml',[('#FF4081', '#F9B10B')])
-sub('app/src/main/res/drawable/ic_banner_foreground.xml',  [('#FF4081', '#F9B10B')])
-
-# 3) layouts (spinner, record button + its ripples, dead onboarding dialog)
-sub('app/src/main/res/layout/activity_video_editing.xml', [('#FF4081', '#F9B10B')])
-sub('app/src/main/res/layout/dialog_voice_over.xml',
-    [('#FF4081', '#F9B10B'),
-     ('app:tint="@android:color/white"', 'app:tint="@color/onPrimaryContainer"')])
-sub('app/src/main/res/layout/dialog_welcome_onboarding.xml', [('#E91E63', '#F9B10B')])
-
-# 4) Kotlin hardcoded pinks (mask handles, trim borders, image handles, seeker)
-PKG = 'app/src/main/java/com/tharunbirla/librecuts'
-sub(PKG + '/customviews/VideoMaskOverlayView.kt',      [('#FF2A6D', '#F9B10B')])
-sub(PKG + '/customviews/TrackTrimView.kt',
-    [('#33FF2A6D', '#33F9B10B'), ('#1AFF4081', '#1AF9B10B'),
-     ('#FF4081', '#F9B10B'), ('#FF2A6D', '#F9B10B')])
-sub(PKG + '/customviews/DraggableImageOverlayView.kt', [('#FF2A6D', '#F9B10B')])
-sub(PKG + '/customviews/CustomVideoSeeker.kt',
-    [('#FF4081', '#F9B10B'), ('#FF2A6D', '#F9B10B')])
-sub(PKG + '/VideoEditingActivity.kt',
-    [('#FF4081', '#F9B10B'), ('#E91E63', '#F9B10B')])
-
-# 5) note: the play/pause capsule block already carries
-#    app:tint="@color/onPrimaryContainer" (white until now); flipping
-#    onPrimaryContainer to dark in colors.xml recolors the play/pause
-#    icon automatically -- no layout edit needed here.
-CUTPY
-  [ $? -ne 0 ] && return 1
+  echo "== r7 step 2: (superseded by round 8) original theme kept -- no recolor"
   return 0
 }
+
 
 # ---------------------------------------------------------------------------
 #  R7 STEP 3 -- editor top bar: back arrow gets a dark capsule background
@@ -3236,25 +3175,35 @@ for f in xmls:
         fail('XML %s: %s' % (f, e))
 print('   [ok]   XML valid (%d files)' % len(xmls))
 
-# 2) theme palette flipped to amber
+# 2) theme palette is the ORIGINAL Electric Pink (round 8 revert)
+import hashlib
 c = open(RES + '/values/colors.xml', encoding='utf-8').read()
 pairs = [
-    ('colorPrimary amber',        '<color name="colorPrimary">#F9B10B</color>' in c),
-    ('variant dark amber',        '<color name="colorPrimaryVariant">#C28A09</color>' in c),
-    ('onPrimary dark',            '<color name="colorOnPrimary">#1A1A20</color>' in c),
-    ('secondary amber',           '<color name="colorSecondary">#F9B10B</color>' in c),
-    ('primaryContainer amber',    '<color name="primaryContainer">#F9B10B</color>' in c),
-    ('onPrimaryContainer dark',   '<color name="onPrimaryContainer">#1A1A20</color>' in c),
-    ('activeTool amber',          '<color name="activeTool">#F9B10B</color>' in c),
-    ('activeToolBackground tint', '<color name="activeToolBackground">#2A2210</color>' in c),
-    ('toolTextActive amber',      '<color name="toolTextActive">#F9B10B</color>' in c),
+    ('colorPrimary pink',         '<color name="colorPrimary">#FF2A6D</color>' in c),
+    ('variant pink',              '<color name="colorPrimaryVariant">#C81D52</color>' in c),
+    ('onPrimary white',           '<color name="colorOnPrimary">#FFFFFF</color>' in c),
+    ('secondary pink',            '<color name="colorSecondary">#FF2A6D</color>' in c),
+    ('secondaryVariant pink',     '<color name="colorSecondaryVariant">#C81D52</color>' in c),
+    ('onSecondary white',         '<color name="colorOnSecondary">#FFFFFF</color>' in c),
+    ('primaryContainer pink',     '<color name="primaryContainer">#FF2A6D</color>' in c),
+    ('onPrimaryContainer white',  '<color name="onPrimaryContainer">#FFFFFF</color>' in c),
+    ('activeTool pink',           '<color name="activeTool">#FF2A6D</color>' in c),
+    ('activeToolBackground pink', '<color name="activeToolBackground">#2A1118</color>' in c),
+    ('toolTextActive pink',       '<color name="toolTextActive">#FF2A6D</color>' in c),
+    ('no amber onPrimary',        '<color name="colorOnPrimary">#1A1A20</color>' not in c),
+    ('no amber onPrimaryContainer', '<color name="onPrimaryContainer">#1A1A20</color>' not in c),
 ]
 for name, ok in pairs:
     if not ok:
         fail(name)
-print('   [ok]   colors.xml: amber theme (%d checks)' % len(pairs))
+if hashlib.sha256(open(RES + '/values/colors.xml', 'rb').read()).hexdigest() != \
+        '9ef61c0fbe320540788cd987df2978979d8d1a23b55a6fb18594b65103409a67':
+    fail('colors.xml sha256 != original Electric Pink palette')
+print('   [ok]   colors.xml: original Electric Pink palette (%d checks + sha256)' % len(pairs))
 
-# 3) no leftover pink/red theme hexes anywhere (delete-red kept by design)
+# 3) no leftover amber theme hexes anywhere (#1A1A20 is a legit original
+#    surface color so the bare value is not scanned here; the full-line
+#    palette checks above catch it inside the "on" color slots)
 leftover = []
 for root, dirs, files in os.walk('app/src/main'):
     for fn in files:
@@ -3265,17 +3214,17 @@ for root, dirs, files in os.walk('app/src/main'):
             t = open(fp, encoding='utf-8').read()
         except Exception:
             continue
-        for hx in ['#FF2A6D', '#C81D52', '#FF4081', '#E91E63',
-                   '#33FF2A6D', '#1AFF4081', '#20FF2A6D', '#4DFF2A6D',
-                   '#ff2a6d', '#ff4081']:
+        for hx in ['#F9B10B', '#C28A09', '#2A2210',
+                   '#33F9B10B', '#1AF9B10B', '#20F9B10B', '#4DF9B10B',
+                   '#f9b10b', '#c28a09', '#2a2210']:
             if hx in t:
                 leftover.append(fp + ' still has ' + hx)
 for x in leftover[:10]:
     fail(x)
 if leftover:
-    fail('%d leftover pink hexe(s) total' % len(leftover))
+    fail('%d leftover amber hexe(s) total' % len(leftover))
 else:
-    print('   [ok]   no leftover theme-pink hexes (destructive reds kept)')
+    print('   [ok]   no leftover amber hexes (original theme restored)')
 
 # 4) Duplicate restored
 toolbar = open(TOOLBAR, encoding='utf-8').read()
@@ -3325,12 +3274,12 @@ for needle, label in [
         fail(label)
 print('   [ok]   back button: dark capsule 48x36dp, ripple, mirrors Export 36dp')
 
-# 6) play/pause icon: pre-existing onPrimaryContainer tint now resolves dark
+# 6) play/pause icon: pre-existing onPrimaryContainer tint resolves white
 mp = re.search(r'@\+id/btnPlayPause".*?/>', avel, re.S)
 if not mp or 'app:tint="@color/onPrimaryContainer"' not in mp.group(0):
     fail('play capsule icon tint missing')
 else:
-    print('   [ok]   play capsule icon tint resolves dark on amber')
+    print('   [ok]   play capsule icon tint resolves white on pink')
 
 # 7) Kotlin balance on touched files
 def strip_kotlin(src):
@@ -3417,6 +3366,131 @@ CUTPY
 
 # --- ROUND 7 STAGES END ----------------------------------------------------
 
+# --- ROUND 8 STAGES --------------------------------------------------------
+#
+#  R8 STEP 1 -- theme revert: amber #F9B10B -> ORIGINAL Electric Pink
+#  (undoes the round-7 recolor on forks where it was applied; runs as a
+#   no-op on forks that never went amber. The round-7 Duplicate button
+#   and the capsule back button are NOT touched -- only colors revert.)
+#  NOTE on the "ambiguous" files: round 7 mapped several DIFFERENT pink
+#  hexes to the same amber value (#FF4081 / #FF2A6D / #E91E63 all became
+#  #F9B10B), so a bare hex swap cannot restore them correctly there.
+#  Those files are reverted with full line-context anchors instead.
+#
+r8_step1() {
+  echo "== r8 step 1: theme color revert amber -> original Electric Pink"
+  python3 - <<'CUTPY'
+import os, sys
+
+def sub(path, pairs):
+    if not os.path.exists(path):
+        print('   [FAIL] missing file: ' + path)
+        sys.exit(1)
+    s = open(path, encoding='utf-8', newline='').read()
+    n = 0
+    for old, new in pairs:
+        n += s.count(old)
+        s = s.replace(old, new)
+    if n:
+        open(path, 'w', encoding='utf-8', newline='').write(s)
+    print('   [ok]   %-64s %d sub(s)' % (path, n))
+    return n
+
+total = 0
+
+# 1) theme palette (colors.xml) -- exact inverse of the round-7 subs
+total += sub('app/src/main/res/values/colors.xml', [
+    ('<!-- PRIMARY: Amber -->',                           '<!-- PRIMARY: Electric Pink -->'),
+    ('<!-- SECONDARY: Amber Accent -->',                  '<!-- SECONDARY: Bright Pink Accent -->'),
+    ('<!-- Subtle amber tint for active tool -->',        '<!-- Subtle pink tint for active tool -->'),
+    ('<color name="colorPrimary">#F9B10B</color>',       '<color name="colorPrimary">#FF2A6D</color>'),
+    ('<color name="colorPrimaryVariant">#C28A09</color>', '<color name="colorPrimaryVariant">#C81D52</color>'),
+    ('<color name="colorOnPrimary">#1A1A20</color>',     '<color name="colorOnPrimary">#FFFFFF</color>'),
+    ('<color name="colorSecondary">#F9B10B</color>',     '<color name="colorSecondary">#FF2A6D</color>'),
+    ('<color name="colorSecondaryVariant">#C28A09</color>', '<color name="colorSecondaryVariant">#C81D52</color>'),
+    ('<color name="colorOnSecondary">#1A1A20</color>',   '<color name="colorOnSecondary">#FFFFFF</color>'),
+    ('<color name="primaryContainer">#F9B10B</color>',   '<color name="primaryContainer">#FF2A6D</color>'),
+    ('<color name="onPrimaryContainer">#1A1A20</color>', '<color name="onPrimaryContainer">#FFFFFF</color>'),
+    ('<color name="activeTool">#F9B10B</color>',         '<color name="activeTool">#FF2A6D</color>'),
+    ('<color name="activeToolBackground">#2A2210</color>', '<color name="activeToolBackground">#2A1118</color>'),
+    ('<color name="toolTextActive">#F9B10B</color>',     '<color name="toolTextActive">#FF2A6D</color>'),
+])
+
+# 2) drawables (nav pill, save icon, app icon, banner)
+total += sub('app/src/main/res/drawable/bg_nav_active_pill.xml',
+    [('#20F9B10B', '#20FF2A6D'), ('#4DF9B10B', '#4DFF2A6D')])
+total += sub('app/src/main/res/drawable/ic_save_color_24.xml',       [('#F9B10B', '#FF4081')])
+total += sub('app/src/main/res/drawable/ic_launcher_foreground.xml', [('#F9B10B', '#FF4081')])
+total += sub('app/src/main/res/drawable/ic_banner_foreground.xml',   [('#F9B10B', '#FF4081')])
+
+# 3) layouts (spinner, record button + its ripples, dead onboarding dialog)
+total += sub('app/src/main/res/layout/activity_video_editing.xml', [('#F9B10B', '#FF4081')])
+total += sub('app/src/main/res/layout/dialog_voice_over.xml',
+    [('#F9B10B', '#FF4081'),
+     ('app:tint="@color/onPrimaryContainer"', 'app:tint="@android:color/white"')])
+total += sub('app/src/main/res/layout/dialog_welcome_onboarding.xml', [('#F9B10B', '#E91E63')])
+
+# 4) Kotlin hardcoded colors. VideoMaskOverlayView and
+#    DraggableImageOverlayView only ever held #FF2A6D, so a bare swap is
+#    exact there. TrackTrimView / CustomVideoSeeker / VideoEditingActivity
+#    held MIXED pinks that all collapsed into #F9B10B -- those use
+#    line-context anchors (comment suffixes disambiguate the paints).
+PKG = 'app/src/main/java/com/tharunbirla/librecuts'
+total += sub(PKG + '/customviews/VideoMaskOverlayView.kt',      [('#F9B10B', '#FF2A6D')])
+total += sub(PKG + '/customviews/DraggableImageOverlayView.kt', [('#F9B10B', '#FF2A6D')])
+total += sub(PKG + '/customviews/TrackTrimView.kt',
+    [('#33F9B10B', '#33FF2A6D'),
+     ('#1AF9B10B', '#1AFF4081'),
+     ('borderPaint.color = Color.parseColor("#F9B10B") // Electric Pink selection',
+      'borderPaint.color = Color.parseColor("#FF2A6D") // Electric Pink selection'),
+     ('borderPaint.color = Color.parseColor("#F9B10B") // Vibrant pink selection accent',
+      'borderPaint.color = Color.parseColor("#FF4081") // Vibrant pink selection accent'),
+     ('borderPaint.color = Color.parseColor("#F9B10B")',
+      'borderPaint.color = Color.parseColor("#FF4081")'),
+     ('handlePaint.color = Color.parseColor("#F9B10B")',
+      'handlePaint.color = Color.parseColor("#FF4081")')])
+total += sub(PKG + '/customviews/CustomVideoSeeker.kt',
+    [('#F9B10B (accent)', '#FF4081 (accent)'),
+     ('Color.parseColor("#F9B10B")', 'Color.parseColor("#FF2A6D")')])
+total += sub(PKG + '/VideoEditingActivity.kt',
+    [('ColorStateList.valueOf(android.graphics.Color.parseColor("#F9B10B"))',
+      'ColorStateList.valueOf(android.graphics.Color.parseColor("#FF4081"))'),
+     ('trackColor = android.graphics.Color.parseColor("#F9B10B") // Pink for text',
+      'trackColor = android.graphics.Color.parseColor("#E91E63") // Pink for text')])
+
+# 5) safety net: after the revert, no amber hex may remain anywhere.
+#    (#1A1A20 is NOT scanned -- it is a legit original surface color; the
+#     full-line palette subs above already handle it in "on" color slots.)
+AMBER = ['#F9B10B', '#C28A09', '#2A2210', '#33F9B10B', '#1AF9B10B',
+         '#20F9B10B', '#4DF9B10B', '#f9b10b', '#c28a09', '#2a2210']
+bad = []
+for root, dirs, files in os.walk('app/src/main'):
+    for fn in files:
+        if not fn.endswith(('.xml', '.kt')):
+            continue
+        fp = os.path.join(root, fn)
+        try:
+            t = open(fp, encoding='utf-8').read()
+        except Exception:
+            continue
+        for hx in AMBER:
+            if hx in t:
+                bad.append(fp + ' still has ' + hx)
+if bad:
+    for x in bad[:10]:
+        print('   [FAIL] ' + x)
+    sys.exit(1)
+if total == 0:
+    print('   [skip] no amber theme found -- original colors already in place')
+else:
+    print('   [ok]   %d substitution(s) reverted; no amber hexes remain' % total)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# --- ROUND 8 STAGES END ----------------------------------------------------
+
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
@@ -3444,10 +3518,11 @@ r6_step8         || { echo "ABORT: r6 step 8";    exit 1; }
 r6_step9         || { echo "ABORT: r6 step 9";    exit 1; }
 verify_round6    || { echo "ABORT: r6 verify";   exit 1; }
 
-# -- round 7 --
+# -- round 7 + round 8 --
 r7_step1         || { echo "ABORT: r7 step 1";    exit 1; }
 r7_step2         || { echo "ABORT: r7 step 2";    exit 1; }
 r7_step3         || { echo "ABORT: r7 step 3";    exit 1; }
-verify_round7    || { echo "ABORT: r7 verify";   exit 1; }
+r8_step1         || { echo "ABORT: r8 step 1";    exit 1; }
+verify_round7    || { echo "ABORT: r7+r8 verify"; exit 1; }
 echo ""
-echo "ROUND 5 + ROUND 6 + ROUND 7 APPLIED SUCCESSFULLY"
+echo "ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 APPLIED SUCCESSFULLY"
