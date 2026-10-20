@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  CutStudio change pipeline -- scripts/apply-changes.sh
-#  ROUND 5 + ROUND 6 -- Text tool: WYSIWYG + stroke/shadow tabs
+#  ROUND 5 + ROUND 6 + ROUND 7 -- text tool WYSIWYG, stroke/shadow tabs,
+#  Duplicate restored, amber theme, capsule back button
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
@@ -27,8 +28,8 @@
 #  Round 6 contents:
 #   1. Editor play button: circular background -> capsule pill (72x40dp);
 #      the tap bounce effect is kept (it lives in the click listener).
-#   2. Text tool: Duplicate button + wiring removed (image tool keeps its
-#      own duplicate button).
+#   2. (superseded by round 7) the round-6 removal of the text Duplicate
+#      button is reverted -- Duplicate stays in the text tool.
 #   3. Format tab: the old "Shadow" slider is gone.
 #   4. NEW "Stroke" tab (right of Format): color row + Transparency +
 #      Width sliders; stroke transparency is a new model field.
@@ -37,9 +38,27 @@
 #      rendered by the same Canvas code in preview AND export.
 #      Tab order: Keyboard | Color | Format | Stroke | Shadow | Background.
 #
+#  Round 7 contents:
+#   1. Text tool: Duplicate button restored to its original spot (right
+#      before Keyframes) with its original behaviour -- copying the
+#      selected text overlay. If an older round-6 script already removed
+#      it, this round re-adds it automatically.
+#   2. Theme recolor: Electric Pink / red -> amber #F9B10B everywhere
+#      (primary, secondary, containers, active tools, nav pill, timeline
+#      selection + handles, seeker, mask handles, app icon, banner,
+#      progress spinner, record button). The "on" colors flip to dark
+#      #1A1A20 so text/icons stay readable on the bright amber.
+#      Destructive actions (Delete / Discard / Remove) intentionally keep
+#      their warning red.
+#   3. Editor top bar: the back arrow gets a dark capsule background
+#      (48x36dp, tap ripple kept) -- same 36dp height and mirrored edge
+#      position as the Export capsule on the other side.
+#   4. Play/pause capsule icon gets a dark tint for contrast on amber.
+#
 #  Idempotent: every patch checks its own marker and skips if applied.
 #  Requires: the v3 export panel state (works with or without round 4).
-#  Round 5 steps run first (skipped when already applied), then round 6.
+#  Round 5 steps run first (skipped when already applied), then round 6,
+#  then round 7.
 # ==========================================================================
 set -uo pipefail
 
@@ -2018,7 +2037,7 @@ XMLEOF
 #  R6 STEP 2 -- text_editing_toolbar.xml: drop Duplicate, add tabs + includes
 # ---------------------------------------------------------------------------
 r6_step2() {
-  echo "== r6 step 2: text toolbar (remove Duplicate, add Stroke/Shadow tabs)"
+  echo "== r6 step 2: text toolbar (add Stroke/Shadow tabs, Duplicate kept)"
   python3 - "$TOOLBAR" <<'CUTPY'
 import sys
 p = sys.argv[1]
@@ -2027,15 +2046,7 @@ if 'btnTextStrokeTab' in s:
     print('   [skip] toolbar already patched (stroke tab present)')
     sys.exit(0)
 
-# (a) remove the Duplicate tool block
-if 'btnTextDuplicate' in s:
-    a = '            <!-- Duplicate -->'
-    b = '            <!-- Keyframes -->'
-    if s.count(a) != 1 or s.count(b) != 1:
-        print('   [FAIL] duplicate block anchors mismatch')
-        sys.exit(1)
-    s = s[:s.index(a)] + s[s.index(b):]
-    print('   [ok]   Duplicate block removed')
+# (a) round 7 decision: the Duplicate tool block STAYS in the toolbar
 
 # (b) insert Stroke + Shadow tab entries between Format and Background
 TABS = '''            <!-- Stroke Settings -->
@@ -2590,12 +2601,7 @@ NEW = '''                            bgColor = bgColor, bgOpacity = bgOpacity, b
                         )'''
 s = s.replace(OLD, NEW, 1)
 
-# A4 -- remove the text Duplicate button wiring
-OLD = req('''                toolbar.findViewById<View>(R.id.btnTextDuplicate)?.setBounceClickListener {
-                    duplicateSelectedOverlay()
-                }
-''')
-s = s.replace(OLD, '', 1)
+# A4 -- round 7 decision: the text Duplicate wiring STAYS
 
 # A5 -- tab + container view references
 OLD = req('''                val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)
@@ -2807,8 +2813,6 @@ avel = open(AVEL, encoding='utf-8').read()
 act = open(PKG + '/VideoEditingActivity.kt', encoding='utf-8').read()
 
 # 2) toolbar structure
-if 'btnTextDuplicate' in toolbar:
-    fail('Duplicate button still in text toolbar')
 order = ['btnTextFormatTab', 'btnTextStrokeTab', 'btnTextShadowTab', 'btnTextBackgroundTab']
 pos = [toolbar.find(i) for i in order]
 if -1 in pos or pos != sorted(pos):
@@ -2816,7 +2820,7 @@ if -1 in pos or pos != sorted(pos):
 for inc in ['text_stroke_settings', 'text_shadow_settings']:
     if inc not in toolbar:
         fail('toolbar missing include ' + inc)
-print('   [ok]   toolbar: no Duplicate, order Format|Stroke|Shadow|Background')
+print('   [ok]   toolbar: Duplicate kept, order Format|Stroke|Shadow|Background')
 
 # 3) format tab cleaned
 if 'seekBorderWidth' in fmt:
@@ -2857,7 +2861,6 @@ checks = [
     ('setBorderThickness removed', 'fun setBorderThickness(' not in drg),
     ('Ext signature extended', 'shadowWidth: Int = 0' in vme),
     ('Ext ctor passes shadow', 'strokeOpacity = strokeOpacity' in vme),
-    ('Activity duplicate gone', 'btnTextDuplicate' not in act),
     ('Activity old slider gone', 'R.id.seekBorderWidth' not in act),
     ('Activity stroke palette', 'setupStrokeColorPicker' in act),
     ('Activity shadow palette', 'setupShadowColorPicker' in act),
@@ -2977,6 +2980,443 @@ CUTPY
 
 # --- R6 STEPS END ---------------------------------------------------------
 
+# --- ROUND 7 STAGES --------------------------------------------------------
+#
+#  R7 STEP 1 -- text tool: the Duplicate button is back
+#  (round 6 originally removed it; it returns to its original spot --
+#   right before Keyframes -- with the original behaviour: copies the
+#   selected text overlay. Runs as a no-op when the button is present.)
+#
+r7_step1() {
+  echo "== r7 step 1: text tool Duplicate button restored"
+  python3 - "$TOOLBAR" "$ACT" <<'CUTPY'
+import sys
+tp, ap = sys.argv[1], sys.argv[2]
+
+# (a) toolbar: re-insert the Duplicate tool block before Keyframes
+s = open(tp, encoding='utf-8', newline='').read()
+if 'btnTextDuplicate' in s:
+    print('   [skip] toolbar already has the Duplicate button')
+else:
+    a = '            <!-- Keyframes -->'
+    if s.count(a) != 1:
+        print('   [FAIL] Keyframes anchor mismatch (%d)' % s.count(a))
+        sys.exit(1)
+    blk = '''            <!-- Duplicate -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextDuplicate"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_copy_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/str_duplicate"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
+'''
+    i = s.index(a)
+    s = s[:i] + blk + s[i:]
+    open(tp, 'w', encoding='utf-8', newline='').write(s)
+    print('   [ok]   Duplicate tool block restored before Keyframes')
+
+# (b) activity: re-insert the click wiring
+a2 = open(ap, encoding='utf-8', newline='').read()
+if 'R.id.btnTextDuplicate' in a2:
+    print('   [skip] Activity Duplicate wiring already present')
+else:
+    b = '                val btnKeyboard = toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)'
+    if a2.count(b) != 1:
+        print('   [FAIL] btnKeyboard anchor mismatch (%d)' % a2.count(b))
+        sys.exit(1)
+    wire = '''                toolbar.findViewById<View>(R.id.btnTextDuplicate)?.setBounceClickListener {
+                    duplicateSelectedOverlay()
+                }
+
+'''
+    j = a2.index(b)
+    a2 = a2[:j] + wire + a2[j:]
+    open(ap, 'w', encoding='utf-8', newline='').write(a2)
+    print('   [ok]   Duplicate wiring restored')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R7 STEP 2 -- theme recolor: Electric Pink / red -> amber #F9B10B
+#  (primary + secondary + containers + active tool + nav pill + timeline
+#   selection + seeker + mask handles + app icon + banner + spinner +
+#   record button; "on" colors flip to dark #1A1A20 for contrast on the
+#   bright amber. Destructive actions -- Delete / Discard / Remove --
+#   intentionally keep their warning red.)
+#
+r7_step2() {
+  echo "== r7 step 2: theme color pink/red -> amber #F9B10B"
+  python3 - <<'CUTPY'
+import os, sys
+
+def sub(path, pairs):
+    if not os.path.exists(path):
+        print('   [FAIL] missing file: ' + path)
+        sys.exit(1)
+    s = open(path, encoding='utf-8', newline='').read()
+    n = 0
+    for old, new in pairs:
+        n += s.count(old)
+        s = s.replace(old, new)
+    open(path, 'w', encoding='utf-8', newline='').write(s)
+    print('   [ok]   %-64s %d sub(s)' % (path, n))
+
+# 1) theme palette (colors.xml)
+sub('app/src/main/res/values/colors.xml', [
+    ('<!-- PRIMARY: Electric Pink -->',                     '<!-- PRIMARY: Amber -->'),
+    ('<!-- SECONDARY: Bright Pink Accent -->',              '<!-- SECONDARY: Amber Accent -->'),
+    ('<!-- Subtle pink tint for active tool -->',           '<!-- Subtle amber tint for active tool -->'),
+    ('<color name="colorPrimary">#FF2A6D</color>',         '<color name="colorPrimary">#F9B10B</color>'),
+    ('<color name="colorPrimaryVariant">#C81D52</color>',  '<color name="colorPrimaryVariant">#C28A09</color>'),
+    ('<color name="colorOnPrimary">#FFFFFF</color>',       '<color name="colorOnPrimary">#1A1A20</color>'),
+    ('<color name="colorSecondary">#FF2A6D</color>',       '<color name="colorSecondary">#F9B10B</color>'),
+    ('<color name="colorSecondaryVariant">#C81D52</color>','<color name="colorSecondaryVariant">#C28A09</color>'),
+    ('<color name="colorOnSecondary">#FFFFFF</color>',     '<color name="colorOnSecondary">#1A1A20</color>'),
+    ('<color name="primaryContainer">#FF2A6D</color>',     '<color name="primaryContainer">#F9B10B</color>'),
+    ('<color name="onPrimaryContainer">#FFFFFF</color>',   '<color name="onPrimaryContainer">#1A1A20</color>'),
+    ('<color name="activeTool">#FF2A6D</color>',           '<color name="activeTool">#F9B10B</color>'),
+    ('<color name="activeToolBackground">#2A1118</color>', '<color name="activeToolBackground">#2A2210</color>'),
+    ('<color name="toolTextActive">#FF2A6D</color>',       '<color name="toolTextActive">#F9B10B</color>'),
+])
+
+# 2) drawables (nav pill, save icon, app icon, banner)
+sub('app/src/main/res/drawable/bg_nav_active_pill.xml',
+    [('#20FF2A6D', '#20F9B10B'), ('#4DFF2A6D', '#4DF9B10B')])
+sub('app/src/main/res/drawable/ic_save_color_24.xml',      [('#FF4081', '#F9B10B')])
+sub('app/src/main/res/drawable/ic_launcher_foreground.xml',[('#FF4081', '#F9B10B')])
+sub('app/src/main/res/drawable/ic_banner_foreground.xml',  [('#FF4081', '#F9B10B')])
+
+# 3) layouts (spinner, record button + its ripples, dead onboarding dialog)
+sub('app/src/main/res/layout/activity_video_editing.xml', [('#FF4081', '#F9B10B')])
+sub('app/src/main/res/layout/dialog_voice_over.xml',
+    [('#FF4081', '#F9B10B'),
+     ('app:tint="@android:color/white"', 'app:tint="@color/onPrimaryContainer"')])
+sub('app/src/main/res/layout/dialog_welcome_onboarding.xml', [('#E91E63', '#F9B10B')])
+
+# 4) Kotlin hardcoded pinks (mask handles, trim borders, image handles, seeker)
+PKG = 'app/src/main/java/com/tharunbirla/librecuts'
+sub(PKG + '/customviews/VideoMaskOverlayView.kt',      [('#FF2A6D', '#F9B10B')])
+sub(PKG + '/customviews/TrackTrimView.kt',
+    [('#33FF2A6D', '#33F9B10B'), ('#1AFF4081', '#1AF9B10B'),
+     ('#FF4081', '#F9B10B'), ('#FF2A6D', '#F9B10B')])
+sub(PKG + '/customviews/DraggableImageOverlayView.kt', [('#FF2A6D', '#F9B10B')])
+sub(PKG + '/customviews/CustomVideoSeeker.kt',
+    [('#FF4081', '#F9B10B'), ('#FF2A6D', '#F9B10B')])
+sub(PKG + '/VideoEditingActivity.kt',
+    [('#FF4081', '#F9B10B'), ('#E91E63', '#F9B10B')])
+
+# 5) note: the play/pause capsule block already carries
+#    app:tint="@color/onPrimaryContainer" (white until now); flipping
+#    onPrimaryContainer to dark in colors.xml recolors the play/pause
+#    icon automatically -- no layout edit needed here.
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R7 STEP 3 -- editor top bar: back arrow gets a dark capsule background
+#  (48x36dp pill, ripple feedback kept, dark surface + subtle outline --
+#   same 36dp height and mirrored edge position as the Export capsule)
+#
+r7_step3() {
+  echo "== r7 step 3: back button -> dark capsule (mirrors Export button)"
+  if [ -f "$DRAW/bg_back_capsule.xml" ]; then
+    echo "   [skip] bg_back_capsule.xml exists"
+  else
+    cat > "$DRAW/bg_back_capsule.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#40FFFFFF">
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="@color/surfaceContainerHigh" />
+            <stroke android:width="1dp" android:color="@color/outlineVariant" />
+            <corners android:radius="18dp" />
+        </shape>
+    </item>
+</ripple>
+XMLEOF
+    echo "   [ok]   bg_back_capsule.xml written"
+  fi
+
+  python3 - "$AVEL" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if '@drawable/bg_back_capsule' in s:
+    print('   [skip] back button already capsule')
+    sys.exit(0)
+OLD = '''            <ImageButton
+                android:id="@+id/btnClose"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:background="?attr/selectableItemBackgroundBorderless"
+                android:src="@drawable/ic_back_24"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                android:contentDescription="Back"
+                app:tint="@color/textColor" />'''
+NEW = '''            <ImageButton
+                android:id="@+id/btnClose"
+                android:layout_width="48dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_back_capsule"
+                android:src="@drawable/ic_back_24"
+                android:padding="8dp"
+                android:scaleType="fitCenter"
+                android:contentDescription="Back"
+                app:tint="@color/textColor" />'''
+if s.count(OLD) != 1:
+    print('   [FAIL] btnClose block mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+s = s.replace(OLD, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   btnClose -> 48x36dp dark capsule (ripple kept)')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R7 VERIFY
+# ---------------------------------------------------------------------------
+verify_round7() {
+  echo "== r7 verify"
+  python3 - <<'CUTPY'
+import os, re, sys
+import xml.etree.ElementTree as ET
+
+bad = 0
+def fail(msg):
+    global bad
+    bad += 1
+    print('   [FAIL] ' + msg)
+
+RES = 'app/src/main/res'
+PKG = 'app/src/main/java/com/tharunbirla/librecuts'
+TOOLBAR = RES + '/layout/text_editing_toolbar.xml'
+AVEL = RES + '/layout/activity_video_editing.xml'
+
+# 1) XML validity
+xmls = [RES + '/values/colors.xml',
+        RES + '/drawable/bg_back_capsule.xml',
+        RES + '/drawable/bg_nav_active_pill.xml',
+        RES + '/drawable/ic_save_color_24.xml',
+        RES + '/drawable/ic_launcher_foreground.xml',
+        RES + '/drawable/ic_banner_foreground.xml',
+        RES + '/layout/activity_video_editing.xml',
+        RES + '/layout/dialog_voice_over.xml',
+        RES + '/layout/dialog_welcome_onboarding.xml',
+        RES + '/layout/text_editing_toolbar.xml']
+for f in xmls:
+    try:
+        ET.parse(f)
+    except Exception as e:
+        fail('XML %s: %s' % (f, e))
+print('   [ok]   XML valid (%d files)' % len(xmls))
+
+# 2) theme palette flipped to amber
+c = open(RES + '/values/colors.xml', encoding='utf-8').read()
+pairs = [
+    ('colorPrimary amber',        '<color name="colorPrimary">#F9B10B</color>' in c),
+    ('variant dark amber',        '<color name="colorPrimaryVariant">#C28A09</color>' in c),
+    ('onPrimary dark',            '<color name="colorOnPrimary">#1A1A20</color>' in c),
+    ('secondary amber',           '<color name="colorSecondary">#F9B10B</color>' in c),
+    ('primaryContainer amber',    '<color name="primaryContainer">#F9B10B</color>' in c),
+    ('onPrimaryContainer dark',   '<color name="onPrimaryContainer">#1A1A20</color>' in c),
+    ('activeTool amber',          '<color name="activeTool">#F9B10B</color>' in c),
+    ('activeToolBackground tint', '<color name="activeToolBackground">#2A2210</color>' in c),
+    ('toolTextActive amber',      '<color name="toolTextActive">#F9B10B</color>' in c),
+]
+for name, ok in pairs:
+    if not ok:
+        fail(name)
+print('   [ok]   colors.xml: amber theme (%d checks)' % len(pairs))
+
+# 3) no leftover pink/red theme hexes anywhere (delete-red kept by design)
+leftover = []
+for root, dirs, files in os.walk('app/src/main'):
+    for fn in files:
+        if not fn.endswith(('.xml', '.kt')):
+            continue
+        fp = os.path.join(root, fn)
+        try:
+            t = open(fp, encoding='utf-8').read()
+        except Exception:
+            continue
+        for hx in ['#FF2A6D', '#C81D52', '#FF4081', '#E91E63',
+                   '#33FF2A6D', '#1AFF4081', '#20FF2A6D', '#4DFF2A6D',
+                   '#ff2a6d', '#ff4081']:
+            if hx in t:
+                leftover.append(fp + ' still has ' + hx)
+for x in leftover[:10]:
+    fail(x)
+if leftover:
+    fail('%d leftover pink hexe(s) total' % len(leftover))
+else:
+    print('   [ok]   no leftover theme-pink hexes (destructive reds kept)')
+
+# 4) Duplicate restored
+toolbar = open(TOOLBAR, encoding='utf-8').read()
+act = open(PKG + '/VideoEditingActivity.kt', encoding='utf-8').read()
+strings = open(RES + '/values/strings.xml', encoding='utf-8').read()
+imgt = open(RES + '/layout/image_editing_toolbar.xml', encoding='utf-8').read()
+dchecks = [
+    ('toolbar Duplicate button', 'btnTextDuplicate' in toolbar),
+    ('toolbar uses str_duplicate', '@string/str_duplicate' in toolbar),
+    ('Duplicate before Keyframes', toolbar.find('btnTextDuplicate') < toolbar.find('<!-- Keyframes -->')),
+    ('string str_duplicate exists', '<string name="str_duplicate">' in strings),
+    ('activity Duplicate wiring', 'R.id.btnTextDuplicate' in act),
+    ('duplicateSelectedOverlay wired 3x', act.count('duplicateSelectedOverlay') >= 3),
+    ('image tool duplicate kept', 'btnImageDuplicate' in imgt),
+]
+for name, ok in dchecks:
+    if not ok:
+        fail(name)
+print('   [ok]   text Duplicate restored (%d checks)' % len(dchecks))
+
+# 5) back button capsule + export symmetry
+avel = open(AVEL, encoding='utf-8').read()
+m = re.search(r'android:id="@\+id/btnClose".*?/>', avel, re.S)
+if not m:
+    fail('btnClose block not found')
+else:
+    blk = m.group(0)
+    for needle, label in [
+        ('android:layout_width="48dp"', 'back width 48dp'),
+        ('android:layout_height="36dp"', 'back height 36dp'),
+        ('@drawable/bg_back_capsule', 'back capsule background'),
+    ]:
+        if needle not in blk:
+            fail(label)
+m2 = re.search(r'android:id="@\+id/layoutSaveSplit".*?android:layout_height="(\d+)dp"', avel, re.S)
+if not m2 or m2.group(1) != '36':
+    fail('export button height changed (expected 36dp)')
+if avel.count('@drawable/bg_back_capsule') != 1:
+    fail('bg_back_capsule referenced %d times' % avel.count('@drawable/bg_back_capsule'))
+caps = open(RES + '/drawable/bg_back_capsule.xml', encoding='utf-8').read()
+for needle, label in [
+    ('<ripple', 'capsule ripple (tap feedback)'),
+    ('@color/surfaceContainerHigh', 'capsule dark surface'),
+    ('<corners android:radius="18dp" />', 'capsule 18dp corners'),
+]:
+    if needle not in caps:
+        fail(label)
+print('   [ok]   back button: dark capsule 48x36dp, ripple, mirrors Export 36dp')
+
+# 6) play/pause icon: pre-existing onPrimaryContainer tint now resolves dark
+mp = re.search(r'@\+id/btnPlayPause".*?/>', avel, re.S)
+if not mp or 'app:tint="@color/onPrimaryContainer"' not in mp.group(0):
+    fail('play capsule icon tint missing')
+else:
+    print('   [ok]   play capsule icon tint resolves dark on amber')
+
+# 7) Kotlin balance on touched files
+def strip_kotlin(src):
+    out = []
+    i, n = 0, len(src)
+    NORMAL, LINE_C, BLOCK_C, STR, RAW, CHAR = range(6)
+    st = NORMAL
+    while i < n:
+        c = src[i]
+        two = src[i:i+2]
+        if st == NORMAL:
+            if two == '//':
+                st = LINE_C; i += 2; continue
+            if two == '/*':
+                st = BLOCK_C; i += 2; continue
+            if src[i:i+3] == '"""':
+                st = RAW; i += 3; out.append(' '); continue
+            if c == '"':
+                st = STR; i += 1; out.append(' '); continue
+            if c == "'":
+                st = CHAR; i += 1; out.append(' '); continue
+            out.append(c); i += 1
+        elif st == LINE_C:
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+        elif st == BLOCK_C:
+            if two == '*/':
+                st = NORMAL; i += 2; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == STR:
+            if c == '\\':
+                i += 2; continue
+            if c == '"':
+                st = NORMAL
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == RAW:
+            if src[i:i+3] == '"""':
+                st = NORMAL; i += 3; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        else:
+            if c == '\\':
+                i += 2; continue
+            if c == "'":
+                st = NORMAL
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+    return ''.join(out)
+
+for f in ['VideoEditingActivity.kt', 'customviews/TrackTrimView.kt',
+          'customviews/CustomVideoSeeker.kt', 'customviews/VideoMaskOverlayView.kt',
+          'customviews/DraggableImageOverlayView.kt']:
+    t = strip_kotlin(open(PKG + '/' + f, encoding='utf-8').read())
+    for a, b in [('{', '}'), ('(', ')'), ('[', ']')]:
+        if t.count(a) != t.count(b):
+            fail('%s: %s unbalanced (%d vs %d)' % (f, a, t.count(a), t.count(b)))
+print('   [ok]   Kotlin braces/parens balanced (5 files)')
+
+# 8) pure-ASCII on the touched XML resources
+# (the Kotlin files carry upstream non-ASCII comments in the original
+#  repo -- they build fine; our substitutions are pure ASCII hex swaps)
+touched = xmls
+for f in touched:
+    data = open(f, 'rb').read()
+    if any(bb > 127 for bb in data):
+        fail('non-ASCII byte in ' + f)
+print('   [ok]   touched XML resources are pure ASCII (%d files)' % len(touched))
+
+if bad:
+    print('R7 VERIFY FAILED (%d problem(s))' % bad)
+    sys.exit(1)
+print('R7 VERIFY OK')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# --- ROUND 7 STAGES END ----------------------------------------------------
+
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
@@ -3003,5 +3443,11 @@ r6_step7         || { echo "ABORT: r6 step 7";    exit 1; }
 r6_step8         || { echo "ABORT: r6 step 8";    exit 1; }
 r6_step9         || { echo "ABORT: r6 step 9";    exit 1; }
 verify_round6    || { echo "ABORT: r6 verify";   exit 1; }
+
+# -- round 7 --
+r7_step1         || { echo "ABORT: r7 step 1";    exit 1; }
+r7_step2         || { echo "ABORT: r7 step 2";    exit 1; }
+r7_step3         || { echo "ABORT: r7 step 3";    exit 1; }
+verify_round7    || { echo "ABORT: r7 verify";   exit 1; }
 echo ""
-echo "ROUND 5 + ROUND 6 APPLIED SUCCESSFULLY"
+echo "ROUND 5 + ROUND 6 + ROUND 7 APPLIED SUCCESSFULLY"
