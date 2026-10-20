@@ -392,14 +392,16 @@ PYEOF
 }
 
 # ---------------------------------------------------------------------------
-#  STAGE 3 - Export settings v2 (FULL panel)
+#  STAGE 3 - Export settings v2/v3 (FULL panel + stream-copy semantics)
 #  Rewrites dialog_export_settings.xml, adds ExportSettingsDialog.kt,
-#  new drawables, and rewires the FFmpeg command builder in the ViewModel.
+#  new drawables/color lists, and rewires the FFmpeg command builder
+#  in the ViewModel ("-c:v copy"/"-c:a copy" when "Same as input").
 # ---------------------------------------------------------------------------
 stage3_export_settings_v2() {
-  echo "-- stage 3: export settings v2 (full panel)"
+  echo "-- stage 3: export settings v2/v3 (full panel + copy semantics)"
 
   # 3a. new/rewritten resource + source files (byte-exact heredocs)
+  mkdir -p "app/src/main/res/drawable"
   cat > "app/src/main/res/drawable/bg_capsule_pill.xml" <<'CUTSTUDIO_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
@@ -416,6 +418,17 @@ CUTSTUDIO_EOF
     <corners android:radius="10dp" />
 </shape>
 CUTSTUDIO_EOF
+  cat > "app/src/main/res/drawable/ic_dialog_check.xml" <<'CUTSTUDIO_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="18dp" android:height="18dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path
+        android:fillColor="@color/colorPrimary"
+        android:pathData="M9,16.17L4.83,12l-1.42,1.41L9,19 21,7l-1.41,-1.41z" />
+</vector>
+CUTSTUDIO_EOF
+  mkdir -p "app/src/main/res/layout"
   cat > "app/src/main/res/layout/dialog_export_settings.xml" <<'CUTSTUDIO_EOF'
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
@@ -451,21 +464,33 @@ CUTSTUDIO_EOF
 
         <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
             android:layout_marginTop="8dp" android:orientation="horizontal" android:gravity="center_vertical">
-            <EditText android:id="@+id/etWidth" android:layout_width="0dp" android:layout_weight="1"
-                android:layout_height="46dp" android:inputType="number" android:maxLength="5"
-                android:hint="1920" android:textColorHint="@color/iconSecondary"
-                android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
-                android:background="@drawable/bg_command_box" android:padding="10dp"
-                android:singleLine="true" android:imeOptions="actionNext" />
+            <FrameLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="46dp">
+                <EditText android:id="@+id/etWidth" android:layout_width="match_parent"
+                    android:layout_height="match_parent" android:inputType="number" android:maxLength="5"
+                    android:hint="1920" android:textColorHint="@color/iconSecondary"
+                    android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
+                    android:background="@drawable/bg_command_box" android:padding="10dp"
+                    android:singleLine="true" android:imeOptions="actionNext" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_gravity="top|end" android:layout_marginTop="5dp" android:layout_marginEnd="7dp"
+                    android:text="W" android:textSize="9sp" android:textStyle="bold"
+                    android:textColor="@color/iconSecondary" />
+            </FrameLayout>
             <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
                 android:layout_marginStart="8dp" android:layout_marginEnd="8dp"
                 android:text="x" android:textColor="@color/iconSecondary" android:textSize="14sp" />
-            <EditText android:id="@+id/etHeight" android:layout_width="0dp" android:layout_weight="1"
-                android:layout_height="46dp" android:inputType="number" android:maxLength="5"
-                android:hint="1080" android:textColorHint="@color/iconSecondary"
-                android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
-                android:background="@drawable/bg_command_box" android:padding="10dp"
-                android:singleLine="true" android:imeOptions="actionDone" />
+            <FrameLayout android:layout_width="0dp" android:layout_weight="1" android:layout_height="46dp">
+                <EditText android:id="@+id/etHeight" android:layout_width="match_parent"
+                    android:layout_height="match_parent" android:inputType="number" android:maxLength="5"
+                    android:hint="1080" android:textColorHint="@color/iconSecondary"
+                    android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
+                    android:background="@drawable/bg_command_box" android:padding="10dp"
+                    android:singleLine="true" android:imeOptions="actionDone" />
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                    android:layout_gravity="top|end" android:layout_marginTop="5dp" android:layout_marginEnd="7dp"
+                    android:text="H" android:textSize="9sp" android:textStyle="bold"
+                    android:textColor="@color/iconSecondary" />
+            </FrameLayout>
         </LinearLayout>
 
         <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
@@ -520,7 +545,12 @@ CUTSTUDIO_EOF
             <com.google.android.material.chip.Chip android:id="@+id/chipBitrateSame"
                 style="@style/Widget.MaterialComponents.Chip.Filter"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true" />
+                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true"
+                app:checkedIconVisible="true"
+                app:checkedIcon="@drawable/ic_dialog_check"
+                app:checkedIconTint="@color/colorPrimary"
+                app:chipBackgroundColor="@color/chip_bitrate_same_bg"
+                android:textColor="@color/chip_bitrate_same_text" />
         </LinearLayout>
 
         <!-- ======================= Video Codec ======================= -->
@@ -593,6 +623,7 @@ CUTSTUDIO_EOF
             <com.google.android.material.chip.ChipGroup android:id="@+id/cgAudioCodec"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
                 app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipACSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
                 <com.google.android.material.chip.Chip android:id="@+id/chipACAac" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AAC-LC" />
                 <com.google.android.material.chip.Chip android:id="@+id/chipACMp3" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="LAME MP3" />
                 <com.google.android.material.chip.Chip android:id="@+id/chipACOpus" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="libopus" />
@@ -679,6 +710,22 @@ CUTSTUDIO_EOF
     </LinearLayout>
 </androidx.core.widget.NestedScrollView>
 CUTSTUDIO_EOF
+  mkdir -p "app/src/main/res/color"
+  cat > "app/src/main/res/color/chip_bitrate_same_bg.xml" <<'CUTSTUDIO_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/activeToolBackground" android:state_checked="true" />
+    <item android:color="#00000000" />
+</selector>
+CUTSTUDIO_EOF
+  cat > "app/src/main/res/color/chip_bitrate_same_text.xml" <<'CUTSTUDIO_EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:color="@color/activeTool" android:state_checked="true" />
+    <item android:color="@color/textColor" />
+</selector>
+CUTSTUDIO_EOF
+  mkdir -p "app/src/main/java/com/tharunbirla/librecuts"
   cat > "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt" <<'CUTSTUDIO_EOF'
 package com.tharunbirla.librecuts
 
@@ -696,12 +743,19 @@ import java.io.File
 import java.util.Locale
 
 /**
- * CutStudio - Export settings dialog (v2).
+ * CutStudio - Export settings dialog (v3).
  *
  * Every control change is pushed live into the ViewModel, then the REAL export
  * command is rebuilt through VideoEditingViewModel.buildConsolidatedFFmpegCommand()
  * (the exact same code path the final export uses) and displayed in the preview
  * box, together with an estimated output file size.
+ *
+ * "Same as input" semantics (v3):
+ *  - Video Codec "Same as input"  -> "-c:v copy" (lossless remux) whenever the
+ *    edit graph allows it; if video processing is present the command falls
+ *    back to libx264 (so the selected preset is honored) and the preview says so.
+ *  - Audio Codec "Same as input"  -> "-c:a copy" whenever no audio filtering
+ *    is needed; otherwise the chosen encoder is used.
  *
  * Save   -> keeps the current state and triggers the export flow.
  * Cancel -> restores the snapshot taken when the dialog was opened.
@@ -727,10 +781,10 @@ class ExportSettingsDialog(
     private var bitrateSameAsInput = true
     private var manualBitrateKbps = 8000
     private var selFormat = "same"       // same|mp4|mkv|mov|webm|avi
-    private var selCodec = ""            // "" = same as input (app default chain)
+    private var selCodec = ""            // "" = same as input -> -c:v copy (or libx264 when re-encode forced)
     private var selPreset = "medium"     // ultrafast..veryslow
     private var selAudioFormat = "same"  // same|aac|mp3|opus|flac|wav
-    private var selAudioCodec = "aac"    // aac|libmp3lame|libopus|pcm_s16le|flac
+    private var selAudioCodec = ""       // "" = same as input -> -c:a copy | aac|libmp3lame|libopus|pcm_s16le|flac
     private var selAudioBitrate = ""     // "" = same as input
     private var customW = 0
     private var customH = 0
@@ -749,6 +803,7 @@ class ExportSettingsDialog(
     private lateinit var etBitrate: EditText
     private lateinit var chipBitrateSame: Chip
     private lateinit var cgResolution: ChipGroup
+    private lateinit var cgAudioFormat: ChipGroup
     private lateinit var cgAudioCodec: ChipGroup
 
     fun show() {
@@ -764,7 +819,7 @@ class ExportSettingsDialog(
         selFps = snapFps
         selCodec = snapAdvanced.videoCodec
         selPreset = snapAdvanced.preset.ifEmpty { "medium" }
-        selAudioCodec = snapAdvanced.audioCodec.ifEmpty { "aac" }
+        selAudioCodec = snapAdvanced.audioCodec   // "" = Same as input (-c:a copy)
         selAudioBitrate = snapAdvanced.audioBitrate
         selFormat = when (snapAdvanced.videoFormat) {
             "mkv" -> "mkv"; "mov" -> "mov"; "webm" -> "webm"; "avi" -> "avi"; else -> "same"
@@ -772,6 +827,8 @@ class ExportSettingsDialog(
         selAudioFormat = when (snapAdvanced.audioOnlyFormat) {
             "mp3" -> "mp3"; "opus" -> "opus"; "flac" -> "flac"; "wav" -> "wav"; else -> "same"
         }
+        // Stream copy keeps the original audio codec -> the audio format follows the source too.
+        if (selAudioCodec.isEmpty()) selAudioFormat = "same"
         customW = snapAdvanced.customWidth
         customH = snapAdvanced.customHeight
         parseBitrate(snapBitrate)
@@ -857,6 +914,14 @@ class ExportSettingsDialog(
     }
 
     private fun effectiveAudioOnlyFormat(): String {
+        if (selAudioCodec.isEmpty()) {
+            // Stream copy keeps the original audio codec -> follow the source container.
+            return when (sourceFile?.extension?.lowercase(Locale.US)) {
+                "mp3" -> "mp3"; "flac" -> "flac"; "wav" -> "wav"; "opus" -> "opus"
+                "webm" -> "opus"
+                else -> "m4a"
+            }
+        }
         if (selAudioFormat != "same") {
             return when (selAudioFormat) {
                 "aac" -> "m4a"; "mp3" -> "mp3"; "opus" -> "opus"
@@ -867,23 +932,37 @@ class ExportSettingsDialog(
         return if (ext in listOf("m4a", "mp3", "opus", "flac", "wav")) ext else "m4a"
     }
 
-    private fun estimateSizeText(): String {
+    private fun formatBytes(bytes: Double): String = when {
+        bytes < 1024.0 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+        bytes < 1024.0 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
+        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
+    }
+
+    /** Size estimate that follows what the REAL command will do (copy vs re-encode). */
+    private fun estimateSizeText(cmd: String?): String {
         val durSec = durationMs / 1000.0
         if (durSec <= 0.0) return "..."
-        val videoKbps = effectiveVideoKbps()
+        val vCopy = cmd != null && cmd.contains("-c:v copy")
+        val aCopy = cmd != null && cmd.contains("-c:a copy")
+        val muted = cmd != null && cmd.contains(" -an")
+        if (vCopy && aCopy && !muted && sourceFile != null && sourceFile.exists()) {
+            // Pure remux: the output is essentially the input, container overhead aside.
+            return "~" + formatBytes(sourceFile.length().toDouble())
+        }
+        val videoKbps = if (vCopy) sourceVideoKbps() else effectiveVideoKbps()
         val audioKbps = when {
+            muted -> 0
+            aCopy -> 128                                   // passthrough ≈ typical AAC track
             selAudioCodec == "pcm_s16le" -> 1411
             selAudioCodec == "flac" -> 900
             selAudioBitrate.isNotEmpty() -> selAudioBitrate.dropLast(1).toIntOrNull() ?: 128
             else -> 128
         }
-        val bytes = (videoKbps + audioKbps) * 1000.0 / 8.0 * durSec
-        val body = when {
-            bytes < 1024.0 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
-            bytes < 1024.0 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
-            else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
+        if (viewModel.exportAudioOnly.value) {
+            return "~" + formatBytes(audioKbps * 1000.0 / 8.0 * durSec)
         }
-        return "~$body"
+        val bytes = (videoKbps + audioKbps) * 1000.0 / 8.0 * durSec
+        return "~" + formatBytes(bytes)
     }
 
     // ------------------------------------------------------------ live refresh
@@ -909,14 +988,28 @@ class ExportSettingsDialog(
         val cmd = if (srcPath != null)
             viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, fontPath, activity)
         else null
-        tvCommand.text = when {
+        tvCommand.text = commandPreviewText(cmd)
+        tvEstimatedSize.text = estimateSizeText(cmd)
+    }
+
+    /** Real command + a short note when "Same as input" was requested but is impossible. */
+    private fun commandPreviewText(cmd: String?): String {
+        val base = when {
             cmd == null -> "(preview unavailable)"
             cmd.contains("(CONCAT_LIST:") ->
                 cmd.substring(0, cmd.indexOf("(CONCAT_LIST:")).trim() +
                     "  ...(+concat list appended at export time)"
             else -> cmd
         }
-        tvEstimatedSize.text = estimateSizeText()
+        if (cmd == null) return base
+        val notes = mutableListOf<String>()
+        if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
+            notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
+        }
+        if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
+            notes.add("audio processing present -> audio re-encoded as shown")
+        }
+        return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
     }
 
     // -------------------------------------------------------------- view setup
@@ -947,6 +1040,7 @@ class ExportSettingsDialog(
         etBitrate = v.findViewById(R.id.etBitrate)
         chipBitrateSame = v.findViewById(R.id.chipBitrateSame)
         cgResolution = v.findViewById(R.id.cgResolution)
+        cgAudioFormat = v.findViewById(R.id.cgAudioFormat)
         cgAudioCodec = v.findViewById(R.id.cgAudioCodec)
 
         etWidth.hint = if (srcW > 0) srcW.toString() else "1920"
@@ -984,7 +1078,7 @@ class ExportSettingsDialog(
             selFormat, true
         ) { picked -> selFormat = picked ?: "same" }
 
-        // ---- Video codec ----
+        // ---- Video codec ("Same as input" = -c:v copy when the graph allows it) ----
         wireChipRow(v.findViewById<ChipGroup>(R.id.cgVideoCodec), mapOf(
             R.id.chipCodecSame to "", R.id.chipCodecX264 to "libx264",
             R.id.chipCodecH265 to "hevc_mediacodec", R.id.chipCodecX265 to "libx265",
@@ -999,7 +1093,7 @@ class ExportSettingsDialog(
         ) { picked -> selFps = picked ?: 0 }
 
         // ---- Audio format (also drives -c:a; last-touched wins vs codec row) ----
-        wireChipRow(v.findViewById<ChipGroup>(R.id.cgAudioFormat), mapOf(
+        wireChipRow(cgAudioFormat, mapOf(
             R.id.chipAFSame to "same", R.id.chipAFAac to "aac", R.id.chipAFMp3 to "mp3",
             R.id.chipAFOpus to "opus", R.id.chipAFFlac to "flac", R.id.chipAFWav to "wav"),
             selAudioFormat, true
@@ -1019,12 +1113,20 @@ class ExportSettingsDialog(
             }
         }
 
-        // ---- Audio codec ----
+        // ---- Audio codec ("Same as input" = -c:a copy when no audio filtering) ----
         wireChipRow(cgAudioCodec, mapOf(
-            R.id.chipACAac to "aac", R.id.chipACMp3 to "libmp3lame",
+            R.id.chipACSame to "", R.id.chipACAac to "aac", R.id.chipACMp3 to "libmp3lame",
             R.id.chipACOpus to "libopus", R.id.chipACPcm to "pcm_s16le"),
             selAudioCodec, true
-        ) { picked -> if (picked != null) selAudioCodec = picked }
+        ) { picked ->
+            if (picked == null) return@wireChipRow
+            selAudioCodec = picked
+            if (picked.isEmpty()) {
+                // Copy keeps the original audio codec, so the format follows the source too.
+                selAudioFormat = "same"
+                cgAudioFormat.check(R.id.chipAFSame)
+            }
+        }
 
         // ---- Audio bitrate ----
         wireChipRow(v.findViewById<ChipGroup>(R.id.cgAudioBitrate), mapOf(
@@ -1097,21 +1199,31 @@ class ExportSettingsDialog(
     }
 }
 CUTSTUDIO_EOF
-  echo "  [ok]   files written (2 drawables + dialog xml + ExportSettingsDialog.kt)"
+  echo "  [ok]   files written (3 drawables + dialog xml + 2 color lists + ExportSettingsDialog.kt)"
 
-  # 3b. ViewModel + Activity patches (guarded, idempotent)
+  # 3b. ViewModel + Activity + Engine + strings patches (guarded, idempotent)
   python3 - <<'CUTSTUDIO_PY'
 #!/usr/bin/env python3
-"""CutStudio stage-3 patches: ViewModel + VideoEditingActivity (export settings v2).
+"""CutStudio stage-3 patches: ViewModel + VideoEditingActivity (export settings v2/v3).
 
-Runs from the repository root (any base state: fresh, post-stage-2 or
-post-stage-3). Every patch is guarded and skips itself if already applied.
-Exits non-zero with a clear message if an anchor is missing.
+Runs from the repository root (any base state: fresh, post-stage-2,
+post-stage-3-v2 or final). Every patch is guarded and skips itself if already
+applied. Multi-state patches (apm) migrate whichever intermediate state the
+file is in. Exits non-zero with a clear message if an anchor is missing.
+
+v3 changes (user round 1):
+  - Audio Codec row gains "Same as input" -> "-c:a copy" when possible
+  - Video Codec "Same as input" -> "-c:v copy" (lossless remux) when the graph
+    allows it; libx264 fallback otherwise so the -preset is honored
+  - FFmpegRenderEngine: libx264 -> h264_mediacodec retry strips "-preset X"
+  - values/strings.xml: unicode ellipsis replaced with ASCII dots
 """
 import sys
 
 VM = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt'
 ACT = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+ENGINE = 'app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt'
+STRINGS = 'app/src/main/res/values/strings.xml'
 
 
 def read(p):
@@ -1142,6 +1254,19 @@ def patch_viewmodel():
             return
         fails.append(name)
 
+    def apm(name, final, variants):
+        """Multi-state patch: skip if final present, else try each (old, new)."""
+        nonlocal s
+        if final in s:
+            print(f'  [skip] vm: {name}')
+            return
+        for old, new in variants:
+            if old in s:
+                s = s.replace(old, new, 1)
+                print(f'  [ok]   vm: {name}')
+                return
+        fails.append(name)
+
     # P1: AdvancedExport state + command-assembly helpers (after setExportSettings)
     ap('AdvancedExport + helpers', '''    fun setExportSettings(resolution: Int, fps: Int, audioOnly: Boolean, bitrate: String? = null) {
         _exportResolution.value = resolution
@@ -1162,9 +1287,9 @@ def patch_viewmodel():
 
     data class AdvancedExport(
         val videoFormat: String = "mp4",      // mp4|mkv|mov|webm|avi
-        val videoCodec: String = "",          // "" = app default chain | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1
+        val videoCodec: String = "",          // "" = same as input -> -c:v copy (libx264 fallback when re-encode is forced) | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1
         val preset: String = "",              // "" = none; ultrafast..veryslow (x264/x265 only)
-        val audioCodec: String = "aac",       // aac|libmp3lame|libopus|pcm_s16le|flac
+        val audioCodec: String = "",          // "" = same as input -> -c:a copy when possible | aac|libmp3lame|libopus|pcm_s16le|flac
         val audioBitrate: String = "",        // "" = same as input (omit -b:a); 128k|192k|256k|320k
         val audioOnlyFormat: String = "m4a",  // m4a|mp3|opus|flac|wav (audio-only export extension)
         val customWidth: Int = 0,             // 0 = not set
@@ -1227,7 +1352,52 @@ def patch_viewmodel():
         return parts.joinToString(" ")
     }
 
-    /** -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it). */
+    /**
+     * -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it).
+     * "Same as input" + nothing forcing a re-encode -> "-c:v copy" (lossless remux).
+     * When re-encoding is unavoidable the fallback encoder is libx264 so the
+     * selected preset is actually honored (h264_mediacodec ignores -preset).
+     */
+    private fun buildVideoCodecArgs(defaultEncoder: String, allowStreamCopy: Boolean = false): String {
+        val adv = _advancedExport.value
+        if (allowStreamCopy && adv.videoCodec.isEmpty()) return "-c:v copy"
+        val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec else "libx264"
+        val sb = StringBuilder("-c:v $codec -pix_fmt yuv420p")
+        if (_exportBitrate.value.isNotEmpty()) sb.append(" -b:v ${_exportBitrate.value}")
+        if (adv.preset.isNotEmpty() && (codec == "libx264" || codec == "libx265")) {
+            sb.append(" -preset ${adv.preset}")
+        }
+        return sb.toString()
+    }
+
+    /**
+     * -c:a ... (-b:a skipped for lossless codecs).
+     * "Same as input" + no audio filtering -> "-c:a copy" (bit-exact passthrough).
+     */
+    private fun buildAudioCodecArgs(allowStreamCopy: Boolean = false): String {
+        val adv = _advancedExport.value
+        if (allowStreamCopy && adv.audioCodec.isEmpty()) return "-c:a copy"
+        val codec = if (adv.audioCodec.isNotEmpty()) adv.audioCodec else "aac"
+        val sb = StringBuilder("-c:a $codec")
+        val lossless = codec == "pcm_s16le" || codec == "flac"
+        if (adv.audioBitrate.isNotEmpty() && !lossless) sb.append(" -b:a ${adv.audioBitrate}")
+        return sb.toString()
+    }
+''', marker='data class AdvancedExport')
+
+    # P11 (v3 migration): audioCodec default "" = Same as input
+    ap('audioCodec same-as-input default',
+       '''        val audioCodec: String = "aac",       // aac|libmp3lame|libopus|pcm_s16le|flac''',
+       '''        val audioCodec: String = "",          // "" = same as input -> -c:a copy when possible | aac|libmp3lame|libopus|pcm_s16le|flac''')
+
+    # P11b (v3 migration): videoCodec comment reflects the new copy semantics
+    ap('videoCodec comment v3',
+       '''        val videoCodec: String = "",          // "" = app default chain | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1''',
+       '''        val videoCodec: String = "",          // "" = same as input -> -c:v copy (libx264 fallback when re-encode is forced) | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1''')
+
+    # P12 (v3 migration): buildVideoCodecArgs with stream-copy support
+    ap('video codec args v3 (copy + preset fallback)',
+       '''    /** -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it). */
     private fun buildVideoCodecArgs(defaultEncoder: String): String {
         val adv = _advancedExport.value
         val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec
@@ -1238,9 +1408,28 @@ def patch_viewmodel():
             sb.append(" -preset ${adv.preset}")
         }
         return sb.toString()
-    }
+    }''',
+       '''    /**
+     * -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it).
+     * "Same as input" + nothing forcing a re-encode -> "-c:v copy" (lossless remux).
+     * When re-encoding is unavoidable the fallback encoder is libx264 so the
+     * selected preset is actually honored (h264_mediacodec ignores -preset).
+     */
+    private fun buildVideoCodecArgs(defaultEncoder: String, allowStreamCopy: Boolean = false): String {
+        val adv = _advancedExport.value
+        if (allowStreamCopy && adv.videoCodec.isEmpty()) return "-c:v copy"
+        val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec else "libx264"
+        val sb = StringBuilder("-c:v $codec -pix_fmt yuv420p")
+        if (_exportBitrate.value.isNotEmpty()) sb.append(" -b:v ${_exportBitrate.value}")
+        if (adv.preset.isNotEmpty() && (codec == "libx264" || codec == "libx265")) {
+            sb.append(" -preset ${adv.preset}")
+        }
+        return sb.toString()
+    }''', marker='if (allowStreamCopy && adv.videoCodec.isEmpty()) return "-c:v copy"')
 
-    /** -c:a ... (-b:a skipped for lossless codecs). */
+    # P13 (v3 migration): buildAudioCodecArgs with stream-copy support
+    ap('audio codec args v3 (copy)',
+       '''    /** -c:a ... (-b:a skipped for lossless codecs). */
     private fun buildAudioCodecArgs(): String {
         val adv = _advancedExport.value
         val codec = if (adv.audioCodec.isNotEmpty()) adv.audioCodec else "aac"
@@ -1248,8 +1437,20 @@ def patch_viewmodel():
         val lossless = codec == "pcm_s16le" || codec == "flac"
         if (adv.audioBitrate.isNotEmpty() && !lossless) sb.append(" -b:a ${adv.audioBitrate}")
         return sb.toString()
-    }
-''', marker='data class AdvancedExport')
+    }''',
+       '''    /**
+     * -c:a ... (-b:a skipped for lossless codecs).
+     * "Same as input" + no audio filtering -> "-c:a copy" (bit-exact passthrough).
+     */
+    private fun buildAudioCodecArgs(allowStreamCopy: Boolean = false): String {
+        val adv = _advancedExport.value
+        if (allowStreamCopy && adv.audioCodec.isEmpty()) return "-c:a copy"
+        val codec = if (adv.audioCodec.isNotEmpty()) adv.audioCodec else "aac"
+        val sb = StringBuilder("-c:a $codec")
+        val lossless = codec == "pcm_s16le" || codec == "flac"
+        if (adv.audioBitrate.isNotEmpty() && !lossless) sb.append(" -b:a ${adv.audioBitrate}")
+        return sb.toString()
+    }''', marker='if (allowStreamCopy && adv.audioCodec.isEmpty()) return "-c:a copy"')
 
     # P2: merge-path final scale filter
     ap('merge path scale filter', '''            filterParts.add("${tempVideoLabel}scale=-2:${_exportResolution.value},fps=${_exportFps.value},format=yuv420p$finalVideoLabel")''',
@@ -1285,18 +1486,27 @@ def patch_viewmodel():
        '''                filterComplexParts.add(buildOutputScaleFilter(finalVideoLabel, fmtLabel))''',
        marker='buildOutputScaleFilter(finalVideoLabel')
 
-    # P7+P8: non-merge-path codec + -vf block (one combined region)
-    ap('non-merge path codec + vf', '''            val bitrate = _exportBitrate.value
-            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
+    # P8 (v3, multi-state): non-merge codec + -vf block + audio line.
+    # Final form gates stream copy on "no filters AND no scale/fps change" and
+    # passes allowStreamCopy to the audio args too.
+    FINAL_REGION = '''            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                 ?.getString("default_encoder", "hardware") ?: "hardware"
-            val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
-            // If there are no video filters, we still need to apply the scale and fps output params
+            // If there are no video filters, we still need to apply the scale and fps output params.
+            // Stream copy is only possible when nothing forces a re-encode (no filters, no scale/fps change).
             if (!hasVideoFilters) {
-                cmd.append(" $videoCodec -vf scale=-2:${_exportResolution.value} -r ${_exportFps.value}")
+                val vfArgs = buildOutputVfArgs()
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}")
+                if (vfArgs.isNotEmpty()) cmd.append(" $vfArgs")
             } else {
-                cmd.append(" $videoCodec")
-            }''',
-       '''            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
+            }
+            
+            if (!effectiveAudioMuted) {
+                cmd.append(" ${buildAudioCodecArgs(finalAudioLabel == null)}")
+            }'''
+    apm('non-merge codec + vf + copy gates', FINAL_REGION, [
+        # state: post-stage3-v2 (user's fork) - video v2 block + audio v2 line
+        ('''            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                 ?.getString("default_encoder", "hardware") ?: "hardware"
             // If there are no video filters, we still need to apply the scale and fps output params
             if (!hasVideoFilters) {
@@ -1305,23 +1515,66 @@ def patch_viewmodel():
                 if (vfArgs.isNotEmpty()) cmd.append(" $vfArgs")
             } else {
                 cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
-            }''', marker='val vfArgs = buildOutputVfArgs()')
-
-    # P9: non-merge-path audio codec
-    ap('non-merge path audio codec', '''            if (!effectiveAudioMuted) {
-                cmd.append(" -c:a aac")
-            }''',
-       '''            if (!effectiveAudioMuted) {
+            }
+            
+            if (!effectiveAudioMuted) {
                 cmd.append(" ${buildAudioCodecArgs()}")
-            }''')
+            }''', FINAL_REGION),
+        # state: partial (v2 video block applied, audio still -c:a aac)
+        ('''            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
+                ?.getString("default_encoder", "hardware") ?: "hardware"
+            // If there are no video filters, we still need to apply the scale and fps output params
+            if (!hasVideoFilters) {
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
+                val vfArgs = buildOutputVfArgs()
+                if (vfArgs.isNotEmpty()) cmd.append(" $vfArgs")
+            } else {
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
+            }
+            
+            if (!effectiveAudioMuted) {
+                cmd.append(" -c:a aac")
+            }''', FINAL_REGION),
+        # state: post-stage2 (fresh pipeline) - inline codec + -vf + -c:a aac
+        ('''            val bitrate = _exportBitrate.value
+            val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
+                ?.getString("default_encoder", "hardware") ?: "hardware"
+            val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
+            // If there are no video filters, we still need to apply the scale and fps output params
+            if (!hasVideoFilters) {
+                cmd.append(" $videoCodec -vf scale=-2:${_exportResolution.value} -r ${_exportFps.value}")
+            } else {
+                cmd.append(" $videoCodec")
+            }
+            
+            if (!effectiveAudioMuted) {
+                cmd.append(" -c:a aac")
+            }''', FINAL_REGION),
+    ])
 
-    # P10: non-merge-path audio-only encoder
-    ap('non-merge path audio-only encoder', '''        if (_exportAudioOnly.value) {
+    # P10 (v3, multi-state): non-merge audio-only encoder with copy gate
+    FINAL_AO = '''        // Codecs
+        if (_exportAudioOnly.value) {
             if (!effectiveAudioMuted) {
-                cmd.append(" -c:a libmp3lame -b:a 192k")''',
-       '''        if (_exportAudioOnly.value) {
+                cmd.append(" ${buildAudioCodecArgs(finalAudioLabel == null)}")
+            }
+        } else {'''
+    apm('non-merge audio-only codec + copy gate', FINAL_AO, [
+        # state: post-stage3-v2 (user's fork)
+        ('''        // Codecs
+        if (_exportAudioOnly.value) {
             if (!effectiveAudioMuted) {
-                cmd.append(" ${buildAudioCodecArgs()}")''')
+                cmd.append(" ${buildAudioCodecArgs()}")
+            }
+        } else {''', FINAL_AO),
+        # state: post-stage2 / upstream
+        ('''        // Codecs
+        if (_exportAudioOnly.value) {
+            if (!effectiveAudioMuted) {
+                cmd.append(" -c:a libmp3lame -b:a 192k")
+            }
+        } else {''', FINAL_AO),
+    ])
 
     if fails:
         print(f'FAILED viewmodel patches: {fails}')
@@ -1397,9 +1650,49 @@ def patch_activity():
     return True
 
 
+# ============================================================ FFmpegRenderEngine
+def patch_engine():
+    s = read(ENGINE)
+    orig = s
+    old = '''                        val fallbackCommand = command.replace("-c:v libx264", "-c:v h264_mediacodec -b:v 8M").replace("libx264", "h264_mediacodec")'''
+    new = '''                        // v3: strip "-preset X" as well - h264_mediacodec does not support it
+                        val fallbackCommand = command.replace("-c:v libx264", "-c:v h264_mediacodec -b:v 8M")
+                            .replace(Regex(" -preset \\\\w+"), "")
+                            .replace("libx264", "h264_mediacodec")'''
+    if new in s:
+        print('  [skip] engine: preset-safe fallback')
+        return True
+    if old not in s:
+        print('  [FAIL] engine: fallback anchor missing')
+        return False
+    s = s.replace(old, new, 1)
+    write(ENGINE, s)
+    print('  [ok]   engine: preset-safe fallback')
+    return True
+
+
+# ==================================================================== strings
+def patch_strings():
+    s = read(STRINGS)
+    if '\u2026' not in s:
+        print('  [skip] strings: no unicode ellipsis')
+        return True
+    s2 = (s.replace('Importing Video\u2026', 'Importing Video...')
+           .replace('Saving video\u2026', 'Saving video...')
+           .replace('Analyzing beats\u2026', 'Analyzing beats...'))
+    if '\u2026' in s2:
+        print('  [FAIL] strings: unexpected unicode ellipsis remains')
+        return False
+    write(STRINGS, s2)
+    print('  [ok]   strings: unicode ellipsis -> ASCII dots')
+    return True
+
+
 if __name__ == '__main__':
     ok = patch_viewmodel()
     ok = patch_activity() and ok
+    ok = patch_engine() and ok
+    ok = patch_strings() and ok
     if not ok:
         sys.exit(1)
     print('stage3 patches: done')
@@ -1423,6 +1716,9 @@ xmls = [
     'app/src/main/res/layout/activity_video_editing.xml',
     'app/src/main/res/drawable/bg_capsule_pill.xml',
     'app/src/main/res/drawable/bg_command_box.xml',
+    'app/src/main/res/drawable/ic_dialog_check.xml',
+    'app/src/main/res/color/chip_bitrate_same_bg.xml',
+    'app/src/main/res/color/chip_bitrate_same_text.xml',
     'app/src/main/AndroidManifest.xml',
 ] + glob.glob('app/src/main/res/values*/strings.xml')
 for f in xmls:
@@ -1434,7 +1730,8 @@ print(f'  [ok]   XML valid: {len(xmls)} files')
 
 for f in ['app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt',
           'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt',
-          'app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt']:
+          'app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt',
+          'app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt']:
     s = open(f, encoding='utf-8').read()
     if s.count('{') != s.count('}'):
         print(f'  [FAIL] braces unbalanced in {f}'); bad += 1
@@ -1452,17 +1749,29 @@ else:
 
 vm = open('app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt', encoding='utf-8').read()
 act = open('app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt', encoding='utf-8').read()
+eng = open('app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt', encoding='utf-8').read()
+sts = open('app/src/main/res/values/strings.xml', encoding='utf-8').read()
 checks = [
     ('AdvancedExport present', 'data class AdvancedExport' in vm),
+    ('audioCodec same-as-input default', 'val audioCodec: String = ""' in vm),
     ('scale helper wired (2 paths)', vm.count('buildOutputScaleFilter(') >= 3),
-    ('codec args wired (3 call sites)', vm.count('cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")') == 3),
-    ('audio codec wired (4 call sites)', vm.count('cmd.append(" ${buildAudioCodecArgs()}")') == 4),
+    ('codec args wired (3 call sites)', vm.count('cmd.append(" ${buildVideoCodecArgs(defaultEncoder') == 3),
+    ('stream copy supported', 'return "-c:v copy"' in vm and 'return "-c:a copy"' in vm),
+    ('non-merge copy gate', 'buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())' in vm),
+    ('audio copy gates (2 sites)', vm.count('buildAudioCodecArgs(finalAudioLabel == null)') == 2),
+    ('audio codec wired (4 call sites)', vm.count('cmd.append(" ${buildAudioCodecArgs(') == 4),
     ('vf args wired', 'val vfArgs = buildOutputVfArgs()' in vm),
     ('no stale bitrate maps', 'when (_exportResolution.value)' not in vm),
     ('extension helper used', 'viewModel.getOutputExtension(isAudioOnly)' in act),
     ('dialog v2 hookup', 'onApplyAndExport = { saveAction() }' in act),
     ('no stale dropdown in activity', 'btnSaveDropdown' not in act),
     ('no stale dropdown in layout', 'btnSaveDropdown' not in open('app/src/main/res/layout/activity_video_editing.xml', encoding='utf-8').read()),
+    ('ACSame chip in layout', 'chipACSame' in x),
+    ('W/H corner labels in layout', 'android:text="W"' in x and 'android:text="H"' in x),
+    ('bitrate chip check styled', 'checkedIconTint' in x and 'chip_bitrate_same_bg' in x),
+    ('copy-aware dialog code', 'chipACSame to ""' in k and 'cgAudioFormat.check(R.id.chipAFSame)' in k),
+    ('engine preset-safe fallback', 'Regex(" -preset' in eng),
+    ('ascii ellipsis in strings', chr(0x2026) not in sts),
 ]
 for name, ok in checks:
     if not ok:
