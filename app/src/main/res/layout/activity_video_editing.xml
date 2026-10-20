@@ -97,32 +97,13 @@
 
                 <TextView
                     android:id="@+id/btnSaveText"
-                    android:layout_width="0dp"
+                    android:layout_width="match_parent"
                     android:layout_height="match_parent"
-                    android:layout_weight="0.75"
                     android:gravity="center"
                     android:text="@string/export"
                     android:textColor="@color/onPrimaryContainer"
                     android:fontFamily="sans-serif-medium"
                     android:textSize="13sp"
-                    android:clickable="true"
-                    android:focusable="true"
-                    android:background="?attr/selectableItemBackground" />
-
-                <View
-                    android:layout_width="1dp"
-                    android:layout_height="match_parent"
-                    android:background="#22FFFFFF" />
-
-                <ImageView
-                    android:id="@+id/btnSaveDropdown"
-                    android:layout_width="0dp"
-                    android:layout_height="match_parent"
-                    android:layout_weight="0.25"
-                    android:scaleType="centerInside"
-                    android:src="@drawable/ic_arrow_drop_down_24"
-                    android:padding="8dp"
-                    app:tint="@color/onPrimaryContainer"
                     android:clickable="true"
                     android:focusable="true"
                     android:background="?attr/selectableItemBackground" />

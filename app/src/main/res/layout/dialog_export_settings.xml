@@ -1,0 +1,187 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@drawable/floating_panel_background"
+    android:padding="20dp">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Export Settings"
+        android:textColor="@color/textColor"
+        android:textSize="18sp"
+        android:fontFamily="sans-serif-medium" />
+
+    <!-- Resolution -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="18dp"
+        android:text="Resolution"
+        android:textColor="@color/iconSecondary"
+        android:textSize="12sp"
+        android:letterSpacing="0.05"
+        android:fontFamily="sans-serif-medium" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/cgResolution"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        app:singleSelection="true"
+        app:selectionRequired="true">
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes360"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="360p" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes480"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="480p" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes720"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="720p" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes1080"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="1080p" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes1440"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="1440p (2K)" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipRes2160"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="2160p (4K)" />
+    </com.google.android.material.chip.ChipGroup>
+
+    <!-- Bitrate -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="Video Bitrate"
+        android:textColor="@color/iconSecondary"
+        android:textSize="12sp"
+        android:letterSpacing="0.05"
+        android:fontFamily="sans-serif-medium" />
+
+    <com.google.android.material.chip.ChipGroup
+        android:id="@+id/cgBitrate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        app:singleSelection="true"
+        app:selectionRequired="true">
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate1"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="1 Mbps" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate2"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="2 Mbps" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate5"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="5 Mbps" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate8"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="8 Mbps" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate16"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="16 Mbps" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/chipBitrate30"
+            style="@style/Widget.MaterialComponents.Chip.Choice"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="30 Mbps" />
+    </com.google.android.material.chip.ChipGroup>
+
+    <!-- Buttons: Cancel (left) / Save (right) -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnCancelExport"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:text="@string/cancel"
+            android:textColor="@color/textColor"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            app:backgroundTint="@color/surfaceContainerHigh"
+            app:strokeColor="@color/outlineVariant"
+            app:strokeWidth="1dp"
+            app:cornerRadius="22dp" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="1" />
+
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnSaveExport"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:text="@string/str_save"
+            android:textColor="@color/onPrimaryContainer"
+            android:textSize="14sp"
+            android:fontFamily="sans-serif-medium"
+            android:insetTop="0dp"
+            android:insetBottom="0dp"
+            android:paddingStart="28dp"
+            android:paddingEnd="28dp"
+            app:backgroundTint="@color/primaryContainer"
+            app:cornerRadius="22dp" />
+    </LinearLayout>
+</LinearLayout>

@@ -36,6 +36,7 @@ class VideoEditingViewModel : ViewModel() {
     private val _exportResolution = MutableStateFlow(1080)
     private val _exportFps = MutableStateFlow(30)
     private val _exportAudioOnly = MutableStateFlow(false)
+    private val _exportBitrate = MutableStateFlow("8M")
     private val _selectedOperationId = MutableStateFlow<String?>(null)
 
     private val _hasUnsavedEdits = MutableStateFlow(false)
@@ -48,6 +49,7 @@ class VideoEditingViewModel : ViewModel() {
     val exportResolution: StateFlow<Int> = _exportResolution.asStateFlow()
     val exportFps: StateFlow<Int> = _exportFps.asStateFlow()
     val exportAudioOnly: StateFlow<Boolean> = _exportAudioOnly.asStateFlow()
+    val exportBitrate: StateFlow<String> = _exportBitrate.asStateFlow()
     val hasUnsavedEdits: StateFlow<Boolean> = _hasUnsavedEdits.asStateFlow()
 
     fun markProjectSaved() {
@@ -58,10 +60,11 @@ class VideoEditingViewModel : ViewModel() {
         _hasUnsavedEdits.value = true
     }
 
-    fun setExportSettings(resolution: Int, fps: Int, audioOnly: Boolean) {
+    fun setExportSettings(resolution: Int, fps: Int, audioOnly: Boolean, bitrate: String? = null) {
         _exportResolution.value = resolution
         _exportFps.value = fps
         _exportAudioOnly.value = audioOnly
+        if (bitrate != null) _exportBitrate.value = bitrate
     }
 
     val operations: StateFlow<List<EditOperation>>
@@ -1297,17 +1300,10 @@ class VideoEditingViewModel : ViewModel() {
                     cmd.append(" -an")
                 }
                 
-                val bitrate = when (_exportResolution.value) {
-                    2160 -> "30M"
-                    1440 -> "16M"
-                    1080 -> "8M"
-                    720 -> "5M"
-                    480 -> "2M"
-                    else -> "1M"
-                }
+                val bitrate = _exportBitrate.value
                 val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                     ?.getString("default_encoder", "hardware") ?: "hardware"
-                val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
+                val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
                 cmd.append(" $videoCodec")
                 
                 if (!audioMuted) {
@@ -1551,17 +1547,10 @@ class VideoEditingViewModel : ViewModel() {
                 cmd.append(" -c:a libmp3lame -b:a 192k")
             }
         } else {
-            val bitrate = when (_exportResolution.value) {
-                2160 -> "30M"
-                1440 -> "16M"
-                1080 -> "8M"
-                720 -> "5M"
-                480 -> "2M"
-                else -> "1M"
-            }
+            val bitrate = _exportBitrate.value
             val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                 ?.getString("default_encoder", "hardware") ?: "hardware"
-            val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
+            val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
             // If there are no video filters, we still need to apply the scale and fps output params
             if (!hasVideoFilters) {
                 cmd.append(" $videoCodec -vf scale=-2:${_exportResolution.value} -r ${_exportFps.value}")
