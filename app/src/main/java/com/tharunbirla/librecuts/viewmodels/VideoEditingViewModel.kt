@@ -73,9 +73,9 @@ class VideoEditingViewModel : ViewModel() {
 
     data class AdvancedExport(
         val videoFormat: String = "mp4",      // mp4|mkv|mov|webm|avi
-        val videoCodec: String = "",          // "" = app default chain | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1
+        val videoCodec: String = "",          // "" = same as input -> -c:v copy (libx264 fallback when re-encode is forced) | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1
         val preset: String = "",              // "" = none; ultrafast..veryslow (x264/x265 only)
-        val audioCodec: String = "aac",       // aac|libmp3lame|libopus|pcm_s16le|flac
+        val audioCodec: String = "",          // "" = same as input -> -c:a copy when possible | aac|libmp3lame|libopus|pcm_s16le|flac
         val audioBitrate: String = "",        // "" = same as input (omit -b:a); 128k|192k|256k|320k
         val audioOnlyFormat: String = "m4a",  // m4a|mp3|opus|flac|wav (audio-only export extension)
         val customWidth: Int = 0,             // 0 = not set
@@ -138,11 +138,16 @@ class VideoEditingViewModel : ViewModel() {
         return parts.joinToString(" ")
     }
 
-    /** -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it). */
-    private fun buildVideoCodecArgs(defaultEncoder: String): String {
+    /**
+     * -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it).
+     * "Same as input" + nothing forcing a re-encode -> "-c:v copy" (lossless remux).
+     * When re-encoding is unavoidable the fallback encoder is libx264 so the
+     * selected preset is actually honored (h264_mediacodec ignores -preset).
+     */
+    private fun buildVideoCodecArgs(defaultEncoder: String, allowStreamCopy: Boolean = false): String {
         val adv = _advancedExport.value
-        val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec
-                     else if (defaultEncoder == "software") "libx264" else "h264_mediacodec"
+        if (allowStreamCopy && adv.videoCodec.isEmpty()) return "-c:v copy"
+        val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec else "libx264"
         val sb = StringBuilder("-c:v $codec -pix_fmt yuv420p")
         if (_exportBitrate.value.isNotEmpty()) sb.append(" -b:v ${_exportBitrate.value}")
         if (adv.preset.isNotEmpty() && (codec == "libx264" || codec == "libx265")) {
@@ -151,9 +156,13 @@ class VideoEditingViewModel : ViewModel() {
         return sb.toString()
     }
 
-    /** -c:a ... (-b:a skipped for lossless codecs). */
-    private fun buildAudioCodecArgs(): String {
+    /**
+     * -c:a ... (-b:a skipped for lossless codecs).
+     * "Same as input" + no audio filtering -> "-c:a copy" (bit-exact passthrough).
+     */
+    private fun buildAudioCodecArgs(allowStreamCopy: Boolean = false): String {
         val adv = _advancedExport.value
+        if (allowStreamCopy && adv.audioCodec.isEmpty()) return "-c:a copy"
         val codec = if (adv.audioCodec.isNotEmpty()) adv.audioCodec else "aac"
         val sb = StringBuilder("-c:a $codec")
         val lossless = codec == "pcm_s16le" || codec == "flac"
@@ -1636,22 +1645,23 @@ class VideoEditingViewModel : ViewModel() {
         // Codecs
         if (_exportAudioOnly.value) {
             if (!effectiveAudioMuted) {
-                cmd.append(" ${buildAudioCodecArgs()}")
+                cmd.append(" ${buildAudioCodecArgs(finalAudioLabel == null)}")
             }
         } else {
             val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                 ?.getString("default_encoder", "hardware") ?: "hardware"
-            // If there are no video filters, we still need to apply the scale and fps output params
+            // If there are no video filters, we still need to apply the scale and fps output params.
+            // Stream copy is only possible when nothing forces a re-encode (no filters, no scale/fps change).
             if (!hasVideoFilters) {
-                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
                 val vfArgs = buildOutputVfArgs()
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}")
                 if (vfArgs.isNotEmpty()) cmd.append(" $vfArgs")
             } else {
                 cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
             }
             
             if (!effectiveAudioMuted) {
-                cmd.append(" ${buildAudioCodecArgs()}")
+                cmd.append(" ${buildAudioCodecArgs(finalAudioLabel == null)}")
             }
         }
 

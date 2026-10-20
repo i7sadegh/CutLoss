@@ -14,12 +14,19 @@ import java.io.File
 import java.util.Locale
 
 /**
- * CutStudio - Export settings dialog (v2).
+ * CutStudio - Export settings dialog (v3).
  *
  * Every control change is pushed live into the ViewModel, then the REAL export
  * command is rebuilt through VideoEditingViewModel.buildConsolidatedFFmpegCommand()
  * (the exact same code path the final export uses) and displayed in the preview
  * box, together with an estimated output file size.
+ *
+ * "Same as input" semantics (v3):
+ *  - Video Codec "Same as input"  -> "-c:v copy" (lossless remux) whenever the
+ *    edit graph allows it; if video processing is present the command falls
+ *    back to libx264 (so the selected preset is honored) and the preview says so.
+ *  - Audio Codec "Same as input"  -> "-c:a copy" whenever no audio filtering
+ *    is needed; otherwise the chosen encoder is used.
  *
  * Save   -> keeps the current state and triggers the export flow.
  * Cancel -> restores the snapshot taken when the dialog was opened.
@@ -45,10 +52,10 @@ class ExportSettingsDialog(
     private var bitrateSameAsInput = true
     private var manualBitrateKbps = 8000
     private var selFormat = "same"       // same|mp4|mkv|mov|webm|avi
-    private var selCodec = ""            // "" = same as input (app default chain)
+    private var selCodec = ""            // "" = same as input -> -c:v copy (or libx264 when re-encode forced)
     private var selPreset = "medium"     // ultrafast..veryslow
     private var selAudioFormat = "same"  // same|aac|mp3|opus|flac|wav
-    private var selAudioCodec = "aac"    // aac|libmp3lame|libopus|pcm_s16le|flac
+    private var selAudioCodec = ""       // "" = same as input -> -c:a copy | aac|libmp3lame|libopus|pcm_s16le|flac
     private var selAudioBitrate = ""     // "" = same as input
     private var customW = 0
     private var customH = 0
@@ -67,6 +74,7 @@ class ExportSettingsDialog(
     private lateinit var etBitrate: EditText
     private lateinit var chipBitrateSame: Chip
     private lateinit var cgResolution: ChipGroup
+    private lateinit var cgAudioFormat: ChipGroup
     private lateinit var cgAudioCodec: ChipGroup
 
     fun show() {
@@ -82,7 +90,7 @@ class ExportSettingsDialog(
         selFps = snapFps
         selCodec = snapAdvanced.videoCodec
         selPreset = snapAdvanced.preset.ifEmpty { "medium" }
-        selAudioCodec = snapAdvanced.audioCodec.ifEmpty { "aac" }
+        selAudioCodec = snapAdvanced.audioCodec   // "" = Same as input (-c:a copy)
         selAudioBitrate = snapAdvanced.audioBitrate
         selFormat = when (snapAdvanced.videoFormat) {
             "mkv" -> "mkv"; "mov" -> "mov"; "webm" -> "webm"; "avi" -> "avi"; else -> "same"
@@ -90,6 +98,8 @@ class ExportSettingsDialog(
         selAudioFormat = when (snapAdvanced.audioOnlyFormat) {
             "mp3" -> "mp3"; "opus" -> "opus"; "flac" -> "flac"; "wav" -> "wav"; else -> "same"
         }
+        // Stream copy keeps the original audio codec -> the audio format follows the source too.
+        if (selAudioCodec.isEmpty()) selAudioFormat = "same"
         customW = snapAdvanced.customWidth
         customH = snapAdvanced.customHeight
         parseBitrate(snapBitrate)
@@ -175,6 +185,14 @@ class ExportSettingsDialog(
     }
 
     private fun effectiveAudioOnlyFormat(): String {
+        if (selAudioCodec.isEmpty()) {
+            // Stream copy keeps the original audio codec -> follow the source container.
+            return when (sourceFile?.extension?.lowercase(Locale.US)) {
+                "mp3" -> "mp3"; "flac" -> "flac"; "wav" -> "wav"; "opus" -> "opus"
+                "webm" -> "opus"
+                else -> "m4a"
+            }
+        }
         if (selAudioFormat != "same") {
             return when (selAudioFormat) {
                 "aac" -> "m4a"; "mp3" -> "mp3"; "opus" -> "opus"
@@ -185,23 +203,37 @@ class ExportSettingsDialog(
         return if (ext in listOf("m4a", "mp3", "opus", "flac", "wav")) ext else "m4a"
     }
 
-    private fun estimateSizeText(): String {
+    private fun formatBytes(bytes: Double): String = when {
+        bytes < 1024.0 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
+        bytes < 1024.0 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
+        else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
+    }
+
+    /** Size estimate that follows what the REAL command will do (copy vs re-encode). */
+    private fun estimateSizeText(cmd: String?): String {
         val durSec = durationMs / 1000.0
         if (durSec <= 0.0) return "..."
-        val videoKbps = effectiveVideoKbps()
+        val vCopy = cmd != null && cmd.contains("-c:v copy")
+        val aCopy = cmd != null && cmd.contains("-c:a copy")
+        val muted = cmd != null && cmd.contains(" -an")
+        if (vCopy && aCopy && !muted && sourceFile != null && sourceFile.exists()) {
+            // Pure remux: the output is essentially the input, container overhead aside.
+            return "~" + formatBytes(sourceFile.length().toDouble())
+        }
+        val videoKbps = if (vCopy) sourceVideoKbps() else effectiveVideoKbps()
         val audioKbps = when {
+            muted -> 0
+            aCopy -> 128                                   // passthrough ≈ typical AAC track
             selAudioCodec == "pcm_s16le" -> 1411
             selAudioCodec == "flac" -> 900
             selAudioBitrate.isNotEmpty() -> selAudioBitrate.dropLast(1).toIntOrNull() ?: 128
             else -> 128
         }
-        val bytes = (videoKbps + audioKbps) * 1000.0 / 8.0 * durSec
-        val body = when {
-            bytes < 1024.0 * 1024 -> String.format(Locale.US, "%.0f KB", bytes / 1024.0)
-            bytes < 1024.0 * 1024 * 1024 -> String.format(Locale.US, "%.1f MB", bytes / (1024.0 * 1024))
-            else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
+        if (viewModel.exportAudioOnly.value) {
+            return "~" + formatBytes(audioKbps * 1000.0 / 8.0 * durSec)
         }
-        return "~$body"
+        val bytes = (videoKbps + audioKbps) * 1000.0 / 8.0 * durSec
+        return "~" + formatBytes(bytes)
     }
 
     // ------------------------------------------------------------ live refresh
@@ -227,14 +259,28 @@ class ExportSettingsDialog(
         val cmd = if (srcPath != null)
             viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, fontPath, activity)
         else null
-        tvCommand.text = when {
+        tvCommand.text = commandPreviewText(cmd)
+        tvEstimatedSize.text = estimateSizeText(cmd)
+    }
+
+    /** Real command + a short note when "Same as input" was requested but is impossible. */
+    private fun commandPreviewText(cmd: String?): String {
+        val base = when {
             cmd == null -> "(preview unavailable)"
             cmd.contains("(CONCAT_LIST:") ->
                 cmd.substring(0, cmd.indexOf("(CONCAT_LIST:")).trim() +
                     "  ...(+concat list appended at export time)"
             else -> cmd
         }
-        tvEstimatedSize.text = estimateSizeText()
+        if (cmd == null) return base
+        val notes = mutableListOf<String>()
+        if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
+            notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
+        }
+        if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
+            notes.add("audio processing present -> audio re-encoded as shown")
+        }
+        return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
     }
 
     // -------------------------------------------------------------- view setup
@@ -265,6 +311,7 @@ class ExportSettingsDialog(
         etBitrate = v.findViewById(R.id.etBitrate)
         chipBitrateSame = v.findViewById(R.id.chipBitrateSame)
         cgResolution = v.findViewById(R.id.cgResolution)
+        cgAudioFormat = v.findViewById(R.id.cgAudioFormat)
         cgAudioCodec = v.findViewById(R.id.cgAudioCodec)
 
         etWidth.hint = if (srcW > 0) srcW.toString() else "1920"
@@ -302,7 +349,7 @@ class ExportSettingsDialog(
             selFormat, true
         ) { picked -> selFormat = picked ?: "same" }
 
-        // ---- Video codec ----
+        // ---- Video codec ("Same as input" = -c:v copy when the graph allows it) ----
         wireChipRow(v.findViewById<ChipGroup>(R.id.cgVideoCodec), mapOf(
             R.id.chipCodecSame to "", R.id.chipCodecX264 to "libx264",
             R.id.chipCodecH265 to "hevc_mediacodec", R.id.chipCodecX265 to "libx265",
@@ -317,7 +364,7 @@ class ExportSettingsDialog(
         ) { picked -> selFps = picked ?: 0 }
 
         // ---- Audio format (also drives -c:a; last-touched wins vs codec row) ----
-        wireChipRow(v.findViewById<ChipGroup>(R.id.cgAudioFormat), mapOf(
+        wireChipRow(cgAudioFormat, mapOf(
             R.id.chipAFSame to "same", R.id.chipAFAac to "aac", R.id.chipAFMp3 to "mp3",
             R.id.chipAFOpus to "opus", R.id.chipAFFlac to "flac", R.id.chipAFWav to "wav"),
             selAudioFormat, true
@@ -337,12 +384,20 @@ class ExportSettingsDialog(
             }
         }
 
-        // ---- Audio codec ----
+        // ---- Audio codec ("Same as input" = -c:a copy when no audio filtering) ----
         wireChipRow(cgAudioCodec, mapOf(
-            R.id.chipACAac to "aac", R.id.chipACMp3 to "libmp3lame",
+            R.id.chipACSame to "", R.id.chipACAac to "aac", R.id.chipACMp3 to "libmp3lame",
             R.id.chipACOpus to "libopus", R.id.chipACPcm to "pcm_s16le"),
             selAudioCodec, true
-        ) { picked -> if (picked != null) selAudioCodec = picked }
+        ) { picked ->
+            if (picked == null) return@wireChipRow
+            selAudioCodec = picked
+            if (picked.isEmpty()) {
+                // Copy keeps the original audio codec, so the format follows the source too.
+                selAudioFormat = "same"
+                cgAudioFormat.check(R.id.chipAFSame)
+            }
+        }
 
         // ---- Audio bitrate ----
         wireChipRow(v.findViewById<ChipGroup>(R.id.cgAudioBitrate), mapOf(

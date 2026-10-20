@@ -157,7 +157,10 @@ class FFmpegRenderEngine(private val context: Context) {
                         return@withContext executeCommand(fallbackCommand, isRetry = true)
                     } else if (!isRetry && command.contains("libx264")) {
                         Log.w(TAG, "Software encoder libx264 failed. Falling back to hardware encoder h264_mediacodec. Error:\n$diagnosticLog")
-                        val fallbackCommand = command.replace("-c:v libx264", "-c:v h264_mediacodec -b:v 8M").replace("libx264", "h264_mediacodec")
+                        // v3: strip "-preset X" as well - h264_mediacodec does not support it
+                        val fallbackCommand = command.replace("-c:v libx264", "-c:v h264_mediacodec -b:v 8M")
+                            .replace(Regex(" -preset \\w+"), "")
+                            .replace("libx264", "h264_mediacodec")
                         return@withContext executeCommand(fallbackCommand, isRetry = true)
                     }
 
