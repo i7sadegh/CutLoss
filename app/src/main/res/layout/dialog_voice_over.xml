@@ -67,7 +67,7 @@
                     android:layout_height="80dp"
                     android:layout_gravity="center"
                     android:background="@drawable/circle_primary_container"
-                    android:backgroundTint="#F9B10B"
+                    android:backgroundTint="#FF4081"
                     android:alpha="0" />
 
                 <View
@@ -76,7 +76,7 @@
                     android:layout_height="80dp"
                     android:layout_gravity="center"
                     android:background="@drawable/circle_primary_container"
-                    android:backgroundTint="#F9B10B"
+                    android:backgroundTint="#FF4081"
                     android:alpha="0" />
 
                 <ImageButton
@@ -86,7 +86,7 @@
                     android:layout_gravity="center"
                     android:src="@drawable/ic_mic_24"
                     android:background="@drawable/circle_primary_container"
-                    app:tint="@color/onPrimaryContainer"
+                    app:tint="@android:color/white"
                     android:elevation="4dp"
                     android:padding="24dp"
                     android:scaleType="fitCenter"/>

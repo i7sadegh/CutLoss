@@ -137,7 +137,7 @@
                     android:layout_width="32dp"
                     android:layout_height="32dp"
                     android:src="@drawable/ic_heart_24"
-                    app:tint="#F9B10B" />
+                    app:tint="#E91E63" />
 
                 <LinearLayout
                     android:layout_width="0dp"

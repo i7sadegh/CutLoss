@@ -38,7 +38,7 @@ class VideoMaskOverlayView @JvmOverloads constructor(
     }
     
     private val handleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#F9B10B")
+        color = Color.parseColor("#FF2A6D")
         style = Paint.Style.FILL
     }
     

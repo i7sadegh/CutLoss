@@ -110,7 +110,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private val cornerPath = android.graphics.Path()
 
     private val handleFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#F9B10B")
+        color = Color.parseColor("#FF2A6D")
         style = Paint.Style.FILL
     }
     

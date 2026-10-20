@@ -859,7 +859,7 @@
             android:layout_height="50dp"
             android:layout_gravity="center"
             android:indeterminate="true"
-            android:indeterminateTint="#F9B10B" />
+            android:indeterminateTint="#FF4081" />
     </FrameLayout>
 
     <!-- Floating PiP Container for Timeline Expand Mode -->

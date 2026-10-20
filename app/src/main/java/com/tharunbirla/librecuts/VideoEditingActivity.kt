@@ -3108,7 +3108,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     
                     isRecordingVoiceOver = true
                     tvStatus.text = "Recording... Tap to stop"
-                    btnToggle.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#F9B10B"))
+                    btnToggle.backgroundTintList = android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor("#FF4081"))
                     
                     rippleAnimator.start()
                     rippleAnimator2.start()
@@ -6541,7 +6541,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
                 if (op is EditOperation.AddText) {
                     trackView.apply {
-                        trackColor = android.graphics.Color.parseColor("#F9B10B") // Pink for text
+                        trackColor = android.graphics.Color.parseColor("#E91E63") // Pink for text
                         trackLabel = op.text
                         trackIcon = androidx.core.content.ContextCompat.getDrawable(this@VideoEditingActivity, R.drawable.ic_text_24)
                         activeStartMs = op.startTimeMs ?: 0L
