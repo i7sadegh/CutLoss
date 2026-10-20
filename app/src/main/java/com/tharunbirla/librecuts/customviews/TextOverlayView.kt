@@ -214,15 +214,6 @@ class TextOverlayView @JvmOverloads constructor(
                 if (currentPositionMs < start || currentPositionMs > end) continue
 
                 paint.textSize = op.fontSize * scale
-                if (op.fontPath != null) {
-                    try {
-                        paint.typeface = android.graphics.Typeface.createFromFile(op.fontPath)
-                    } catch (e: Exception) {
-                        paint.typeface = android.graphics.Typeface.DEFAULT
-                    }
-                } else {
-                    paint.typeface = android.graphics.Typeface.DEFAULT
-                }
 
                 val relativeTimeMs = currentPositionMs - start
                 val interpolatedPos = if (op.positionKeyframes.isNotEmpty()) {
@@ -236,11 +227,8 @@ class TextOverlayView @JvmOverloads constructor(
                     op.opacity
                 }
 
-                val baseColorInt = try { Color.parseColor(op.color) } catch (e: Exception) { Color.WHITE }
                 val alphaInt = (interpolatedOpacity * 255).toInt().coerceIn(0, 255)
-                paint.color = Color.argb(alphaInt, Color.red(baseColorInt), Color.green(baseColorInt), Color.blue(baseColorInt))
-                
-                paint.letterSpacing = op.letterSpacing
+                com.tharunbirla.librecuts.utils.TextRenderUtils.configPaint(paint, op, alphaInt)
 
                 val lines = op.text.split("\n")
                 val textHeight = (paint.descent() - paint.ascent()) + op.lineSpacing * scale
@@ -322,32 +310,8 @@ class TextOverlayView @JvmOverloads constructor(
                     }
                 }
 
-                // Draw each line
-                for ((index, line) in lines.withIndex()) {
-                    val lineW = paint.measureText(line)
-                    val lineX = when (op.textAlign) {
-                        "left", "L" -> startX
-                        "right", "R" -> startX + maxTextWidth - lineW
-                        else -> startX + (maxTextWidth - lineW) / 2 // center
-                    }
-                    val lineY = startY + (index * textHeight)
-
-                    if (op.borderThickness > 0) {
-                        paint.style = Paint.Style.STROKE
-                        paint.strokeWidth = op.borderThickness * scale
-                        paint.strokeJoin = Paint.Join.ROUND
-                        val borderColorInt = try { Color.parseColor(op.borderColor) } catch (e: Exception) { Color.BLACK }
-                        paint.color = Color.argb(alphaInt, Color.red(borderColorInt), Color.green(borderColorInt), Color.blue(borderColorInt))
-                        canvas.drawText(line, lineX, lineY, paint)
-
-                        paint.style = Paint.Style.FILL
-                        paint.color = Color.argb(alphaInt, Color.red(baseColorInt), Color.green(baseColorInt), Color.blue(baseColorInt))
-                    } else {
-                        paint.style = Paint.Style.FILL
-                    }
-                    
-                    canvas.drawText(line, lineX, lineY, paint)
-                }
+                com.tharunbirla.librecuts.utils.TextRenderUtils.drawBlock(
+                    canvas, paint, op, lines, maxTextWidth, startX, startY, textHeight, scale)
             }
         }
 

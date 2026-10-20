@@ -40,7 +40,7 @@ class DraggableTextOverlayView @JvmOverloads constructor(
 
     // ── Public callbacks ──────────────────────────────────────────────────────
     /** Called when the user commits the text (taps Done). */
-    var onTextCommitted: ((text: String, fontSize: Int, relativeX: Float, relativeY: Float, color: String, fontPath: String?, opacity: Float, borderThickness: Int, borderColor: String, textAlign: String, letterSpacing: Float, lineSpacing: Float) -> Unit)? = null
+    var onTextCommitted: ((text: String, fontSize: Int, relativeX: Float, relativeY: Float, color: String, fontPath: String?, opacity: Float, borderThickness: Int, borderColor: String, textAlign: String, letterSpacing: Float, lineSpacing: Float, bold: Boolean, italic: Boolean, underline: Boolean, strikethrough: Boolean, bgColor: String?, bgOpacity: Float, bgCornerRadius: Int, bgMargin: Int) -> Unit)? = null
 
     /** Called when the text content changes (for live preview feedback). */
     var onTextChanged: ((text: String) -> Unit)? = null
@@ -65,6 +65,14 @@ class DraggableTextOverlayView @JvmOverloads constructor(
     private var currentLetterSpacing = 0f
     private var currentLineSpacing = 0f
     var currentFontPath: String? = null
+    private var currentBold = false
+    private var currentItalic = false
+    private var currentUnderline = false
+    private var currentStrikethrough = false
+    private var currentBgColor: String? = null
+    private var currentBgOpacity = 1.0f
+    private var currentBgCornerRadius = 0
+    private var currentBgMargin = 0
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -227,6 +235,16 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         relativeY = 0.5f
         currentColorString = "#FFFFFF"
         currentFontPath = null
+        currentBold = false
+        currentItalic = false
+        currentUnderline = false
+        currentStrikethrough = false
+        currentBgColor = null
+        currentBgOpacity = 1.0f
+        currentBgCornerRadius = 0
+        currentBgMargin = 0
+        applyTypefaceAndFlags()
+        refreshEditTextBackground()
 
         editText.setText(initialText)
         editText.setTextColor(Color.WHITE)
@@ -255,6 +273,14 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         currentLetterSpacing = op.letterSpacing
         currentLineSpacing = op.lineSpacing
         currentFontPath = op.fontPath
+        currentBold = op.bold
+        currentItalic = op.italic
+        currentUnderline = op.underline
+        currentStrikethrough = op.strikethrough
+        currentBgColor = op.bgColor
+        currentBgOpacity = op.bgOpacity
+        currentBgCornerRadius = op.bgCornerRadius
+        currentBgMargin = op.bgMargin
 
         setFontPath(op.fontPath)
         editText.setText(op.text)
@@ -265,6 +291,7 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         }
         updateFontSizeOnScreen()
         visibility = VISIBLE
+        refreshEditTextBackground()
 
         post {
             positionEditTextFromRelative()
@@ -294,7 +321,8 @@ class DraggableTextOverlayView @JvmOverloads constructor(
             updateRelativePosition()
             onTextCommitted?.invoke(
                 text, currentFontSize, relativeX, relativeY, currentColorString,
-                currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing
+                currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing,
+                currentBold, currentItalic, currentUnderline, currentStrikethrough, currentBgColor, currentBgOpacity, currentBgCornerRadius, currentBgMargin
             )
         }
         deactivate()
@@ -312,11 +340,7 @@ class DraggableTextOverlayView @JvmOverloads constructor(
 
     fun setFontPath(fontPath: String?) {
         currentFontPath = fontPath
-        try {
-            editText.typeface = if (fontPath.isNullOrBlank()) Typeface.DEFAULT else Typeface.createFromFile(fontPath)
-        } catch (e: Exception) {
-            editText.typeface = Typeface.DEFAULT
-        }
+        applyTypefaceAndFlags()
     }
 
     // New format setters
@@ -361,6 +385,68 @@ class DraggableTextOverlayView @JvmOverloads constructor(
             "right", "R" -> editText.gravity = Gravity.END or Gravity.CENTER_VERTICAL
             else -> editText.gravity = Gravity.CENTER
         }
+    }
+
+    // -- Style + background setters (CutStudio round 5) --
+    fun setBold(on: Boolean) { currentBold = on; applyTypefaceAndFlags() }
+    fun setItalic(on: Boolean) { currentItalic = on; applyTypefaceAndFlags() }
+    fun setUnderline(on: Boolean) { currentUnderline = on; applyTypefaceAndFlags() }
+    fun setStrikethrough(on: Boolean) { currentStrikethrough = on; applyTypefaceAndFlags() }
+    fun setBgColor(hex: String?) { currentBgColor = hex; refreshEditTextBackground() }
+    fun setBgOpacity(value: Float) { currentBgOpacity = value.coerceIn(0f, 1f); refreshEditTextBackground() }
+    fun setBgCornerRadius(value: Int) { currentBgCornerRadius = value.coerceAtLeast(0); refreshEditTextBackground() }
+    fun setBgMargin(value: Int) { currentBgMargin = value.coerceAtLeast(0); refreshEditTextBackground() }
+
+    fun getBold(): Boolean = currentBold
+    fun getItalic(): Boolean = currentItalic
+    fun getUnderline(): Boolean = currentUnderline
+    fun getStrikethrough(): Boolean = currentStrikethrough
+    fun getBgColor(): String? = currentBgColor
+    fun getBgOpacity(): Float = currentBgOpacity
+    fun getBgCornerRadius(): Int = currentBgCornerRadius
+    fun getBgMargin(): Int = currentBgMargin
+
+    private fun applyTypefaceAndFlags() {
+        val base = try {
+            if (currentFontPath.isNullOrBlank()) null else Typeface.createFromFile(currentFontPath)
+        } catch (e: Exception) {
+            null
+        }
+        val family = base ?: Typeface.DEFAULT
+        val style = when {
+            currentBold && currentItalic -> Typeface.BOLD_ITALIC
+            currentBold -> Typeface.BOLD
+            currentItalic -> Typeface.ITALIC
+            else -> Typeface.NORMAL
+        }
+        editText.typeface = if (style == Typeface.NORMAL) family else Typeface.create(family, style)
+        var flags = editText.paintFlags and (Paint.UNDERLINE_TEXT_FLAG or Paint.STRIKE_THRU_TEXT_FLAG).inv()
+        if (currentUnderline) flags = flags or Paint.UNDERLINE_TEXT_FLAG
+        if (currentStrikethrough) flags = flags or Paint.STRIKE_THRU_TEXT_FLAG
+        editText.paintFlags = flags
+    }
+
+    private fun refreshEditTextBackground() {
+        val hex = currentBgColor
+        if (hex == null) {
+            editText.background = null
+            editText.setPadding(16, 8, 16, 8)
+            return
+        }
+        val scale = if (videoHeight > 0) {
+            val rect = getVideoRect()
+            if (rect.height() > 0f) rect.height() / videoHeight.toFloat() else 1f
+        } else 1f
+        val marginPx = (currentBgMargin * scale).toInt().coerceAtLeast(0)
+        val radiusPx = (currentBgCornerRadius * scale).coerceAtLeast(0f)
+        val baseColor = try { Color.parseColor(hex) } catch (e: Exception) { Color.BLACK }
+        val alpha = (currentBgOpacity.coerceIn(0f, 1f) * 255).toInt()
+        val drawable = android.graphics.drawable.GradientDrawable().apply {
+            cornerRadius = radiusPx
+            setColor(Color.argb(alpha, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor)))
+        }
+        editText.background = drawable
+        editText.setPadding(16 + marginPx, 8 + marginPx / 2, 16 + marginPx, 8 + marginPx / 2)
     }
 
     /** Increase font size by a step. */

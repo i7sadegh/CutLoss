@@ -101,6 +101,14 @@ sealed class EditOperation : Serializable {
         val textAlign: String = "center",
         val letterSpacing: Float = 0f,
         val lineSpacing: Float = 0f,
+        val bold: Boolean = false,
+        val italic: Boolean = false,
+        val underline: Boolean = false,
+        val strikethrough: Boolean = false,
+        val bgColor: String? = null,
+        val bgOpacity: Float = 1.0f,
+        val bgCornerRadius: Int = 0,
+        val bgMargin: Int = 0,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList()
     ) : EditOperation() {

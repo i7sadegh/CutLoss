@@ -63,12 +63,17 @@ fun VideoEditingViewModel.addTextOperation(
     relativeY: Float? = null, color: String = "#FFFFFF", startTimeMs: Long? = null,
     endTimeMs: Long? = null, fontPath: String? = null, opacity: Float = 1.0f,
     borderThickness: Int = 0, borderColor: String = "#000000", textAlign: String = "center",
-    letterSpacing: Float = 0f, lineSpacing: Float = 0f
+    letterSpacing: Float = 0f, lineSpacing: Float = 0f,
+    bold: Boolean = false, italic: Boolean = false, underline: Boolean = false,
+    strikethrough: Boolean = false, bgColor: String? = null, bgOpacity: Float = 1.0f,
+    bgCornerRadius: Int = 0, bgMargin: Int = 0
 ) {
     executeCommand(AddOperationCommand(EditOperation.AddText(
         text, fontSize, TextPosition.fromLabel(position), relativeX, relativeY, color, startTimeMs,
         endTimeMs, fontPath = fontPath, opacity = opacity, borderThickness = borderThickness,
-        borderColor = borderColor, textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing
+        borderColor = borderColor, textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing,
+        bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,
+        bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
     ), "Add Text"))
 }
 

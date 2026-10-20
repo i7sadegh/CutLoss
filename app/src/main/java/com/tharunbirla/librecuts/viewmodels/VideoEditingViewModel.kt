@@ -295,6 +295,44 @@ class VideoEditingViewModel : ViewModel() {
         }
     }
 
+    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).
+     *  Set by the Activity; when set, text overlays are composited with the
+     *  overlay filter instead of drawtext, so bold / italic / underline /
+     *  strikethrough / letter spacing / rounded backgrounds all render
+     *  exactly like the preview. */
+    var textPngRenderer: ((EditOperation.AddText) -> String?)? = null
+    private val textPngInputs = mutableListOf<Pair<EditOperation.AddText, String>>()
+
+    private fun prepareTextPngInputs(operations: List<EditOperation>) {
+        textPngInputs.clear()
+        val renderer = textPngRenderer ?: return
+        for (textOp in operations.filterIsInstance<EditOperation.AddText>()) {
+            try {
+                val path = renderer(textOp)
+                if (path != null) {
+                    textPngInputs.add(Pair(textOp, path))
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Text PNG render failed for op " + textOp.id + ": " + e.message)
+            }
+        }
+    }
+
+    /** overlay-filter position expressions (W/H = main video, w/h = text image). */
+    private fun overlayPosExpr(pos: TextPosition): Pair<String, String> = when (pos) {
+        TextPosition.BOTTOM_RIGHT -> Pair("'W-w'", "'H-h'")
+        TextPosition.TOP_RIGHT -> Pair("'W-w'", "0")
+        TextPosition.TOP_LEFT -> Pair("0", "0")
+        TextPosition.BOTTOM_LEFT -> Pair("0", "'H-h'")
+        TextPosition.CENTER_BOTTOM -> Pair("'(W-w)/2'", "'H-h'")
+        TextPosition.CENTER_TOP -> Pair("'(W-w)/2'", "0")
+        TextPosition.CENTER -> Pair("'(W-w)/2'", "'(H-h)/2'")
+        TextPosition.TOP_CENTER -> Pair("'(W-w)/2'", "0")
+        TextPosition.CENTER_LEFT -> Pair("0", "'(H-h)/2'")
+        TextPosition.CENTER_RIGHT -> Pair("'W-w'", "'(H-h)/2'")
+        TextPosition.BOTTOM_CENTER -> Pair("'(W-w)/2'", "'H-h'")
+    }
+
     /** Build a drawtext filter expression for a text operation. */
     private fun buildDrawtextExpr(op: EditOperation.AddText, fontFilePath: String?): String {
         val escapedText = op.text
@@ -529,6 +567,7 @@ class VideoEditingViewModel : ViewModel() {
         fontFilePath: String?,
         inputLabel: String = "[0:v]",
         imageInputIndices: List<Pair<Int, EditOperation.AddImageOverlay>> = emptyList(),
+        textInputIndices: List<Pair<Int, EditOperation.AddText>> = emptyList(),
         density: Float = 1.0f,
         sourceVideoHeight: Int = 1080
     ): Pair<List<String>, String> {
@@ -543,11 +582,63 @@ class VideoEditingViewModel : ViewModel() {
         for (op in overlayOps) {
             when (op) {
                 is EditOperation.AddText -> {
-                    val filterExpr = buildDrawtextExpr(op, fontFilePath)
-                    val nextLabel = "[v$stageIndex]"
-                    stages.add("$currentLabel$filterExpr$nextLabel")
-                    currentLabel = nextLabel
-                    stageIndex++
+                    val textPngIndex = textInputIndices.find { it.second.id == op.id }?.first
+                    if (textPngIndex != null) {
+                        // WYSIWYG path: canvas-rendered PNG composited with overlay
+                        val hasOpacityKfs = op.opacityKeyframes.isNotEmpty()
+                        val rgbaLabel = "[txt_rgba_$stageIndex]"
+                        if (hasOpacityKfs) {
+                            stages.add("[$textPngIndex:v]format=rgba,loop=loop=-1:size=1:start=0,fps=25$rgbaLabel")
+                        } else {
+                            stages.add("[$textPngIndex:v]format=rgba$rgbaLabel")
+                        }
+                        var textLabel = rgbaLabel
+                        if (hasOpacityKfs) {
+                            val alphaLabel = "[txt_alpha_$stageIndex]"
+                            val alphaExpr = buildFFmpegInterpolationExpr(
+                                op.opacityKeyframes, useValueY = false, defaultValue = op.opacity,
+                                startTimeMs = op.startTimeMs ?: 0L, timeVar = "T")
+                            stages.add("${textLabel}geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='alpha(X,Y)*($alphaExpr)'$alphaLabel")
+                            textLabel = alphaLabel
+                        } else if (op.opacity < 1.0f) {
+                            val alphaLabel = "[txt_alpha_$stageIndex]"
+                            stages.add("${textLabel}colorchannelmixer=aa=${op.opacity}$alphaLabel")
+                            textLabel = alphaLabel
+                        }
+                        val overlayX = if (op.positionKeyframes.isNotEmpty()) {
+                            val xExpr = buildFFmpegInterpolationExpr(
+                                op.positionKeyframes, useValueY = false,
+                                defaultValue = op.relativeX ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)
+                            "x='(W*($xExpr))-(w/2)'"
+                        } else if (op.hasCustomPosition()) {
+                            "x='(W*${op.relativeX})-(w/2)'"
+                        } else {
+                            "x=" + overlayPosExpr(op.position).first
+                        }
+                        val overlayY = if (op.positionKeyframes.isNotEmpty()) {
+                            val yExpr = buildFFmpegInterpolationExpr(
+                                op.positionKeyframes, useValueY = true,
+                                defaultValue = op.relativeY ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)
+                            "y='(H*($yExpr))-(h/2)'"
+                        } else if (op.hasCustomPosition()) {
+                            "y='(H*${op.relativeY})-(h/2)'"
+                        } else {
+                            "y=" + overlayPosExpr(op.position).second
+                        }
+                        val enablePart = buildEnableExpr(op.startTimeMs, op.endTimeMs)
+                        val shortestPart = if (hasOpacityKfs) ":shortest=1" else ""
+                        val nextLabel = "[v$stageIndex]"
+                        stages.add("$currentLabel${textLabel}overlay=$overlayX:$overlayY$shortestPart$enablePart$nextLabel")
+                        currentLabel = nextLabel
+                        stageIndex++
+                    } else {
+                        // Fallback: classic drawtext filter
+                        val filterExpr = buildDrawtextExpr(op, fontFilePath)
+                        val nextLabel = "[v$stageIndex]"
+                        stages.add("$currentLabel$filterExpr$nextLabel")
+                        currentLabel = nextLabel
+                        stageIndex++
+                    }
                 }
                 is EditOperation.AddImageOverlay -> {
                     val imageInputIndex = imageInputIndices.find { it.second.id == op.id }?.first
@@ -826,6 +917,8 @@ class VideoEditingViewModel : ViewModel() {
         val audioMuted = operations.any { it is EditOperation.MuteAudio }
         val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay || it is EditOperation.AddSubtitles }
         val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()
+        // Render text overlay PNGs before inputs are indexed
+        prepareTextPngInputs(operations)
 
         // ── Unified Input Indexing ────────────────────────────────────────────
         val cmd = StringBuilder("-y") // Always overwrite output — prevents silent failure on retry
@@ -942,6 +1035,14 @@ class VideoEditingViewModel : ViewModel() {
                 cmd.append(" -i \"$imagePath\"")
             }
             imageInputIndices.add(Pair(inputIndex, imageOp))
+            inputIndex++
+        }
+
+        // 4b. Text Overlay PNG Inputs (WYSIWYG canvas-rendered text)
+        val textInputIndices = mutableListOf<Pair<Int, EditOperation.AddText>>()
+        for ((textOp, pngPath) in textPngInputs) {
+            cmd.append(" -i \"$pngPath\"")
+            textInputIndices.add(Pair(inputIndex, textOp))
             inputIndex++
         }
 
@@ -1271,6 +1372,7 @@ class VideoEditingViewModel : ViewModel() {
                 fontFilePath = fontFilePath,
                 inputLabel = currentVideoLabel,
                 imageInputIndices = imageInputIndices,
+                textInputIndices = textInputIndices,
                 density = density,
                 sourceVideoHeight = sourceVideoHeight
             )
@@ -1483,6 +1585,7 @@ class VideoEditingViewModel : ViewModel() {
             fontFilePath = fontFilePath,
             inputLabel = currentInputVideoLabel,
             imageInputIndices = imageInputIndices,
+            textInputIndices = textInputIndices,
             density = density,
             sourceVideoHeight = sourceVideoHeight
         )

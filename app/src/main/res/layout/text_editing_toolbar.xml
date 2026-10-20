@@ -31,6 +31,11 @@
         android:id="@+id/formatSettingsContainer"
         android:visibility="gone" />
 
+    <!-- Background Settings Container -->
+    <include layout="@layout/text_background_settings"
+        android:id="@+id/bgSettingsContainer"
+        android:visibility="gone" />
+
     <!-- Toolbar Row -->
     <HorizontalScrollView
         android:layout_width="match_parent"
@@ -148,6 +153,31 @@
                     android:layout_marginTop="4dp"
                     android:text="Format"
                     android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
+            <!-- Background Settings -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextBackgroundTab"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_text_bg_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Background"
+                    android:textSize="10sp"
                     android:fontFamily="sans-serif-medium"
                     android:textColor="@color/toolTextInactive" />
             </LinearLayout>

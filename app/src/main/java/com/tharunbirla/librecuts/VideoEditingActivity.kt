@@ -594,6 +594,12 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Make sure assets/fonts/Roboto-Regular.ttf exists in the project.")
         }
 
+        // WYSIWYG text rendering: AddText ops are rasterized with the same
+        // Canvas pipeline used by the preview, then composited via overlay.
+        viewModel.textPngRenderer = { op ->
+            com.tharunbirla.librecuts.utils.TextRenderUtils.renderAddTextToPng(this@VideoEditingActivity, op)?.absolutePath
+        }
+
         // Initialize UI components
         initializeViews()
         setupExoPlayer()
@@ -933,7 +939,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                 }
-                overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, borderThickness, borderColor, textAlign, letterSpacing, lineSpacing ->
+                overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, borderThickness, borderColor, textAlign, letterSpacing, lineSpacing, bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->
                     val selectedId = viewModel.selectedOperationId.value
                     if (isKeyframeEditingMode) {
                         if (selectedId != null) {
@@ -961,7 +967,9 @@ class VideoEditingActivity : AppCompatActivity() {
                                 viewModel.updateOperation(op.copy(
                                     text = text, fontSize = fontSize, relativeX = relX, relativeY = relY, color = color,
                                     fontPath = fontPath, opacity = opacity, borderThickness = borderThickness, borderColor = borderColor,
-                                    textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing
+                                    textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing,
+                                    bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,
+                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
                                 ))
                             }
                         } else {
@@ -982,7 +990,9 @@ class VideoEditingActivity : AppCompatActivity() {
                             borderColor = borderColor,
                             textAlign = textAlign,
                             letterSpacing = letterSpacing,
-                            lineSpacing = lineSpacing
+                            lineSpacing = lineSpacing,
+                            bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,
+                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
                         )
                     }
                     viewModel.selectOperation(null)
@@ -1027,15 +1037,19 @@ class VideoEditingActivity : AppCompatActivity() {
                 val btnKeyboard = toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)
                 val btnPalette = toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)
                 val btnFormat = toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)
+                val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)
                 val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)
                 val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)
+                val bgContainer = toolbar.findViewById<View>(R.id.bgSettingsContainer)
 
                 fun resetTabs() {
                     colorContainer?.visibility = View.GONE
                     formatContainer?.visibility = View.GONE
+                    bgContainer?.visibility = View.GONE
                     btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))
                     btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))
                     btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnBackground?.setColorFilter(getColor(R.color.toolTextInactive))
                 }
 
                 draggableTextOverlay?.onEditingFocused = {
@@ -1058,12 +1072,72 @@ class VideoEditingActivity : AppCompatActivity() {
                     setupColorPicker(toolbar)
                 }
 
+                // Style toggle helpers: Bold / Italic / Underline / Strikethrough
+                fun styleTint(button: android.widget.Button?, active: Boolean) {
+                    button?.backgroundTintList = android.content.res.ColorStateList.valueOf(
+                        getColor(if (active) R.color.colorPrimary else R.color.inactiveToolBackground))
+                }
+                fun syncStyleButtons() {
+                    val textOverlay = draggableTextOverlay
+                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleBold), textOverlay?.getBold() == true)
+                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleItalic), textOverlay?.getItalic() == true)
+                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleUnderline), textOverlay?.getUnderline() == true)
+                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleStrike), textOverlay?.getStrikethrough() == true)
+                }
+                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleBold)?.setOnClickListener {
+                    draggableTextOverlay?.let { it.setBold(!it.getBold()) }
+                    syncStyleButtons()
+                }
+                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleItalic)?.setOnClickListener {
+                    draggableTextOverlay?.let { it.setItalic(!it.getItalic()) }
+                    syncStyleButtons()
+                }
+                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleUnderline)?.setOnClickListener {
+                    draggableTextOverlay?.let { it.setUnderline(!it.getUnderline()) }
+                    syncStyleButtons()
+                }
+                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleStrike)?.setOnClickListener {
+                    draggableTextOverlay?.let { it.setStrikethrough(!it.getStrikethrough()) }
+                    syncStyleButtons()
+                }
+
+                // Background tab sliders
+                fun syncBgSliders() {
+                    val textOverlay = draggableTextOverlay ?: return
+                    bgContainer?.findViewById<Slider>(R.id.seekBgOpacity)?.value =
+                        (textOverlay.getBgOpacity() * 100f).coerceIn(0f, 100f)
+                    bgContainer?.findViewById<Slider>(R.id.seekBgCornerRadius)?.value =
+                        textOverlay.getBgCornerRadius().toFloat().coerceIn(0f, 50f)
+                    bgContainer?.findViewById<Slider>(R.id.seekBgMargin)?.value =
+                        textOverlay.getBgMargin().toFloat().coerceIn(0f, 50f)
+                }
+                bgContainer?.findViewById<Slider>(R.id.seekBgOpacity)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setBgOpacity(value / 100f)
+                }
+                bgContainer?.findViewById<Slider>(R.id.seekBgCornerRadius)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setBgCornerRadius(value.toInt())
+                }
+                bgContainer?.findViewById<Slider>(R.id.seekBgMargin)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setBgMargin(value.toInt())
+                }
+
                 btnFormat?.setBounceClickListener {
                     draggableTextOverlay?.hideKeyboard()
-                    
+
                     resetTabs()
                     formatContainer?.visibility = View.VISIBLE
                     btnFormat.setColorFilter(getColor(R.color.colorPrimary))
+                    syncStyleButtons()
+                }
+
+                btnBackground?.setBounceClickListener {
+                    draggableTextOverlay?.hideKeyboard()
+
+                    resetTabs()
+                    bgContainer?.visibility = View.VISIBLE
+                    btnBackground.setColorFilter(getColor(R.color.colorPrimary))
+                    setupBgColorPicker(toolbar)
+                    syncBgSliders()
                 }
                 
                 // Format UI listeners
@@ -2817,15 +2891,19 @@ class VideoEditingActivity : AppCompatActivity() {
         closeActiveEditingModes()
         selectedVideoIndex = null
         isTextEditingActive = true
-        selectedTextColor = "#FFFFFF"
+        selectedTextColor = if (isReEditing) (draggableTextOverlay?.getTextColor() ?: "#FFFFFF") else "#FFFFFF"
         if (!isReEditing) {
             draggableTextOverlay?.activate("", 36)
         }
         textEditingToolbar?.visibility = View.VISIBLE
         textEditingToolbar?.let { toolbar ->
             toolbar.findViewById<View>(R.id.colorPickerContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.formatSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.bgSettingsContainer)?.visibility = View.GONE
             toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))
             toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))
             setupColorPicker(toolbar)
         }
         findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
@@ -7672,46 +7750,149 @@ class VideoEditingActivity : AppCompatActivity() {
         ffmpegEngine.cleanup()
     }
 
-    private val colorsList = listOf(
-        "#FFFFFF", "#000000", "#FF3B30", "#FF9500", "#FFCC00",
-        "#34C759", "#30B0C7", "#007AFF", "#5856D6", "#AF52DE", "#FF2D55"
+    private val textPalettePresets = listOf(
+        "#FFFFFF", "#000000", "#FF007A", "#FF3B30",
+        "#FF9500", "#FFCC00", "#34C759", "#32ADE6",
+        "#007AFF", "#AF52DE"
     )
     private var selectedTextColor = "#FFFFFF"
 
-    private fun setupColorPicker(toolbar: View) {
-        val colorPickerList = toolbar.findViewById<LinearLayout>(R.id.colorPickerList) ?: return
-        colorPickerList.removeAllViews()
+    private fun markPaletteSelection(container: LinearLayout, selectedTag: String?) {
+        for (i in 0 until container.childCount) {
+            val child = container.getChildAt(i) as? FrameLayout ?: continue
+            val tagHex = child.tag as? String
+            if (tagHex != null && tagHex == selectedTag) {
+                child.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
+                child.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
+            } else {
+                child.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
+                child.foreground = null
+            }
+        }
+    }
 
+    private fun buildTextPaletteRow(
+        container: LinearLayout,
+        includeNone: Boolean,
+        selectedHex: String?,
+        onPick: (String?) -> Unit
+    ) {
+        container.removeAllViews()
         val density = resources.displayMetrics.density
-        val sizePx = (36 * density).toInt()
-        val marginPx = (8 * density).toInt()
+        val swatchSize = (36 * density).toInt()
+        val innerSize = (24 * density).toInt()
+        val margin = (4 * density).toInt()
 
-        for (colorHex in colorsList) {
-            val colorView = View(this).apply {
-                layoutParams = LinearLayout.LayoutParams(sizePx, sizePx).apply {
-                    setMargins(marginPx, 0, marginPx, 0)
+        var selectedTag: String? = null
+        if (includeNone && selectedHex == null) selectedTag = "__none__"
+        if (selectedHex != null && !textPalettePresets.contains(selectedHex)) selectedTag = "__custom__"
+        if (selectedHex != null && textPalettePresets.contains(selectedHex)) selectedTag = selectedHex
+
+        if (includeNone) {
+            val frame = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {
+                    setMargins(margin, 0, margin, 0)
                 }
-
-                val shape = android.graphics.drawable.GradientDrawable().apply {
+                tag = "__none__"
+                setBackgroundResource(R.drawable.bg_aspect_ratio_item)
+                isClickable = true
+                isFocusable = true
+            }
+            val circle = View(this).apply {
+                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
+                background = android.graphics.drawable.GradientDrawable().apply {
                     shape = android.graphics.drawable.GradientDrawable.OVAL
-                    setColor(android.graphics.Color.parseColor(colorHex))
-                    if (colorHex == selectedTextColor) {
-                        setStroke((3 * density).toInt(), android.graphics.Color.parseColor("#007AFF"))
-                    } else {
-                        if (colorHex == "#FFFFFF" || colorHex == "#000000") {
-                            setStroke(1, android.graphics.Color.GRAY)
-                        }
-                    }
-                }
-                background = shape
-
-                setBounceClickListener {
-                    selectedTextColor = colorHex
-                    draggableTextOverlay?.setTextColor(colorHex)
-                    setupColorPicker(toolbar)
+                    setStroke((1 * density).toInt(), Color.parseColor("#66FFFFFF"))
                 }
             }
-            colorPickerList.addView(colorView)
+            frame.addView(circle)
+            val mark = android.widget.ImageView(this).apply {
+                layoutParams = FrameLayout.LayoutParams((12 * density).toInt(), (12 * density).toInt(), Gravity.CENTER)
+                setImageResource(R.drawable.ic_close_24)
+                setColorFilter(getColor(R.color.iconSecondary))
+            }
+            frame.addView(mark)
+            frame.setOnClickListener { onPick(null) }
+            container.addView(frame)
+        }
+
+        // Custom color circle (opens the HSV picker, Draw-page style)
+        run {
+            val frame = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {
+                    setMargins(margin, 0, margin, 0)
+                }
+                tag = "__custom__"
+                setBackgroundResource(R.drawable.bg_aspect_ratio_item)
+                isClickable = true
+                isFocusable = true
+            }
+            val circle = View(this).apply {
+                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    val customActive = selectedHex != null && !textPalettePresets.contains(selectedHex)
+                    if (customActive) {
+                        setColor(try { Color.parseColor(selectedHex) } catch (e: Exception) { Color.WHITE })
+                    }
+                    setStroke((1 * density).toInt(), Color.parseColor("#44FFFFFF"))
+                }
+            }
+            frame.addView(circle)
+            val icon = android.widget.ImageView(this).apply {
+                layoutParams = FrameLayout.LayoutParams((13 * density).toInt(), (13 * density).toInt(), Gravity.CENTER)
+                setImageResource(R.drawable.ic_palette_24)
+                setColorFilter(getColor(R.color.textColor))
+            }
+            frame.addView(icon)
+            frame.setOnClickListener {
+                val initial = if (selectedHex != null && !textPalettePresets.contains(selectedHex)) selectedHex else "#FFFFFF"
+                showCustomColorPicker(initial) { customHex -> onPick(customHex) }
+            }
+            container.addView(frame)
+        }
+
+        for (hex in textPalettePresets) {
+            val frame = FrameLayout(this).apply {
+                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {
+                    setMargins(margin, 0, margin, 0)
+                }
+                tag = hex
+                setBackgroundResource(R.drawable.bg_aspect_ratio_item)
+                isClickable = true
+                isFocusable = true
+            }
+            val circleView = View(this).apply {
+                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)
+                val drawable = android.graphics.drawable.GradientDrawable().apply {
+                    shape = android.graphics.drawable.GradientDrawable.OVAL
+                    setColor(try { Color.parseColor(hex) } catch (e: Exception) { Color.WHITE })
+                    setStroke((1 * density).toInt(), Color.parseColor("#44FFFFFF"))
+                }
+                background = drawable
+            }
+            frame.addView(circleView)
+            frame.setOnClickListener { onPick(hex) }
+            container.addView(frame)
+        }
+
+        markPaletteSelection(container, selectedTag)
+    }
+
+    private fun setupColorPicker(toolbar: View) {
+        val colorPickerList = toolbar.findViewById<LinearLayout>(R.id.colorPickerList) ?: return
+        buildTextPaletteRow(colorPickerList, includeNone = false, selectedHex = selectedTextColor) { hex ->
+            selectedTextColor = hex ?: "#FFFFFF"
+            draggableTextOverlay?.setTextColor(selectedTextColor)
+            setupColorPicker(toolbar)
+        }
+    }
+
+    private fun setupBgColorPicker(toolbar: View) {
+        val list = toolbar.findViewById<LinearLayout>(R.id.bgColorPickerList) ?: return
+        buildTextPaletteRow(list, includeNone = true, selectedHex = draggableTextOverlay?.getBgColor()) { hex ->
+            draggableTextOverlay?.setBgColor(hex)
+            setupBgColorPicker(toolbar)
         }
     }
 
