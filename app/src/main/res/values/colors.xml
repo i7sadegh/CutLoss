@@ -1,14 +1,14 @@
 <resources>
 
-    <!-- PRIMARY: Electric Pink -->
-    <color name="colorPrimary">#FF2A6D</color>
-    <color name="colorPrimaryVariant">#C81D52</color>
-    <color name="colorOnPrimary">#FFFFFF</color>
+    <!-- PRIMARY: Amber -->
+    <color name="colorPrimary">#F9B10B</color>
+    <color name="colorPrimaryVariant">#C28A09</color>
+    <color name="colorOnPrimary">#1A1A20</color>
 
-    <!-- SECONDARY: Bright Pink Accent -->
-    <color name="colorSecondary">#FF2A6D</color>
-    <color name="colorSecondaryVariant">#C81D52</color>
-    <color name="colorOnSecondary">#FFFFFF</color>
+    <!-- SECONDARY: Amber Accent -->
+    <color name="colorSecondary">#F9B10B</color>
+    <color name="colorSecondaryVariant">#C28A09</color>
+    <color name="colorOnSecondary">#1A1A20</color>
 
     <!-- BACKGROUND: OLED Black -->
     <color name="background">#000000</color>
@@ -31,8 +31,8 @@
     <color name="surfaceVariant">#212128</color>
     <color name="floatingPanelBackground">#1A1A20</color>
 
-    <color name="primaryContainer">#FF2A6D</color>
-    <color name="onPrimaryContainer">#FFFFFF</color>
+    <color name="primaryContainer">#F9B10B</color>
+    <color name="onPrimaryContainer">#1A1A20</color>
 
     <color name="tertiary">#FFC107</color>
     <color name="tertiaryContainer">#FFA000</color>
@@ -44,12 +44,12 @@
     <color name="iconSecondary">#8A8A93</color>
 
     <!-- TOOL COLORS -->
-    <color name="activeTool">#FF2A6D</color>
-    <color name="activeToolBackground">#2A1118</color> <!-- Subtle pink tint for active tool -->
+    <color name="activeTool">#F9B10B</color>
+    <color name="activeToolBackground">#2A2210</color> <!-- Subtle amber tint for active tool -->
     <color name="inactiveTool">#8A8A93</color>
     <color name="inactiveToolBackground">#111114</color>
 
-    <color name="toolTextActive">#FF2A6D</color>
+    <color name="toolTextActive">#F9B10B</color>
     <color name="toolTextInactive">#8A8A93</color>
 
     <color name="sliderHalo">#1A1A20</color>

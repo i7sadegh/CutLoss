@@ -24,9 +24,9 @@
 
             <ImageButton
                 android:id="@+id/btnClose"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="?attr/selectableItemBackgroundBorderless"
+                android:layout_width="48dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_back_capsule"
                 android:src="@drawable/ic_back_24"
                 android:padding="8dp"
                 android:scaleType="fitCenter"
@@ -859,7 +859,7 @@
             android:layout_height="50dp"
             android:layout_gravity="center"
             android:indeterminate="true"
-            android:indeterminateTint="#FF4081" />
+            android:indeterminateTint="#F9B10B" />
     </FrameLayout>
 
     <!-- Floating PiP Container for Timeline Expand Mode -->
