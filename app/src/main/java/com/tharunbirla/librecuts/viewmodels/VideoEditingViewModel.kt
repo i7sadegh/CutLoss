@@ -67,6 +67,100 @@ class VideoEditingViewModel : ViewModel() {
         if (bitrate != null) _exportBitrate.value = bitrate
     }
 
+    // ─────────────────────────────────────────────────────────────────────────
+    // CutStudio: advanced export settings (export dialog v2)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    data class AdvancedExport(
+        val videoFormat: String = "mp4",      // mp4|mkv|mov|webm|avi
+        val videoCodec: String = "",          // "" = app default chain | libx264|libx265|hevc_mediacodec|libvpx-vp9|libaom-av1
+        val preset: String = "",              // "" = none; ultrafast..veryslow (x264/x265 only)
+        val audioCodec: String = "aac",       // aac|libmp3lame|libopus|pcm_s16le|flac
+        val audioBitrate: String = "",        // "" = same as input (omit -b:a); 128k|192k|256k|320k
+        val audioOnlyFormat: String = "m4a",  // m4a|mp3|opus|flac|wav (audio-only export extension)
+        val customWidth: Int = 0,             // 0 = not set
+        val customHeight: Int = 0             // 0 = not set
+    )
+
+    private val _advancedExport = MutableStateFlow(AdvancedExport())
+    val advancedExport: StateFlow<AdvancedExport> = _advancedExport.asStateFlow()
+
+    fun setAdvancedExport(value: AdvancedExport) {
+        _advancedExport.value = value
+    }
+
+    fun getOutputExtension(isAudioOnly: Boolean): String {
+        val adv = _advancedExport.value
+        if (isAudioOnly) {
+            return when (adv.audioOnlyFormat) {
+                "mp3" -> ".mp3"; "opus" -> ".opus"; "flac" -> ".flac"; "wav" -> ".wav"
+                else -> ".m4a"
+            }
+        }
+        return when (adv.videoFormat) {
+            "mkv" -> ".mkv"; "mov" -> ".mov"; "webm" -> ".webm"; "avi" -> ".avi"
+            else -> ".mp4"
+        }
+    }
+
+    /**
+     * Final scale/fps segment of the filter graph. Omits scale when resolution
+     * is "Same as input" (0), omits fps likewise; custom W x H (forced to even
+     * numbers) wins over the preset heights.
+     */
+    private fun buildOutputScaleFilter(inLabel: String, outLabel: String): String {
+        val adv = _advancedExport.value
+        val parts = mutableListOf<String>()
+        if (adv.customWidth >= 16 && adv.customHeight >= 16) {
+            val w = adv.customWidth - (adv.customWidth % 2)
+            val h = adv.customHeight - (adv.customHeight % 2)
+            parts.add("scale=$w:$h")
+        } else if (_exportResolution.value > 0) {
+            parts.add("scale=-2:${_exportResolution.value}")
+        }
+        if (_exportFps.value > 0) parts.add("fps=${_exportFps.value}")
+        parts.add("format=yuv420p")
+        return "$inLabel${parts.joinToString(",")}$outLabel"
+    }
+
+    /** "-vf scale=... [-r N]" for the no-filter path; empty when all is same-as-input. */
+    private fun buildOutputVfArgs(): String {
+        val adv = _advancedExport.value
+        val parts = mutableListOf<String>()
+        if (adv.customWidth >= 16 && adv.customHeight >= 16) {
+            val w = adv.customWidth - (adv.customWidth % 2)
+            val h = adv.customHeight - (adv.customHeight % 2)
+            parts.add("-vf scale=$w:$h")
+        } else if (_exportResolution.value > 0) {
+            parts.add("-vf scale=-2:${_exportResolution.value}")
+        }
+        if (_exportFps.value > 0) parts.add("-r ${_exportFps.value}")
+        return parts.joinToString(" ")
+    }
+
+    /** -c:v ... -pix_fmt ... -b:v ... (-preset only where the codec supports it). */
+    private fun buildVideoCodecArgs(defaultEncoder: String): String {
+        val adv = _advancedExport.value
+        val codec = if (adv.videoCodec.isNotEmpty()) adv.videoCodec
+                     else if (defaultEncoder == "software") "libx264" else "h264_mediacodec"
+        val sb = StringBuilder("-c:v $codec -pix_fmt yuv420p")
+        if (_exportBitrate.value.isNotEmpty()) sb.append(" -b:v ${_exportBitrate.value}")
+        if (adv.preset.isNotEmpty() && (codec == "libx264" || codec == "libx265")) {
+            sb.append(" -preset ${adv.preset}")
+        }
+        return sb.toString()
+    }
+
+    /** -c:a ... (-b:a skipped for lossless codecs). */
+    private fun buildAudioCodecArgs(): String {
+        val adv = _advancedExport.value
+        val codec = if (adv.audioCodec.isNotEmpty()) adv.audioCodec else "aac"
+        val sb = StringBuilder("-c:a $codec")
+        val lossless = codec == "pcm_s16le" || codec == "flac"
+        if (adv.audioBitrate.isNotEmpty() && !lossless) sb.append(" -b:a ${adv.audioBitrate}")
+        return sb.toString()
+    }
+
     val operations: StateFlow<List<EditOperation>>
         get() = MutableStateFlow(project.value?.operations ?: emptyList()).asStateFlow()
 
@@ -1173,7 +1267,7 @@ class VideoEditingViewModel : ViewModel() {
             )
             filterParts.addAll(sourceVideoStages)
             val finalVideoLabel = "[fmtv]"
-            filterParts.add("${tempVideoLabel}scale=-2:${_exportResolution.value},fps=${_exportFps.value},format=yuv420p$finalVideoLabel")
+            filterParts.add(buildOutputScaleFilter(tempVideoLabel, finalVideoLabel))
 
             if (audioMuted) {
                 filterParts.add("${currentAudioLabel}anullsink")
@@ -1288,7 +1382,7 @@ class VideoEditingViewModel : ViewModel() {
                 if (!audioMuted) {
                     cmd.append(" -map \"$currentAudioLabel\"")
                     // CutStudio ffmpeg might have libmp3lame, fallback to libmp3lame or default mp3 encoder
-                    cmd.append(" -c:a libmp3lame -b:a 192k")
+                    cmd.append(" ${buildAudioCodecArgs()}")
                 } else {
                     cmd.append(" -an")
                 }
@@ -1300,14 +1394,12 @@ class VideoEditingViewModel : ViewModel() {
                     cmd.append(" -an")
                 }
                 
-                val bitrate = _exportBitrate.value
                 val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                     ?.getString("default_encoder", "hardware") ?: "hardware"
-                val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
-                cmd.append(" $videoCodec")
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
                 
                 if (!audioMuted) {
-                    cmd.append(" -c:a aac")
+                    cmd.append(" ${buildAudioCodecArgs()}")
                 }
             }
 
@@ -1504,7 +1596,7 @@ class VideoEditingViewModel : ViewModel() {
             var mappedVideoLabel = finalVideoLabel
             if (hasVideoFilters) {
                 val fmtLabel = "[fmtv]"
-                filterComplexParts.add("${finalVideoLabel}scale=-2:${_exportResolution.value},fps=${_exportFps.value},format=yuv420p${fmtLabel}")
+                filterComplexParts.add(buildOutputScaleFilter(finalVideoLabel, fmtLabel))
                 mappedVideoLabel = fmtLabel
             }
             
@@ -1544,22 +1636,22 @@ class VideoEditingViewModel : ViewModel() {
         // Codecs
         if (_exportAudioOnly.value) {
             if (!effectiveAudioMuted) {
-                cmd.append(" -c:a libmp3lame -b:a 192k")
+                cmd.append(" ${buildAudioCodecArgs()}")
             }
         } else {
-            val bitrate = _exportBitrate.value
             val defaultEncoder = context?.getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
                 ?.getString("default_encoder", "hardware") ?: "hardware"
-            val videoCodec = if (defaultEncoder == "software") "-c:v libx264 -pix_fmt yuv420p -b:v $bitrate" else "-c:v h264_mediacodec -pix_fmt yuv420p -b:v $bitrate"
             // If there are no video filters, we still need to apply the scale and fps output params
             if (!hasVideoFilters) {
-                cmd.append(" $videoCodec -vf scale=-2:${_exportResolution.value} -r ${_exportFps.value}")
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
+                val vfArgs = buildOutputVfArgs()
+                if (vfArgs.isNotEmpty()) cmd.append(" $vfArgs")
             } else {
-                cmd.append(" $videoCodec")
+                cmd.append(" ${buildVideoCodecArgs(defaultEncoder)}")
             }
             
             if (!effectiveAudioMuted) {
-                cmd.append(" -c:a aac")
+                cmd.append(" ${buildAudioCodecArgs()}")
             }
         }
 

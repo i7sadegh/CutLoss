@@ -1,187 +1,261 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<androidx.core.widget.NestedScrollView xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:orientation="vertical"
     android:background="@drawable/floating_panel_background"
-    android:padding="20dp">
+    android:scrollbars="none">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Export Settings"
-        android:textColor="@color/textColor"
-        android:textSize="18sp"
-        android:fontFamily="sans-serif-medium" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:orientation="vertical" android:padding="20dp">
 
-    <!-- Resolution -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="18dp"
-        android:text="Resolution"
-        android:textColor="@color/iconSecondary"
-        android:textSize="12sp"
-        android:letterSpacing="0.05"
-        android:fontFamily="sans-serif-medium" />
+        <!-- Header: title + estimated-size capsule (top-right) -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:orientation="horizontal" android:gravity="center_vertical">
+            <TextView android:layout_width="0dp" android:layout_height="wrap_content"
+                android:layout_weight="1" android:text="Export Settings"
+                android:textColor="@color/textColor" android:textSize="18sp"
+                android:fontFamily="sans-serif-medium" />
+            <TextView android:id="@+id/tvEstimatedSize" android:layout_width="wrap_content"
+                android:layout_height="wrap_content" android:text="..." android:textColor="@color/colorPrimary"
+                android:textSize="12sp" android:fontFamily="sans-serif-medium"
+                android:background="@drawable/bg_capsule_pill"
+                android:paddingStart="14dp" android:paddingEnd="14dp"
+                android:paddingTop="6dp" android:paddingBottom="6dp" />
+        </LinearLayout>
 
-    <com.google.android.material.chip.ChipGroup
-        android:id="@+id/cgResolution"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        app:singleSelection="true"
-        app:selectionRequired="true">
+        <!-- ======================= Resolution ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="18dp" android:text="Resolution"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes360"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="360p" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:orientation="horizontal" android:gravity="center_vertical">
+            <EditText android:id="@+id/etWidth" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="46dp" android:inputType="number" android:maxLength="5"
+                android:hint="1920" android:textColorHint="@color/iconSecondary"
+                android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
+                android:background="@drawable/bg_command_box" android:padding="10dp"
+                android:singleLine="true" android:imeOptions="actionNext" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="8dp" android:layout_marginEnd="8dp"
+                android:text="x" android:textColor="@color/iconSecondary" android:textSize="14sp" />
+            <EditText android:id="@+id/etHeight" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="46dp" android:inputType="number" android:maxLength="5"
+                android:hint="1080" android:textColorHint="@color/iconSecondary"
+                android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
+                android:background="@drawable/bg_command_box" android:padding="10dp"
+                android:singleLine="true" android:imeOptions="actionDone" />
+        </LinearLayout>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes480"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="480p" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgResolution"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="false">
+                <com.google.android.material.chip.Chip android:id="@+id/chipResSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes360" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="360p" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes480" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="480p" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes720" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="720p" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes1080" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1080p" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes1440" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="1440p" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipRes2160" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="2160p" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes720"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="720p" />
+        <!-- ======================= Video Format ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Video Format"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgVideoFormat"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtMp4" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="MP4" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtMkv" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="MKV" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtMov" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="MOV" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtWebm" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="WebM" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFmtAvi" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AVI" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes1080"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="1080p" />
+        <!-- ======================= Video Bitrate ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Video Bitrate"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="8dp" android:orientation="horizontal" android:gravity="center_vertical">
+            <EditText android:id="@+id/etBitrate" android:layout_width="0dp" android:layout_weight="1"
+                android:layout_height="46dp" android:inputType="number" android:maxLength="6"
+                android:hint="8000" android:textColorHint="@color/iconSecondary"
+                android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
+                android:background="@drawable/bg_command_box" android:padding="10dp"
+                android:singleLine="true" android:imeOptions="actionDone" />
+            <com.google.android.material.chip.Chip android:id="@+id/chipBitrateSame"
+                style="@style/Widget.MaterialComponents.Chip.Filter"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true" />
+        </LinearLayout>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes1440"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="1440p (2K)" />
+        <!-- ======================= Video Codec ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Video Codec"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgVideoCodec"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecX264" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="H.264 (libx264)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecH265" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="H.265" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecX265" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="HEVC (libx265)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecVp9" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="VP9 (libvpx-vp9)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCodecAv1" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AV1 (libaom-av1)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipRes2160"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="2160p (4K)" />
-    </com.google.android.material.chip.ChipGroup>
+        <!-- ======================= Video FPS ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Video FPS"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgFps"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipFpsSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFps24" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="24 fps (Cinema)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFps25" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="25 fps (PAL)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFps30" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="30 fps (Standard)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFps60" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="60 fps (Smooth)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-    <!-- Bitrate -->
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="14dp"
-        android:text="Video Bitrate"
-        android:textColor="@color/iconSecondary"
-        android:textSize="12sp"
-        android:letterSpacing="0.05"
-        android:fontFamily="sans-serif-medium" />
+        <!-- ======================= Audio Format ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Audio Format"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgAudioFormat"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFAac" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AAC (.m4a)" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFMp3" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="MP3" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFOpus" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Opus" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFFlac" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="FLAC" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAFWav" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="WAV" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-    <com.google.android.material.chip.ChipGroup
-        android:id="@+id/cgBitrate"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        app:singleSelection="true"
-        app:selectionRequired="true">
+        <!-- ======================= Audio Codec ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Audio Codec"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgAudioCodec"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipACAac" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="AAC-LC" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipACMp3" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="LAME MP3" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipACOpus" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="libopus" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipACPcm" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="PCM 16-bit" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate1"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="1 Mbps" />
+        <!-- ======================= Audio Bitrate ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Audio Bitrate"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgAudioBitrate"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipABSame" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Same as input" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAB128" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="128 kbps" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAB192" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="192 kbps" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAB256" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="256 kbps" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipAB320" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="320 kbps" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate2"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="2 Mbps" />
+        <!-- ======================= Preset (encoding speed) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Preset (x264 / x265 encoding speed)"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgPreset"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetUltrafast" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="ultrafast" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetSuperfast" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="superfast" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetVeryfast" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="veryfast" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetFaster" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="faster" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetFast" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="fast" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetMedium" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="medium" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetSlow" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="slow" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetSlower" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="slower" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipPresetVeryslow" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="veryslow" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate5"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="5 Mbps" />
+        <!-- ======================= FFmpeg command preview ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="FFmpeg command (what will run)"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <TextView android:id="@+id/tvCommand" android:layout_width="match_parent"
+            android:layout_height="wrap_content" android:layout_marginTop="8dp"
+            android:minHeight="72dp" android:fontFamily="monospace" android:textSize="10sp"
+            android:textColor="@color/iconSecondary" android:background="@drawable/bg_command_box"
+            android:padding="12dp" android:textIsSelectable="true"
+            android:text="(will update live as you change settings)" />
 
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate8"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="8 Mbps" />
-
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate16"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="16 Mbps" />
-
-        <com.google.android.material.chip.Chip
-            android:id="@+id/chipBitrate30"
-            style="@style/Widget.MaterialComponents.Chip.Choice"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="30 Mbps" />
-    </com.google.android.material.chip.ChipGroup>
-
-    <!-- Buttons: Cancel (left) / Save (right) -->
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="24dp"
-        android:orientation="horizontal"
-        android:gravity="center_vertical">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnCancelExport"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:text="@string/cancel"
-            android:textColor="@color/textColor"
-            android:textSize="14sp"
-            android:fontFamily="sans-serif-medium"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:paddingStart="24dp"
-            android:paddingEnd="24dp"
-            app:backgroundTint="@color/surfaceContainerHigh"
-            app:strokeColor="@color/outlineVariant"
-            app:strokeWidth="1dp"
-            app:cornerRadius="22dp" />
-
-        <Space
-            android:layout_width="0dp"
-            android:layout_height="1dp"
-            android:layout_weight="1" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSaveExport"
-            android:layout_width="wrap_content"
-            android:layout_height="44dp"
-            android:text="@string/str_save"
-            android:textColor="@color/onPrimaryContainer"
-            android:textSize="14sp"
-            android:fontFamily="sans-serif-medium"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:paddingStart="28dp"
-            android:paddingEnd="28dp"
-            app:backgroundTint="@color/primaryContainer"
-            app:cornerRadius="22dp" />
+        <!-- ======================= Buttons: Cancel (left) / Save (right) ======================= -->
+        <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="20dp" android:orientation="horizontal"
+            android:gravity="center_vertical">
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnCancelExport" android:layout_width="wrap_content"
+                android:layout_height="44dp" android:text="@string/cancel"
+                android:textColor="@color/textColor" android:textSize="14sp"
+                android:fontFamily="sans-serif-medium" android:insetTop="0dp" android:insetBottom="0dp"
+                android:paddingStart="24dp" android:paddingEnd="24dp"
+                app:backgroundTint="@color/surfaceContainerHigh"
+                app:strokeColor="@color/outlineVariant" app:strokeWidth="1dp"
+                app:cornerRadius="22dp" />
+            <Space android:layout_width="0dp" android:layout_height="1dp" android:layout_weight="1" />
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnSaveExport" android:layout_width="wrap_content"
+                android:layout_height="44dp" android:text="@string/str_save"
+                android:textColor="@color/onPrimaryContainer" android:textSize="14sp"
+                android:fontFamily="sans-serif-medium" android:insetTop="0dp" android:insetBottom="0dp"
+                android:paddingStart="28dp" android:paddingEnd="28dp"
+                app:backgroundTint="@color/primaryContainer" app:cornerRadius="22dp" />
+        </LinearLayout>
     </LinearLayout>
-</LinearLayout>
+</androidx.core.widget.NestedScrollView>

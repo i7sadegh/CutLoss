@@ -4738,7 +4738,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
                 val sourceFilePath = tempInputFile.absolutePath
                 val isAudioOnly = viewModel.exportAudioOnly.value
-                val ext = if (isAudioOnly) ".mp3" else ".mp4"
+                val ext = viewModel.getOutputExtension(isAudioOnly)
                 tempOutputFile = File(cacheDir, "temp_video_${System.currentTimeMillis()}$ext")
                 val tempOutputPath = tempOutputFile.absolutePath
 
@@ -4813,90 +4813,21 @@ class VideoEditingActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             if (androidx.core.content.ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 androidx.core.app.ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 101)
-                android.widget.Toast.makeText(this, "Please grant notification permission and try exporting again.", android.widget.Toast.LENGTH_LONG).show()
+                android.widget.Toast.makeText(this, "Please grant notification permission and try exporting again.", Toast.LENGTH_LONG).show()
                 return
             }
         }
         commitActiveEditsIfAny()
         if (isShowingPreview) dismissPreview()
 
-        val dialogView = layoutInflater.inflate(R.layout.dialog_export_settings, null)
-        val dialog = MaterialAlertDialogBuilder(this)
-            .setView(dialogView)
-            .create()
-
-        val cgResolution = dialogView.findViewById<com.google.android.material.chip.ChipGroup>(R.id.cgResolution)
-        val cgBitrate = dialogView.findViewById<com.google.android.material.chip.ChipGroup>(R.id.cgBitrate)
-        val btnCancel = dialogView.findViewById<View>(R.id.btnCancelExport)
-        val btnSave = dialogView.findViewById<View>(R.id.btnSaveExport)
-
-        when (viewModel.exportResolution.value) {
-            360 -> cgResolution.check(R.id.chipRes360)
-            480 -> cgResolution.check(R.id.chipRes480)
-            720 -> cgResolution.check(R.id.chipRes720)
-            1080 -> cgResolution.check(R.id.chipRes1080)
-            1440 -> cgResolution.check(R.id.chipRes1440)
-            2160 -> cgResolution.check(R.id.chipRes2160)
-            else -> cgResolution.check(R.id.chipRes1080)
-        }
-
-        when (viewModel.exportBitrate.value) {
-            "1M" -> cgBitrate.check(R.id.chipBitrate1)
-            "2M" -> cgBitrate.check(R.id.chipBitrate2)
-            "5M" -> cgBitrate.check(R.id.chipBitrate5)
-            "8M" -> cgBitrate.check(R.id.chipBitrate8)
-            "16M" -> cgBitrate.check(R.id.chipBitrate16)
-            "30M" -> cgBitrate.check(R.id.chipBitrate30)
-            else -> cgBitrate.check(R.id.chipBitrate8)
-        }
-
-        // Bitrate follows the resolution-based default until the user picks one manually
-        var bitrateTouched = false
-        var autoFollowing = false
-        cgBitrate.setOnCheckedStateChangeListener { _, _ ->
-            if (!autoFollowing) bitrateTouched = true
-        }
-        cgResolution.setOnCheckedStateChangeListener { _, checkedIds ->
-            if (!bitrateTouched && checkedIds.isNotEmpty()) {
-                val chipId = when (checkedIds[0]) {
-                    R.id.chipRes360 -> R.id.chipBitrate1
-                    R.id.chipRes480 -> R.id.chipBitrate2
-                    R.id.chipRes720 -> R.id.chipBitrate5
-                    R.id.chipRes1440 -> R.id.chipBitrate16
-                    R.id.chipRes2160 -> R.id.chipBitrate30
-                    else -> R.id.chipBitrate8
-                }
-                autoFollowing = true
-                cgBitrate.check(chipId)
-                autoFollowing = false
-            }
-        }
-
-        btnCancel.setBounceClickListener { dialog.dismiss() }
-
-        btnSave.setBounceClickListener {
-            val res = when (cgResolution.checkedChipId) {
-                R.id.chipRes360 -> 360
-                R.id.chipRes480 -> 480
-                R.id.chipRes720 -> 720
-                R.id.chipRes1440 -> 1440
-                R.id.chipRes2160 -> 2160
-                else -> 1080
-            }
-            val bitrate = when (cgBitrate.checkedChipId) {
-                R.id.chipBitrate1 -> "1M"
-                R.id.chipBitrate2 -> "2M"
-                R.id.chipBitrate5 -> "5M"
-                R.id.chipBitrate16 -> "16M"
-                R.id.chipBitrate30 -> "30M"
-                else -> "8M"
-            }
-            viewModel.setExportSettings(res, viewModel.exportFps.value, viewModel.exportAudioOnly.value, bitrate)
-            dialog.dismiss()
-            saveAction()
-        }
-
-        dialog.show()
+        ExportSettingsDialog(
+            activity = this,
+            viewModel = viewModel,
+            sourceFile = if (::tempInputFile.isInitialized) tempInputFile else null,
+            durationMs = getTotalSequenceDuration(),
+            fontPath = fontFilePath,
+            onApplyAndExport = { saveAction() }
+        ).show()
     }
 
     private fun showQualitySettingsDialog() {
