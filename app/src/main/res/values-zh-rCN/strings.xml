@@ -6,7 +6,7 @@
     <string name="split">分割</string>
     <string name="export">导出</string>
     <string name="delete">删除</string>
-    <string name="loading">正在导入视频…</string>
+    <string name="loading">正在导入视频...</string>
     <string name="cancel">取消</string>
     <string name="loading_tag">视频正在加载中，请稍等</string>
     <string name="done">完成</string>
@@ -39,7 +39,7 @@
     <string name="str_extract">提取</string>
     <string name="str_freeze">定格</string>
     <string name="str_reverse">反向播放</string>
-    <string name="str_saving_video">正在保存视频…</string>
+    <string name="str_saving_video">正在保存视频...</string>
     <string name="str_please_don_t_close_the_app">请不要关闭应用程序!\n请不要关闭应用程序!\n重要的事情说三遍!\n请不要关闭应用程序!</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">颜色滤镜</string>
@@ -111,7 +111,7 @@
     <string name="toast_snapping_disabled">已禁用吸附功能</string>
     <string name="toast_log_copied_to_clipboard">日志已复制到剪贴板</string>
     <string name="toast_beats_cleared">节拍已清除</string>
-    <string name="toast_analyzing_beats">正在分析节拍…</string>
+    <string name="toast_analyzing_beats">正在分析节拍...</string>
     <string name="toast_no_clear_beats_found">未找到明显的节拍。</string>
     <string name="toast_drag_the_handles_on_the_timeli">拖动时间线主视频轨道上的控制柄进行修剪。</string>
     <string name="toast_failed_to_start_recording">无法开始录音</string>

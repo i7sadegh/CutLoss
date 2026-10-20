@@ -6,7 +6,7 @@
     <string name="split">Rozdeliť</string>
     <string name="export">Exportovať</string>
     <string name="delete">Vymazať</string>
-    <string name="loading">Načítavanie videa…</string>
+    <string name="loading">Načítavanie videa...</string>
     <string name="cancel">Zrušiť</string>
     <string name="loading_tag">Pripravte sa! Vaše video sa načítava</string>
     <string name="done">Hotovo</string>
@@ -84,7 +84,7 @@
     <string name="toast_snapping_disabled">Prichytávanie vypnuté</string>
     <string name="toast_log_copied_to_clipboard">Protokol bol skopírovaný do schránky</string>
     <string name="toast_beats_cleared">Rytmy boli odstránené</string>
-    <string name="toast_analyzing_beats">Analyzujem rytmický takt.…</string>
+    <string name="toast_analyzing_beats">Analyzujem rytmický takt....</string>
     <string name="toast_no_clear_beats_found">Neboli nájdené žiadne jasné rytmy.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Na skrátenie videa posuňte úchytky na hlavnej časovej osi.</string>
     <string name="toast_failed_to_start_recording">Nepodarilo sa spustiť nahrávanie</string>
@@ -143,7 +143,7 @@
     <string name="str_extract">Extrahovať</string>
     <string name="str_freeze">Statický snímok</string>
     <string name="str_reverse">Otočiť</string>
-    <string name="str_saving_video">Ukladá sa video…</string>
+    <string name="str_saving_video">Ukladá sa video...</string>
     <string name="str_please_don_t_close_the_app">Prosím, nezatvárajte aplikáciu</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Farebné filtre</string>

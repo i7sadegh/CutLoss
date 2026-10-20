@@ -16,7 +16,7 @@
     <string name="str_0_00_0_00">0:00 / 0:00</string>
     <string name="str_export_location">Export-Ziel</string>
     <string name="str_low_quality_fastest">Niedrige Qualität (Schnellstes)</string>
-    <string name="loading">Importiere Video…</string>
+    <string name="loading">Importiere Video...</string>
     <string name="str_export_settings">Exporteinstellungen</string>
     <string name="str_medium_quality_default">Mittlere Qualität (Standard)</string>
     <string name="str_balanced_quality_and_file_size">Ausgewogene Qualität und Dateigröße</string>
@@ -68,7 +68,7 @@
     <string name="str_save">Speichern</string>
     <string name="str_video_speed">Video Geschwindigkeit</string>
     <string name="str_fade_out">Ausblenden</string>
-    <string name="str_saving_video">Speichere Video…</string>
+    <string name="str_saving_video">Speichere Video...</string>
     <string name="str_reverse">Umkehren</string>
     <string name="str_filters">Filter</string>
     <string name="str_please_don_t_close_the_app">Bitte App nicht schließen</string>
@@ -121,7 +121,7 @@
     <string name="toast_log_copied_to_clipboard">Protokoll in die Zwischenablage kopiert</string>
     <string name="str_22">22</string>
     <string name="toast_beats_cleared">Takt-Marker gelöscht</string>
-    <string name="toast_analyzing_beats">Takt wird analysiert…</string>
+    <string name="toast_analyzing_beats">Takt wird analysiert...</string>
     <string name="toast_no_clear_beats_found">Kein klares Taktmuster gefunden.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Ziehe die Griffe auf der Zeitleiste des Hauptvideos um zu schneiden.</string>
     <string name="toast_failed_to_start_recording">Aufnahme konnte nicht gestartet werden</string>

@@ -6,7 +6,7 @@
     <string name="split">Разделить</string>
     <string name="export">Экспортировать</string>
     <string name="delete">Удалить</string>
-    <string name="loading">Импортируем видео…</string>
+    <string name="loading">Импортируем видео...</string>
     <string name="cancel">Отмена</string>
     <string name="loading_tag">Подождите! Ваше видео загружается</string>
     <string name="done">Завершено</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">Извлечь</string>
     <string name="str_freeze">Остановить</string>
     <string name="str_reverse">Реверс</string>
-    <string name="str_saving_video">Сохранение видео…</string>
+    <string name="str_saving_video">Сохранение видео...</string>
     <string name="str_please_don_t_close_the_app">Пожалуйста, не закрывайте приложение</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Цветовые фильтры</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Зацеп выключен</string>
     <string name="toast_log_copied_to_clipboard">Логи скопированы в буфер обмена</string>
     <string name="toast_beats_cleared">Ритм очищен</string>
-    <string name="toast_analyzing_beats">Анализируем ритм…</string>
+    <string name="toast_analyzing_beats">Анализируем ритм...</string>
     <string name="toast_no_clear_beats_found">Не обнаружен четкий ритм.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Перетащите ползунки на временной линии основной видеодорожки чтобы обрезать её.</string>
     <string name="toast_failed_to_start_recording">Не удалось начать запись</string>

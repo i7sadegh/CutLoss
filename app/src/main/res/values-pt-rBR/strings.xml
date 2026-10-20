@@ -6,7 +6,7 @@
     <string name="split">Dividir</string>
     <string name="export">Exportar</string>
     <string name="delete">Deletar</string>
-    <string name="loading">Importando Vídeo…</string>
+    <string name="loading">Importando Vídeo...</string>
     <string name="cancel">Cancelar</string>
     <string name="loading_tag">Prepare-se! Seu vídeo está carregando</string>
     <string name="done">Feito</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">Extrair</string>
     <string name="str_freeze">Congelar</string>
     <string name="str_reverse">Reverter</string>
-    <string name="str_saving_video">Salvando vídeo…</string>
+    <string name="str_saving_video">Salvando vídeo...</string>
     <string name="str_please_don_t_close_the_app">Por favor, não feche o aplicativo</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Filtros de cor</string>

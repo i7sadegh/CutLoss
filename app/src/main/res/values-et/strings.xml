@@ -2,7 +2,7 @@
 <resources>
     <string name="export">Ekspordi</string>
     <string name="delete">Kustuta</string>
-    <string name="loading">Impordin videot…</string>
+    <string name="loading">Impordin videot...</string>
     <string name="cancel">Katkesta</string>
     <string name="trim">Lõika/kärbi</string>
     <string name="str_trim_video">Lõika videot</string>
@@ -41,7 +41,7 @@
     <string name="str_extract">Tee väljavõte</string>
     <string name="str_freeze">Seiska</string>
     <string name="str_reverse">Pööra ümber</string>
-    <string name="str_saving_video">Salvestan videot…</string>
+    <string name="str_saving_video">Salvestan videot...</string>
     <string name="str_please_don_t_close_the_app">Palun ära sulge rakendust</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Värvifiltrid</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Kinnitumine välja lülitatud</string>
     <string name="toast_log_copied_to_clipboard">Logi on kopeeritud lõikelauale</string>
     <string name="toast_beats_cleared">Rütmid eemaldatud</string>
-    <string name="toast_analyzing_beats">Analüüsin rütmisammu…</string>
+    <string name="toast_analyzing_beats">Analüüsin rütmisammu...</string>
     <string name="toast_no_clear_beats_found">Selgeid rütme ei leitud.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Kärpimiseks lohista ajatelje põhivideoraja pidemeid.</string>
     <string name="toast_failed_to_start_recording">Salvestamise alustamine ei õnnestunud</string>

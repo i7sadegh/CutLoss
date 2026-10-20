@@ -14,7 +14,7 @@
     <string name="str_filters">Φίλτρα</string>
     <string name="str_speed">Ταχύτητα</string>
     <string name="str_freeze">Πάγωμα</string>
-    <string name="str_saving_video">Αποθήκευση βίντεο…</string>
+    <string name="str_saving_video">Αποθήκευση βίντεο...</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Χρωματικά Φίλτρα</string>
     <string name="str_00_00_00_00_00_00">00:00 - 00:00 (00:00)</string>

@@ -6,7 +6,7 @@
     <string name="split">Dividi</string>
     <string name="export">Esportazione</string>
     <string name="delete">Elimina</string>
-    <string name="loading">Importo Video…</string>
+    <string name="loading">Importo Video...</string>
     <string name="cancel">Annulla</string>
     <string name="loading_tag">Tieniti forte! Il tuo video sta caricando</string>
     <string name="done">Fatto</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">Estrai</string>
     <string name="str_freeze">Congela</string>
     <string name="str_reverse">Inverti</string>
-    <string name="str_saving_video">Salvataggio video…</string>
+    <string name="str_saving_video">Salvataggio video...</string>
     <string name="str_please_don_t_close_the_app">Per favore, non chiudere l\'app</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Filtri Colore</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Modalità incastro disabilitata</string>
     <string name="toast_log_copied_to_clipboard">Log copiato negli appunti</string>
     <string name="toast_beats_cleared">Ritmo cancellato</string>
-    <string name="toast_analyzing_beats">Analizzo ritmo…</string>
+    <string name="toast_analyzing_beats">Analizzo ritmo...</string>
     <string name="toast_no_clear_beats_found">Nessun chiaro ritmo trovato.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Sposta le maniglie sulla traccia video principale della timeline per tagliare.</string>
     <string name="toast_failed_to_start_recording">Impossibile avviare la registrazione</string>

@@ -6,7 +6,7 @@
     <string name="split">பிரி</string>
     <string name="export">ஏற்றுமதி</string>
     <string name="delete">நீக்கு</string>
-    <string name="loading">வீடியோ இறக்குமதி செய்யப்படுகிறது…</string>
+    <string name="loading">வீடியோ இறக்குமதி செய்யப்படுகிறது...</string>
     <string name="cancel">ரத்து செய்</string>
     <string name="loading_tag">தயாராக இருங்கள்! உங்கள் வீடியோ ஏற்றப்படுகிறது</string>
     <string name="done">முடிந்தது</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">பிரித்தெடு</string>
     <string name="str_freeze">நிலையாக்கு</string>
     <string name="str_reverse">பின்னோக்கு</string>
-    <string name="str_saving_video">வீடியோ சேமிக்கப்படுகிறது…</string>
+    <string name="str_saving_video">வீடியோ சேமிக்கப்படுகிறது...</string>
     <string name="str_please_don_t_close_the_app">தயவுசெய்து செயலியை மூட வேண்டாம்</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">வண்ண வடிப்பான்கள்</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">ஸ்னாப்பிங் முடக்கப்பட்டது</string>
     <string name="toast_log_copied_to_clipboard">பதிவு கிளிப்போர்டுக்கு நகலெடுக்கப்பட்டது</string>
     <string name="toast_beats_cleared">துடிப்புகள் அழிக்கப்பட்டன</string>
-    <string name="toast_analyzing_beats">துடிப்புகள் பகுப்பாய்வு செய்யப்படுகின்றன…</string>
+    <string name="toast_analyzing_beats">துடிப்புகள் பகுப்பாய்வு செய்யப்படுகின்றன...</string>
     <string name="toast_no_clear_beats_found">தெளிவான துடிப்புகள் எதுவும் காணப்படவில்லை.</string>
     <string name="toast_drag_the_handles_on_the_timeli">நறுக்குவதற்கு காலவரிசையின் முதன்மை வீடியோ டிராக்கில் உள்ள கைப்பிடிகளை இழுக்கவும்.</string>
     <string name="toast_failed_to_start_recording">பதிவைத் தொடங்க முடியவில்லை</string>

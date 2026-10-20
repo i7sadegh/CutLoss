@@ -2,7 +2,7 @@
 <resources>
     <string name="export">Exportar</string>
     <string name="delete">Eliminar</string>
-    <string name="loading">Importando video…</string>
+    <string name="loading">Importando video...</string>
     <string name="cancel">Cancelar</string>
     <string name="loading_tag">¡Abróchate el cinturón! Tu video se está cargando</string>
     <string name="done">Listo</string>
@@ -35,7 +35,7 @@
     <string name="str_extract">Extraer</string>
     <string name="str_freeze">Congelar</string>
     <string name="str_reverse">Reversa</string>
-    <string name="str_saving_video">Guardando video…</string>
+    <string name="str_saving_video">Guardando video...</string>
     <string name="str_please_don_t_close_the_app">No cierres la aplicación</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Filtros de color</string>

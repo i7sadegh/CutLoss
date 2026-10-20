@@ -6,7 +6,7 @@
     <string name="split">تقسيم</string>
     <string name="export">تصدير</string>
     <string name="delete">حذف</string>
-    <string name="loading">جارٍ استيراد الفيديو…</string>
+    <string name="loading">جارٍ استيراد الفيديو...</string>
     <string name="cancel">إلغاء</string>
     <string name="loading_tag">استعد! يتم تحميل الفيديو الخاص بك</string>
     <string name="done">تم</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">استخراج</string>
     <string name="str_freeze">تجميد</string>
     <string name="str_reverse">عكس</string>
-    <string name="str_saving_video">جارٍ حفظ الفيديو…</string>
+    <string name="str_saving_video">جارٍ حفظ الفيديو...</string>
     <string name="str_please_don_t_close_the_app">يرجى عدم إغلاق التطبيق</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">ألوان الفلاتر</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">تم تعطيل الالتقاط</string>
     <string name="toast_log_copied_to_clipboard">تم نسخ السجل إلى الحافظة</string>
     <string name="toast_beats_cleared">تم تحليل الإيقاعات</string>
-    <string name="toast_analyzing_beats">جارٍ تحليل الإيقاعات…</string>
+    <string name="toast_analyzing_beats">جارٍ تحليل الإيقاعات...</string>
     <string name="toast_no_clear_beats_found">لم يتم العثور على إيقاعات واضحة.</string>
     <string name="toast_drag_the_handles_on_the_timeli">اسحب المقابض الموجودة على مسار الفيديو الرئيسي في المخطط الزمني لقص الفيديو.</string>
     <string name="toast_failed_to_start_recording">فشل في بدء التسجيل</string>

@@ -6,7 +6,7 @@
     <string name="split">Split</string>
     <string name="export">Export</string>
     <string name="delete">Delete</string>
-    <string name="loading">Importing Videoâ€¦</string>
+    <string name="loading">Importing Video...</string>
     <string name="cancel">Cancel</string>
     <string name="loading_tag">Buckle up! Your video is loading</string>
     <string name="done">Done</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">Extract</string>
     <string name="str_freeze">Freeze</string>
     <string name="str_reverse">Reverse</string>
-    <string name="str_saving_video">Saving videoâ€¦</string>
+    <string name="str_saving_video">Saving video...</string>
     <string name="str_please_don_t_close_the_app">Please don\'t close the app</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Color Filters</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Snapping disabled</string>
     <string name="toast_log_copied_to_clipboard">Log copied to clipboard</string>
     <string name="toast_beats_cleared">Beats cleared</string>
-    <string name="toast_analyzing_beats">Analyzing beatsâ€¦</string>
+    <string name="toast_analyzing_beats">Analyzing beats...</string>
     <string name="toast_no_clear_beats_found">No clear beats found.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Drag the handles on the timeline\'s main video track to trim.</string>
     <string name="toast_failed_to_start_recording">Failed to start recording</string>

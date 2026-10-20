@@ -5,7 +5,7 @@
     <string name="split">Splitsen</string>
     <string name="export">Exporteren</string>
     <string name="delete">Verwijderen</string>
-    <string name="loading">Video importeren…</string>
+    <string name="loading">Video importeren...</string>
     <string name="cancel">Annuleren</string>
     <string name="loading_tag">Nog even! Je video is aan het laden</string>
     <string name="done">Klaar</string>
@@ -38,7 +38,7 @@
     <string name="str_extract">Extraheren</string>
     <string name="str_freeze">Bevriezen</string>
     <string name="str_reverse">Omdraaien</string>
-    <string name="str_saving_video">Video opslaan…</string>
+    <string name="str_saving_video">Video opslaan...</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Kleurenfilters</string>
     <string name="str_00_00_00_00_00_00">00:00 - 00:00 (00:00)</string>
@@ -170,7 +170,7 @@
     <string name="str_fade_out">Uitvervagen</string>
     <string name="str_join_us_for_app_updates_and_co">Word lid voor app-updates en communitychat</string>
     <string name="toast_beats_cleared">Beats gewist</string>
-    <string name="toast_analyzing_beats">Beats analyseren…</string>
+    <string name="toast_analyzing_beats">Beats analyseren...</string>
     <string name="toast_no_clear_beats_found">Geen duidelijke beats gevonden.</string>
     <string name="toast_freeze_frame_added_to_sequence">Freeze-frame aan tijdlijn toegevoegd</string>
     <string name="toast_failed_to_create_freeze_frame">Kon freeze-frame niet maken</string>

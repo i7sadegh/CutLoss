@@ -6,7 +6,7 @@
     <string name="split">स्प्लिट</string>
     <string name="export">निर्यात करें</string>
     <string name="delete">हटाएं</string>
-    <string name="loading">वीडियो आयात किया जा रहा है…</string>
+    <string name="loading">वीडियो आयात किया जा रहा है...</string>
     <string name="cancel">रद्द करें</string>
     <string name="loading_tag">तैयार हो जाइए! आपका वीडियो लोड हो रहा है</string>
     <string name="done">हो गया</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">एक्सट्रैक्ट करें</string>
     <string name="str_freeze">फ़्रीज़ करें</string>
     <string name="str_reverse">रिवर्स करें</string>
-    <string name="str_saving_video">वीडियो सहेजा जा रहा है…</string>
+    <string name="str_saving_video">वीडियो सहेजा जा रहा है...</string>
     <string name="str_please_don_t_close_the_app">कृपया ऐप बंद न करें</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">रंग फ़िल्टर</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">स्नैपिंग अक्षम की गई</string>
     <string name="toast_log_copied_to_clipboard">लॉग क्लिपबोर्ड पर कॉपी किया गया</string>
     <string name="toast_beats_cleared">बीट्स साफ़ किए गए</string>
-    <string name="toast_analyzing_beats">बीट्स का विश्लेषण किया जा रहा है…</string>
+    <string name="toast_analyzing_beats">बीट्स का विश्लेषण किया जा रहा है...</string>
     <string name="toast_no_clear_beats_found">कोई स्पष्ट बीट नहीं मिला।</string>
     <string name="toast_drag_the_handles_on_the_timeli">ट्रिम करने के लिए टाइमलाइन के मुख्य वीडियो ट्रैक पर हैंडल खींचें।</string>
     <string name="toast_failed_to_start_recording">रिकॉर्डिंग शुरू करने में विफल</string>

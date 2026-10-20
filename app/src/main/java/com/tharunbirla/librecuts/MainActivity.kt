@@ -262,11 +262,7 @@ class MainActivity : AppCompatActivity() {
             openUrl("https://github.com/sponsors/tharunbirla")
         }
 
-        // Onboarding / Welcome Dialog
-        val isFirstLaunch = prefs.getBoolean("first_launch_v1", true)
-        if (isFirstLaunch) {
-            showOnboardingDialog(prefs)
-        }
+        // Onboarding / Welcome Dialog removed (CutStudio)
 
         // Handle shared/intent videos
         handleIntent(intent)

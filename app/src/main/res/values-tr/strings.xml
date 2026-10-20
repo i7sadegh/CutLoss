@@ -5,7 +5,7 @@
     <string name="split">Böl</string>
     <string name="export">Kaydet</string>
     <string name="delete">Sil</string>
-    <string name="loading">Video içe aktarılıyor…</string>
+    <string name="loading">Video içe aktarılıyor...</string>
     <string name="cancel">İptal</string>
     <string name="loading_tag">Hazır ol! Videon yükleniyor</string>
     <string name="str_export_settings">Dışa Aktarma Ayarları</string>
@@ -36,7 +36,7 @@
     <string name="str_extract">Ses Ayıkla</string>
     <string name="str_freeze">Dondur</string>
     <string name="str_reverse">Ters Oynat</string>
-    <string name="str_saving_video">Video kaydediliyor…</string>
+    <string name="str_saving_video">Video kaydediliyor...</string>
     <string name="str_please_don_t_close_the_app">Lütfen uygulamayı kapatmayın</string>
     <string name="str_0">%0</string>
     <string name="str_color_filters">Renk Filtreleri</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Yapışma devre dışı</string>
     <string name="toast_log_copied_to_clipboard">Günlük panoya kopyalandı</string>
     <string name="toast_beats_cleared">Ritimler temizlendi</string>
-    <string name="toast_analyzing_beats">Ritimler analiz ediliyor…</string>
+    <string name="toast_analyzing_beats">Ritimler analiz ediliyor...</string>
     <string name="toast_no_clear_beats_found">Belirgin ritim bulunamadı.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Kesmek için ana video izindeki tutamaçları sürükleyin.</string>
     <string name="toast_failed_to_start_recording">Kayıt başlatılamadı</string>

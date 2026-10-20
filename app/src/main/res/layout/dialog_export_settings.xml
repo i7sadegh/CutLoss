@@ -110,15 +110,10 @@
                 android:textColor="@color/textColor" android:textSize="14sp" android:gravity="center"
                 android:background="@drawable/bg_command_box" android:padding="10dp"
                 android:singleLine="true" android:imeOptions="actionDone" />
-            <com.google.android.material.chip.Chip android:id="@+id/chipBitrateSame"
-                style="@style/Widget.MaterialComponents.Chip.Filter"
+                        <com.google.android.material.chip.Chip android:id="@+id/chipBitrateSame"
+                style="@style/Widget.MaterialComponents.Chip.Choice"
                 android:layout_width="wrap_content" android:layout_height="wrap_content"
-                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true"
-                app:checkedIconVisible="true"
-                app:checkedIcon="@drawable/ic_dialog_check"
-                app:checkedIconTint="@color/colorPrimary"
-                app:chipBackgroundColor="@color/chip_bitrate_same_bg"
-                android:textColor="@color/chip_bitrate_same_text" />
+                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true" />
         </LinearLayout>
 
         <!-- ======================= Video Codec ======================= -->

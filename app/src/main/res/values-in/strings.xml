@@ -6,7 +6,7 @@
     <string name="split">Pisah</string>
     <string name="export">Ekspor</string>
     <string name="delete">Hapus</string>
-    <string name="loading">Mengimpor Video…</string>
+    <string name="loading">Mengimpor Video...</string>
     <string name="cancel">Batal</string>
     <string name="loading_tag">Bersiap! Video kamu sedang dimuat</string>
     <string name="done">Selesai</string>
@@ -40,7 +40,7 @@
     <string name="str_extract">Ekstrak</string>
     <string name="str_freeze">Bekukan</string>
     <string name="str_reverse">Balik</string>
-    <string name="str_saving_video">Menyimpan video…</string>
+    <string name="str_saving_video">Menyimpan video...</string>
     <string name="str_please_don_t_close_the_app">Jangan tutup aplikasi</string>
     <string name="str_0">0%</string>
     <string name="str_color_filters">Filter Warna</string>
@@ -112,7 +112,7 @@
     <string name="toast_snapping_disabled">Snapping dinonaktifkan</string>
     <string name="toast_log_copied_to_clipboard">Log disalin ke clipboard</string>
     <string name="toast_beats_cleared">Ketukan dihapus</string>
-    <string name="toast_analyzing_beats">Menganalisis ketukan…</string>
+    <string name="toast_analyzing_beats">Menganalisis ketukan...</string>
     <string name="toast_no_clear_beats_found">Tidak ada ketukan yang jelas ditemukan.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Seret handle pada track video utama timeline untuk memangkas.</string>
     <string name="toast_failed_to_start_recording">Gagal memulai perekaman</string>
