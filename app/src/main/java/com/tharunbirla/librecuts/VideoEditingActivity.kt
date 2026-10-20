@@ -939,7 +939,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                 }
-                overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, borderThickness, borderColor, textAlign, letterSpacing, lineSpacing, bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->
+                overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, borderThickness, borderColor, textAlign, letterSpacing, lineSpacing, bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin, strokeOpacity, shadowColor, shadowOpacity, shadowBlur, shadowAngle, shadowWidth ->
                     val selectedId = viewModel.selectedOperationId.value
                     if (isKeyframeEditingMode) {
                         if (selectedId != null) {
@@ -969,7 +969,9 @@ class VideoEditingActivity : AppCompatActivity() {
                                     fontPath = fontPath, opacity = opacity, borderThickness = borderThickness, borderColor = borderColor,
                                     textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing,
                                     bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,
-                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
+                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin,
+                                    strokeOpacity = strokeOpacity, shadowColor = shadowColor, shadowOpacity = shadowOpacity,
+                                    shadowBlur = shadowBlur, shadowAngle = shadowAngle, shadowWidth = shadowWidth
                                 ))
                             }
                         } else {
@@ -992,7 +994,9 @@ class VideoEditingActivity : AppCompatActivity() {
                             letterSpacing = letterSpacing,
                             lineSpacing = lineSpacing,
                             bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,
-                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
+                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin,
+                            strokeOpacity = strokeOpacity, shadowColor = shadowColor, shadowOpacity = shadowOpacity,
+                            shadowBlur = shadowBlur, shadowAngle = shadowAngle, shadowWidth = shadowWidth
                         )
                     }
                     viewModel.selectOperation(null)
@@ -1029,26 +1033,31 @@ class VideoEditingActivity : AppCompatActivity() {
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
-                toolbar.findViewById<View>(R.id.btnTextDuplicate)?.setBounceClickListener {
-                    duplicateSelectedOverlay()
-                }
 
 
                 val btnKeyboard = toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)
                 val btnPalette = toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)
                 val btnFormat = toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)
+                val btnStroke = toolbar.findViewById<ImageButton>(R.id.btnTextStrokeTab)
+                val btnShadow = toolbar.findViewById<ImageButton>(R.id.btnTextShadowTab)
                 val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)
                 val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)
                 val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)
+                val strokeContainer = toolbar.findViewById<View>(R.id.strokeSettingsContainer)
+                val shadowContainer = toolbar.findViewById<View>(R.id.shadowSettingsContainer)
                 val bgContainer = toolbar.findViewById<View>(R.id.bgSettingsContainer)
 
                 fun resetTabs() {
                     colorContainer?.visibility = View.GONE
                     formatContainer?.visibility = View.GONE
+                    strokeContainer?.visibility = View.GONE
+                    shadowContainer?.visibility = View.GONE
                     bgContainer?.visibility = View.GONE
                     btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))
                     btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))
                     btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnStroke?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnShadow?.setColorFilter(getColor(R.color.toolTextInactive))
                     btnBackground?.setColorFilter(getColor(R.color.toolTextInactive))
                 }
 
@@ -1121,6 +1130,46 @@ class VideoEditingActivity : AppCompatActivity() {
                     draggableTextOverlay?.setBgMargin(value.toInt())
                 }
 
+                // Stroke tab sliders
+                fun syncStrokeSliders() {
+                    val textOverlay = draggableTextOverlay ?: return
+                    strokeContainer?.findViewById<Slider>(R.id.seekStrokeOpacity)?.value =
+                        (textOverlay.getStrokeOpacity() * 100f).coerceIn(0f, 100f)
+                    strokeContainer?.findViewById<Slider>(R.id.seekStrokeWidth)?.value =
+                        textOverlay.getStrokeWidth().toFloat().coerceIn(0f, 20f)
+                }
+                strokeContainer?.findViewById<Slider>(R.id.seekStrokeOpacity)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setStrokeOpacity(value / 100f)
+                }
+                strokeContainer?.findViewById<Slider>(R.id.seekStrokeWidth)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setStrokeWidth(value.toInt())
+                }
+
+                // Shadow tab sliders
+                fun syncShadowSliders() {
+                    val textOverlay = draggableTextOverlay ?: return
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowOpacity)?.value =
+                        (textOverlay.getShadowOpacity() * 100f).coerceIn(0f, 100f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowBlur)?.value =
+                        textOverlay.getShadowBlur().toFloat().coerceIn(0f, 50f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowAngle)?.value =
+                        textOverlay.getShadowAngle().toFloat().coerceIn(0f, 360f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowWidth)?.value =
+                        textOverlay.getShadowWidth().toFloat().coerceIn(0f, 50f)
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowOpacity)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowOpacity(value / 100f)
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowBlur)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowBlur(value.toInt())
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowAngle)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowAngle(value.toInt())
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowWidth)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowWidth(value.toInt())
+                }
+
                 btnFormat?.setBounceClickListener {
                     draggableTextOverlay?.hideKeyboard()
 
@@ -1139,6 +1188,26 @@ class VideoEditingActivity : AppCompatActivity() {
                     setupBgColorPicker(toolbar)
                     syncBgSliders()
                 }
+
+                btnStroke?.setBounceClickListener {
+                    draggableTextOverlay?.hideKeyboard()
+
+                    resetTabs()
+                    strokeContainer?.visibility = View.VISIBLE
+                    btnStroke.setColorFilter(getColor(R.color.colorPrimary))
+                    setupStrokeColorPicker(toolbar)
+                    syncStrokeSliders()
+                }
+
+                btnShadow?.setBounceClickListener {
+                    draggableTextOverlay?.hideKeyboard()
+
+                    resetTabs()
+                    shadowContainer?.visibility = View.VISIBLE
+                    btnShadow.setColorFilter(getColor(R.color.colorPrimary))
+                    setupShadowColorPicker(toolbar)
+                    syncShadowSliders()
+                }
                 
                 // Format UI listeners
                 setupTextFontSelector(formatContainer)
@@ -1148,10 +1217,6 @@ class VideoEditingActivity : AppCompatActivity() {
                     draggableTextOverlay?.setOpacity(value / 100f)
                 }
                 
-                val seekBorderWidth = formatContainer?.findViewById<Slider>(R.id.seekBorderWidth)
-                seekBorderWidth?.addOnChangeListener { _, value, _ ->
-                    draggableTextOverlay?.setBorderThickness(value.toInt())
-                }
                 
                 val seekLetterSpacing = formatContainer?.findViewById<Slider>(R.id.seekLetterSpacing)
                 seekLetterSpacing?.addOnChangeListener { _, value, _ ->
@@ -2899,10 +2964,14 @@ class VideoEditingActivity : AppCompatActivity() {
         textEditingToolbar?.let { toolbar ->
             toolbar.findViewById<View>(R.id.colorPickerContainer)?.visibility = View.GONE
             toolbar.findViewById<View>(R.id.formatSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.strokeSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.shadowSettingsContainer)?.visibility = View.GONE
             toolbar.findViewById<View>(R.id.bgSettingsContainer)?.visibility = View.GONE
             toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))
             toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))
             toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextStrokeTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextShadowTab)?.setColorFilter(getColor(R.color.toolTextInactive))
             toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))
             setupColorPicker(toolbar)
         }
@@ -7893,6 +7962,22 @@ class VideoEditingActivity : AppCompatActivity() {
         buildTextPaletteRow(list, includeNone = true, selectedHex = draggableTextOverlay?.getBgColor()) { hex ->
             draggableTextOverlay?.setBgColor(hex)
             setupBgColorPicker(toolbar)
+        }
+    }
+
+    private fun setupStrokeColorPicker(toolbar: View) {
+        val list = toolbar.findViewById<LinearLayout>(R.id.strokeColorPickerList) ?: return
+        buildTextPaletteRow(list, includeNone = false, selectedHex = draggableTextOverlay?.getStrokeColor()) { hex ->
+            draggableTextOverlay?.setStrokeColor(hex ?: "#000000")
+            setupStrokeColorPicker(toolbar)
+        }
+    }
+
+    private fun setupShadowColorPicker(toolbar: View) {
+        val list = toolbar.findViewById<LinearLayout>(R.id.shadowColorPickerList) ?: return
+        buildTextPaletteRow(list, includeNone = true, selectedHex = draggableTextOverlay?.getShadowColor()) { hex ->
+            draggableTextOverlay?.setShadowColor(hex)
+            setupShadowColorPicker(toolbar)
         }
     }
 

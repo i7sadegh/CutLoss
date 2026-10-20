@@ -36,6 +36,16 @@
         android:id="@+id/bgSettingsContainer"
         android:visibility="gone" />
 
+    <!-- Stroke Settings Container -->
+    <include layout="@layout/text_stroke_settings"
+        android:id="@+id/strokeSettingsContainer"
+        android:visibility="gone" />
+
+    <!-- Shadow Settings Container -->
+    <include layout="@layout/text_shadow_settings"
+        android:id="@+id/shadowSettingsContainer"
+        android:visibility="gone" />
+
     <!-- Toolbar Row -->
     <HorizontalScrollView
         android:layout_width="match_parent"
@@ -157,6 +167,56 @@
                     android:textColor="@color/toolTextInactive" />
             </LinearLayout>
 
+            <!-- Stroke Settings -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextStrokeTab"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_text_stroke_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Stroke"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
+            <!-- Shadow Settings -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextShadowTab"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_text_shadow_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Shadow"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
             <!-- Background Settings -->
             <LinearLayout
                 android:layout_width="60dp"
@@ -178,31 +238,6 @@
                     android:layout_marginTop="4dp"
                     android:text="Background"
                     android:textSize="10sp"
-                    android:fontFamily="sans-serif-medium"
-                    android:textColor="@color/toolTextInactive" />
-            </LinearLayout>
-
-            <!-- Duplicate -->
-            <LinearLayout
-                android:layout_width="60dp"
-                android:layout_height="wrap_content"
-                android:orientation="vertical"
-                android:gravity="center">
-                <ImageButton
-                    android:id="@+id/btnTextDuplicate"
-                    android:layout_width="40dp"
-                    android:layout_height="40dp"
-                    android:background="@drawable/tool_button_inactive"
-                    android:src="@drawable/ic_copy_24"
-                    android:padding="8dp"
-                    android:scaleType="fitCenter"
-                    app:tint="@color/toolTextInactive" />
-                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:text="@string/str_duplicate"
-                    android:textSize="11sp"
                     android:fontFamily="sans-serif-medium"
                     android:textColor="@color/toolTextInactive" />
             </LinearLayout>

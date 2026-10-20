@@ -89,7 +89,27 @@ object TextRenderUtils {
                 radiusPx, radiusPx, bgPaint)
         }
 
-        // 2. Text lines (optional stroke outline first, then fill)
+        // 2. Text lines (optional stroke outline first, then fill).
+        //    Round 6: the stroke honors its own transparency, and a real
+        //    drop shadow (color / transparency / blur / angle / width) is
+        //    drawn under the widest pass only -- the stroke pass when a
+        //    stroke exists, otherwise the fill pass -- so the shadow
+        //    always matches the full glyph silhouette.
+        val fillColor = paint.color
+        val strokeAlphaFactor = op.strokeOpacity ?: 1.0f
+        val shadowOn = op.shadowColor != null && (op.shadowWidth > 0 || op.shadowBlur > 0)
+        var shadowDx = 0f
+        var shadowDy = 0f
+        var shadowArgb = 0
+        if (shadowOn) {
+            val shHex: String = op.shadowColor ?: "#000000"
+            val rad = Math.toRadians(op.shadowAngle.toDouble())
+            shadowDx = (op.shadowWidth * Math.cos(rad)).toFloat() * scale
+            shadowDy = (op.shadowWidth * Math.sin(rad)).toFloat() * scale
+            val shBase = try { Color.parseColor(shHex) } catch (e: Exception) { Color.BLACK }
+            val shAlpha = (op.shadowOpacity.coerceIn(0f, 1f) * Color.alpha(fillColor)).toInt().coerceIn(0, 255)
+            shadowArgb = Color.argb(shAlpha, Color.red(shBase), Color.green(shBase), Color.blue(shBase))
+        }
         for ((index, line) in lines.withIndex()) {
             val lineW = paint.measureText(line)
             val lineX = when (op.textAlign) {
@@ -104,19 +124,31 @@ object TextRenderUtils {
                 paint.strokeWidth = op.borderThickness * scale
                 paint.strokeJoin = Paint.Join.ROUND
                 val borderColorInt = try { Color.parseColor(op.borderColor) } catch (e: Exception) { Color.BLACK }
-                val fill = paint.color
+                val strokeAlpha = (strokeAlphaFactor.coerceIn(0f, 1f) * Color.alpha(fillColor)).toInt().coerceIn(0, 255)
                 paint.color = Color.argb(
-                    Color.alpha(fill),
+                    strokeAlpha,
                     Color.red(borderColorInt), Color.green(borderColorInt), Color.blue(borderColorInt))
+                if (shadowOn) {
+                    paint.setShadowLayer(op.shadowBlur * scale, shadowDx, shadowDy, shadowArgb)
+                } else {
+                    paint.clearShadowLayer()
+                }
                 canvas.drawText(line, lineX, lineY, paint)
                 paint.style = Paint.Style.FILL
-                paint.color = fill
+                paint.color = fillColor
+                paint.clearShadowLayer()
             } else {
                 paint.style = Paint.Style.FILL
+                if (shadowOn) {
+                    paint.setShadowLayer(op.shadowBlur * scale, shadowDx, shadowDy, shadowArgb)
+                } else {
+                    paint.clearShadowLayer()
+                }
             }
 
             canvas.drawText(line, lineX, lineY, paint)
         }
+        paint.clearShadowLayer()
     }
 
     /**
@@ -140,7 +172,7 @@ object TextRenderUtils {
             }
             if (maxTextWidth <= 0f || lines.isEmpty()) return null
 
-            val pad = (op.bgMargin + op.borderThickness + 8).coerceAtLeast(8)
+            val pad = (op.bgMargin + op.borderThickness + op.shadowWidth + op.shadowBlur + 8).coerceAtLeast(8)
             val width = (maxTextWidth + 2 * pad).toInt().coerceAtLeast(8)
             val height = (lines.size * textHeight + 2 * pad).toInt().coerceAtLeast(8)
             if (width > 8192 || height > 8192) return null

@@ -40,7 +40,7 @@ class DraggableTextOverlayView @JvmOverloads constructor(
 
     // ── Public callbacks ──────────────────────────────────────────────────────
     /** Called when the user commits the text (taps Done). */
-    var onTextCommitted: ((text: String, fontSize: Int, relativeX: Float, relativeY: Float, color: String, fontPath: String?, opacity: Float, borderThickness: Int, borderColor: String, textAlign: String, letterSpacing: Float, lineSpacing: Float, bold: Boolean, italic: Boolean, underline: Boolean, strikethrough: Boolean, bgColor: String?, bgOpacity: Float, bgCornerRadius: Int, bgMargin: Int) -> Unit)? = null
+    var onTextCommitted: ((text: String, fontSize: Int, relativeX: Float, relativeY: Float, color: String, fontPath: String?, opacity: Float, borderThickness: Int, borderColor: String, textAlign: String, letterSpacing: Float, lineSpacing: Float, bold: Boolean, italic: Boolean, underline: Boolean, strikethrough: Boolean, bgColor: String?, bgOpacity: Float, bgCornerRadius: Int, bgMargin: Int, strokeOpacity: Float, shadowColor: String?, shadowOpacity: Float, shadowBlur: Int, shadowAngle: Int, shadowWidth: Int) -> Unit)? = null
 
     /** Called when the text content changes (for live preview feedback). */
     var onTextChanged: ((text: String) -> Unit)? = null
@@ -73,6 +73,12 @@ class DraggableTextOverlayView @JvmOverloads constructor(
     private var currentBgOpacity = 1.0f
     private var currentBgCornerRadius = 0
     private var currentBgMargin = 0
+    private var currentStrokeOpacity = 1.0f
+    private var currentShadowColor: String? = null
+    private var currentShadowOpacity = 1.0f
+    private var currentShadowBlur = 0
+    private var currentShadowAngle = 0
+    private var currentShadowWidth = 0
 
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -243,8 +249,15 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         currentBgOpacity = 1.0f
         currentBgCornerRadius = 0
         currentBgMargin = 0
+        currentStrokeOpacity = 1.0f
+        currentShadowColor = null
+        currentShadowOpacity = 1.0f
+        currentShadowBlur = 0
+        currentShadowAngle = 0
+        currentShadowWidth = 0
         applyTypefaceAndFlags()
         refreshEditTextBackground()
+        refreshTextEffects()
 
         editText.setText(initialText)
         editText.setTextColor(Color.WHITE)
@@ -281,6 +294,12 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         currentBgOpacity = op.bgOpacity
         currentBgCornerRadius = op.bgCornerRadius
         currentBgMargin = op.bgMargin
+        currentStrokeOpacity = op.strokeOpacity ?: 1.0f
+        currentShadowColor = op.shadowColor
+        currentShadowOpacity = op.shadowOpacity
+        currentShadowBlur = op.shadowBlur
+        currentShadowAngle = op.shadowAngle
+        currentShadowWidth = op.shadowWidth
 
         setFontPath(op.fontPath)
         editText.setText(op.text)
@@ -292,6 +311,7 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         updateFontSizeOnScreen()
         visibility = VISIBLE
         refreshEditTextBackground()
+        refreshTextEffects()
 
         post {
             positionEditTextFromRelative()
@@ -322,7 +342,8 @@ class DraggableTextOverlayView @JvmOverloads constructor(
             onTextCommitted?.invoke(
                 text, currentFontSize, relativeX, relativeY, currentColorString,
                 currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing,
-                currentBold, currentItalic, currentUnderline, currentStrikethrough, currentBgColor, currentBgOpacity, currentBgCornerRadius, currentBgMargin
+                currentBold, currentItalic, currentUnderline, currentStrikethrough, currentBgColor, currentBgOpacity, currentBgCornerRadius, currentBgMargin,
+                currentStrokeOpacity, currentShadowColor, currentShadowOpacity, currentShadowBlur, currentShadowAngle, currentShadowWidth
             )
         }
         deactivate()
@@ -353,16 +374,45 @@ class DraggableTextOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
-    fun setBorderThickness(thickness: Int) {
-        currentBorderThickness = thickness.coerceAtLeast(0)
-        val borderColor = try {
-            Color.parseColor(currentBorderColor)
-        } catch (e: Exception) {
-            Color.BLACK
-        }
+    // -- Stroke + shadow setters (CutStudio round 6) --
+    fun setStrokeColor(hex: String) { currentBorderColor = hex; refreshTextEffects() }
+    fun setStrokeOpacity(value: Float) { currentStrokeOpacity = value.coerceIn(0f, 1f); refreshTextEffects() }
+    fun setStrokeWidth(width: Int) { currentBorderThickness = width.coerceAtLeast(0); refreshTextEffects() }
+    fun setShadowColor(hex: String?) { currentShadowColor = hex; refreshTextEffects() }
+    fun setShadowOpacity(value: Float) { currentShadowOpacity = value.coerceIn(0f, 1f); refreshTextEffects() }
+    fun setShadowBlur(value: Int) { currentShadowBlur = value.coerceAtLeast(0); refreshTextEffects() }
+    fun setShadowAngle(value: Int) { currentShadowAngle = value.coerceIn(0, 360); refreshTextEffects() }
+    fun setShadowWidth(value: Int) { currentShadowWidth = value.coerceAtLeast(0); refreshTextEffects() }
 
+    fun getStrokeColor(): String = currentBorderColor
+    fun getStrokeOpacity(): Float = currentStrokeOpacity
+    fun getStrokeWidth(): Int = currentBorderThickness
+    fun getShadowColor(): String? = currentShadowColor
+    fun getShadowOpacity(): Float = currentShadowOpacity
+    fun getShadowBlur(): Int = currentShadowBlur
+    fun getShadowAngle(): Int = currentShadowAngle
+    fun getShadowWidth(): Int = currentShadowWidth
+
+    /**
+     * Live preview on the EditText (only one shadow layer is possible).
+     * Stroke wins over shadow while both are active; the committed render
+     * in TextRenderUtils draws both of them exactly.
+     */
+    private fun refreshTextEffects() {
+        val shadowHex = currentShadowColor
         if (currentBorderThickness > 0) {
-            editText.setShadowLayer((currentBorderThickness * 1.2f).coerceAtLeast(1f), 0f, 0f, borderColor)
+            val c = try { Color.parseColor(currentBorderColor) } catch (e: Exception) { Color.BLACK }
+            val a = (currentStrokeOpacity.coerceIn(0f, 1f) * 255).toInt().coerceIn(0, 255)
+            editText.setShadowLayer((currentBorderThickness * 1.2f).coerceAtLeast(1f), 0f, 0f,
+                Color.argb(a, Color.red(c), Color.green(c), Color.blue(c)))
+        } else if (shadowHex != null && (currentShadowWidth > 0 || currentShadowBlur > 0)) {
+            val c = try { Color.parseColor(shadowHex) } catch (e: Exception) { Color.BLACK }
+            val a = (currentShadowOpacity.coerceIn(0f, 1f) * 255).toInt().coerceIn(0, 255)
+            val rad = Math.toRadians(currentShadowAngle.toDouble())
+            val dx = (currentShadowWidth * Math.cos(rad)).toFloat()
+            val dy = (currentShadowWidth * Math.sin(rad)).toFloat()
+            editText.setShadowLayer(currentShadowBlur.toFloat(), dx, dy,
+                Color.argb(a, Color.red(c), Color.green(c), Color.blue(c)))
         } else {
             editText.setShadowLayer(4f, 2f, 2f, Color.BLACK)
         }

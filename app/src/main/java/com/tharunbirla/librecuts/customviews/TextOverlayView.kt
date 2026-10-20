@@ -337,6 +337,9 @@ class TextOverlayView @JvmOverloads constructor(
                 paint.typeface = android.graphics.Typeface.DEFAULT
             }
             paint.color = Color.WHITE
+            // Keep the subtitle's original soft drop shadow (drawBlock now
+            // clears the shared paint's shadow layer after each text block).
+            paint.setShadowLayer(4f, 2f, 2f, Color.BLACK)
 
             val bgPaint = Paint().apply {
                 isAntiAlias = true

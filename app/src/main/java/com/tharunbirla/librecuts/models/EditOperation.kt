@@ -109,6 +109,12 @@ sealed class EditOperation : Serializable {
         val bgOpacity: Float = 1.0f,
         val bgCornerRadius: Int = 0,
         val bgMargin: Int = 0,
+        val strokeOpacity: Float? = null,
+        val shadowColor: String? = null,
+        val shadowOpacity: Float = 1.0f,
+        val shadowBlur: Int = 0,
+        val shadowAngle: Int = 0,
+        val shadowWidth: Int = 0,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList()
     ) : EditOperation() {
