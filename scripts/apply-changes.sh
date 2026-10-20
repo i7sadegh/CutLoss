@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  CutStudio change pipeline -- scripts/apply-changes.sh
-#  ROUND 5 -- Text tool overhaul (WYSIWYG canvas text rendering)
+#  ROUND 5 + ROUND 6 -- Text tool: WYSIWYG + stroke/shadow tabs
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
@@ -23,8 +23,23 @@
 #   5. NEW "Background" tab (after Format): color row (None/custom/presets)
 #      + Transparency / Corner Radius / Margin sliders, styled like Format.
 #
+#
+#  Round 6 contents:
+#   1. Editor play button: circular background -> capsule pill (72x40dp);
+#      the tap bounce effect is kept (it lives in the click listener).
+#   2. Text tool: Duplicate button + wiring removed (image tool keeps its
+#      own duplicate button).
+#   3. Format tab: the old "Shadow" slider is gone.
+#   4. NEW "Stroke" tab (right of Format): color row + Transparency +
+#      Width sliders; stroke transparency is a new model field.
+#   5. NEW "Shadow" tab (left of Background): color row (None = off) +
+#      Transparency / Blur / Angle / Width sliders -- a real drop shadow
+#      rendered by the same Canvas code in preview AND export.
+#      Tab order: Keyboard | Color | Format | Stroke | Shadow | Background.
+#
 #  Idempotent: every patch checks its own marker and skips if applied.
 #  Requires: the v3 export panel state (works with or without round 4).
+#  Round 5 steps run first (skipped when already applied), then round 6.
 # ==========================================================================
 set -uo pipefail
 
@@ -819,7 +834,7 @@ else:
     print('   [skip] D-f: activateForEdit() already loads')
 
 # D-f2: refresh background preview when re-editing
-if 'refreshEditTextBackground()\n\n        post {\n            positionEditTextFromRelative()\n            editText.requestFocus()\n        }\n    }' not in s:
+if 'refreshEditTextBackground()\n\n        post {\n            positionEditTextFromRelative()\n            editText.requestFocus()\n        }\n    }' not in s and 'refreshEditTextBackground()\n        refreshTextEffects()\n\n        post {\n            positionEditTextFromRelative()\n            editText.requestFocus()\n        }\n    }' not in s:
     ANCHOR = ('        updateFontSizeOnScreen()\n'
               '        visibility = VISIBLE\n'
               '\n'
@@ -845,7 +860,7 @@ else:
     print('   [skip] D-f2: already refreshed')
 
 # D-g: commitText passes new fields
-if 'currentBgMargin\n            )' not in s:
+if 'currentBgMargin\n            )' not in s and 'currentShadowWidth\n            )' not in s:
     OLD = ('            onTextCommitted?.invoke(\n'
            '                text, currentFontSize, relativeX, relativeY, currentColorString,\n'
            '                currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing\n'
@@ -1160,7 +1175,7 @@ if 'viewModel.textPngRenderer = { op ->' not in s:
     print('   [ok]   A1: textPngRenderer hooked')
 
 # A2a: onTextCommitted lambda params
-if 'bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->' not in s:
+if 'bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->' not in s and 'bgCornerRadius, bgMargin, strokeOpacity, shadowColor, shadowOpacity, shadowBlur, shadowAngle, shadowWidth ->' not in s:
     OLD = ('overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, '
            'borderThickness, borderColor, textAlign, letterSpacing, lineSpacing ->')
     if s.count(OLD) != 1:
@@ -1191,7 +1206,7 @@ if 'bold = bold, italic = italic, underline = underline' not in s:
     print('   [ok]   A2b: updateOperation carries new fields')
 
 # A2c: addTextOperation call carries new fields
-if 'bgMargin = bgMargin\n                        )' not in s:
+if 'bgMargin = bgMargin\n                        )' not in s and 'shadowWidth = shadowWidth\n                        )' not in s:
     OLD = ('                            textAlign = textAlign,\n'
            '                            letterSpacing = letterSpacing,\n'
            '                            lineSpacing = lineSpacing\n'
@@ -1640,7 +1655,7 @@ checks = [
     ('preview uses shared paint', 'TextRenderUtils.configPaint' in tov),
     ('preview draws bg block', 'TextRenderUtils.drawBlock' in tov),
     ('draggable has setters', 'fun setBgMargin(' in drg and 'fun setBold(' in drg),
-    ('draggable commit passes state', 'currentBgMargin\n            )' in drg),
+    ('draggable commit passes state', ('currentBgMargin\n            )' in drg or 'currentShadowWidth\n            )' in drg)),
     ('VM renderer property', 'var textPngRenderer' in vm),
     ('VM overlay stages', 'WYSIWYG path: canvas-rendered PNG' in vm),
     ('VM text input section', '// 4b. Text Overlay PNG Inputs' in vm),
@@ -1671,6 +1686,1297 @@ CUTPY
   return 0
 }
 
+# --- R6 STEPS BEGIN -------------------------------------------------------
+
+# R6-specific paths (PKG / TOOLBAR / FMT / EOP / TOV / DRG / VME / ACT are
+# already defined above; these extras travel with the round 6 functions
+# when they are embedded into the combined pipeline script).
+TRU="$PKG/utils/TextRenderUtils.kt"
+STROKE_L="app/src/main/res/layout/text_stroke_settings.xml"
+SHADOW_L="app/src/main/res/layout/text_shadow_settings.xml"
+AVEL="app/src/main/res/layout/activity_video_editing.xml"
+DRAW="app/src/main/res/drawable"
+
+r6_precheck() {
+  echo "== r6 pre-check"
+  if [ ! -f "$TRU" ]; then
+    echo "ABORT: TextRenderUtils.kt not found (round 5 state required)."
+    return 1
+  fi
+  if [ ! -f "$TOOLBAR" ]; then
+    echo "ABORT: text_editing_toolbar.xml not found."
+    return 1
+  fi
+  echo "   [ok] round 5 text tool state present"
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 1 -- NEW resource files
+# ---------------------------------------------------------------------------
+r6_step1() {
+  echo "== r6 step 1: new resource files (stroke/shadow panels, icons, capsule)"
+
+  if [ -f "$STROKE_L" ]; then
+    echo "   [skip] text_stroke_settings.xml exists"
+  else
+    cat > "$STROKE_L" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/bg_bottom_nav_floating"
+    android:elevation="12dp"
+    android:layout_marginHorizontal="16dp"
+    android:layout_marginBottom="8dp">
+
+    <!-- Stroke Color -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Color"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none"
+            android:requiresFadingEdge="horizontal"
+            android:fadingEdgeLength="16dp">
+            <LinearLayout
+                android:id="@+id/strokeColorPickerList"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical" />
+        </HorizontalScrollView>
+    </LinearLayout>
+
+    <!-- Transparency -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Transparency"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekStrokeOpacity"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="100"
+            android:stepSize="1"
+            android:value="100" />
+    </LinearLayout>
+
+    <!-- Width -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Width"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekStrokeWidth"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="20"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+</LinearLayout>
+XMLEOF
+    echo "   [ok]   text_stroke_settings.xml written"
+  fi
+
+  if [ -f "$SHADOW_L" ]; then
+    echo "   [skip] text_shadow_settings.xml exists"
+  else
+    cat > "$SHADOW_L" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/bg_bottom_nav_floating"
+    android:elevation="12dp"
+    android:layout_marginHorizontal="16dp"
+    android:layout_marginBottom="8dp">
+
+    <!-- Shadow Color -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Color"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none"
+            android:requiresFadingEdge="horizontal"
+            android:fadingEdgeLength="16dp">
+            <LinearLayout
+                android:id="@+id/shadowColorPickerList"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical" />
+        </HorizontalScrollView>
+    </LinearLayout>
+
+    <!-- Transparency -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Transparency"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekShadowOpacity"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="100"
+            android:stepSize="1"
+            android:value="100" />
+    </LinearLayout>
+
+    <!-- Blur -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Blur"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekShadowBlur"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="50"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+    <!-- Angle -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Angle"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekShadowAngle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="360"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+    <!-- Width -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Width"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekShadowWidth"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="50"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+</LinearLayout>
+XMLEOF
+    echo "   [ok]   text_shadow_settings.xml written"
+  fi
+
+  if [ -f "$DRAW/ic_text_stroke_24.xml" ]; then
+    echo "   [skip] ic_text_stroke_24.xml exists"
+  else
+    cat > "$DRAW/ic_text_stroke_24.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M4,4 H20 V9.5 H14.7 V21 H9.3 V9.5 H4 Z M6.2,6.2 H17.8 V7.3 H12.5 V18.8 H11.5 V7.3 H6.2 Z" />
+</vector>
+XMLEOF
+    echo "   [ok]   ic_text_stroke_24.xml written"
+  fi
+
+  if [ -f "$DRAW/ic_text_shadow_24.xml" ]; then
+    echo "   [skip] ic_text_shadow_24.xml exists"
+  else
+    cat > "$DRAW/ic_text_shadow_24.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:fillAlpha="0.45"
+        android:pathData="M10,10 H21 V21 H10 Z" />
+    <path
+        android:fillColor="#FF000000"
+        android:pathData="M4,4 H15 V15 H4 Z" />
+</vector>
+XMLEOF
+    echo "   [ok]   ic_text_shadow_24.xml written"
+  fi
+
+  if [ -f "$DRAW/bg_play_pause_capsule.xml" ]; then
+    echo "   [skip] bg_play_pause_capsule.xml exists"
+  else
+    cat > "$DRAW/bg_play_pause_capsule.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/colorPrimary" />
+    <corners android:radius="20dp" />
+</shape>
+XMLEOF
+    echo "   [ok]   bg_play_pause_capsule.xml written"
+  fi
+
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 2 -- text_editing_toolbar.xml: drop Duplicate, add tabs + includes
+# ---------------------------------------------------------------------------
+r6_step2() {
+  echo "== r6 step 2: text toolbar (remove Duplicate, add Stroke/Shadow tabs)"
+  python3 - "$TOOLBAR" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'btnTextStrokeTab' in s:
+    print('   [skip] toolbar already patched (stroke tab present)')
+    sys.exit(0)
+
+# (a) remove the Duplicate tool block
+if 'btnTextDuplicate' in s:
+    a = '            <!-- Duplicate -->'
+    b = '            <!-- Keyframes -->'
+    if s.count(a) != 1 or s.count(b) != 1:
+        print('   [FAIL] duplicate block anchors mismatch')
+        sys.exit(1)
+    s = s[:s.index(a)] + s[s.index(b):]
+    print('   [ok]   Duplicate block removed')
+
+# (b) insert Stroke + Shadow tab entries between Format and Background
+TABS = '''            <!-- Stroke Settings -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextStrokeTab"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_text_stroke_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Stroke"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
+            <!-- Shadow Settings -->
+            <LinearLayout
+                android:layout_width="60dp"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:gravity="center">
+                <ImageButton
+                    android:id="@+id/btnTextShadowTab"
+                    android:layout_width="40dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/tool_button_inactive"
+                    android:src="@drawable/ic_text_shadow_24"
+                    android:padding="8dp"
+                    android:scaleType="fitCenter"
+                    app:tint="@color/toolTextInactive" />
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="4dp"
+                    android:text="Shadow"
+                    android:textSize="11sp"
+                    android:fontFamily="sans-serif-medium"
+                    android:textColor="@color/toolTextInactive" />
+            </LinearLayout>
+
+'''
+BGMARK = '            <!-- Background Settings -->'
+if s.count(BGMARK) != 1:
+    print('   [FAIL] background tab marker mismatch (%d)' % s.count(BGMARK))
+    sys.exit(1)
+s = s.replace(BGMARK, TABS + BGMARK, 1)
+print('   [ok]   Stroke + Shadow tabs inserted before Background')
+
+# (c) include the two new settings panels
+INCL = '''    <!-- Stroke Settings Container -->
+    <include layout="@layout/text_stroke_settings"
+        android:id="@+id/strokeSettingsContainer"
+        android:visibility="gone" />
+
+    <!-- Shadow Settings Container -->
+    <include layout="@layout/text_shadow_settings"
+        android:id="@+id/shadowSettingsContainer"
+        android:visibility="gone" />
+
+'''
+BGInc = '    <!-- Background Settings Container -->\n    <include layout="@layout/text_background_settings"\n        android:id="@+id/bgSettingsContainer"\n        android:visibility="gone" />'
+if s.count(BGInc) != 1:
+    print('   [FAIL] background include anchor mismatch (%d)' % s.count(BGInc))
+    sys.exit(1)
+s = s.replace(BGInc, BGInc + '\n\n' + INCL.rstrip('\n'), 1)
+print('   [ok]   stroke/shadow panels included')
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 3 -- Format tab: remove old Shadow slider; play button -> capsule
+# ---------------------------------------------------------------------------
+r6_step3() {
+  echo "== r6 step 3: format tab shadow slider removal + capsule play button"
+
+  python3 - "$FMT" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'seekBorderWidth' not in s:
+    print('   [skip] format tab already without shadow slider')
+    sys.exit(0)
+a = '    <!-- Border Thickness -->'
+b = '    <!-- Letter Spacing -->'
+if s.count(a) != 1 or s.count(b) != 1:
+    print('   [FAIL] format tab anchors mismatch')
+    sys.exit(1)
+s = s[:s.index(a)] + s[s.index(b):]
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   shadow slider block removed from Format tab')
+CUTPY
+  [ $? -ne 0 ] && return 1
+
+  python3 - "$AVEL" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'bg_play_pause_capsule' in s:
+    print('   [skip] play button already capsule')
+    sys.exit(0)
+OLD = '''<ImageButton
+                    android:id="@+id/btnPlayPause"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="@drawable/circle_primary_container"
+                    android:src="@drawable/ic_play_24"
+                    android:padding="10dp"'''
+NEW = '''<ImageButton
+                    android:id="@+id/btnPlayPause"
+                    android:layout_width="72dp"
+                    android:layout_height="40dp"
+                    android:background="@drawable/bg_play_pause_capsule"
+                    android:src="@drawable/ic_play_24"
+                    android:padding="8dp"'''
+if s.count(OLD) != 1:
+    print('   [FAIL] btnPlayPause block mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+s = s.replace(OLD, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   play button background -> capsule (72x40dp)')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 4 -- EditOperation.AddText: stroke + shadow fields
+# ---------------------------------------------------------------------------
+r6_step4() {
+  echo "== r6 step 4: AddText data model (stroke/shadow fields)"
+  python3 - "$EOP" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+MARK = 'val shadowWidth: Int = 0,'
+if MARK in s:
+    print('   [skip] AddText shadow fields already present')
+    sys.exit(0)
+ANCHOR = '        val bgMargin: Int = 0,\n'
+if s.count(ANCHOR) != 1:
+    print('   [FAIL] AddText bgMargin anchor mismatch (%d)' % s.count(ANCHOR))
+    sys.exit(1)
+NEW = ANCHOR + (
+    '        val strokeOpacity: Float? = null,\n'
+    '        val shadowColor: String? = null,\n'
+    '        val shadowOpacity: Float = 1.0f,\n'
+    '        val shadowBlur: Int = 0,\n'
+    '        val shadowAngle: Int = 0,\n'
+    '        val shadowWidth: Int = 0,\n')
+s = s.replace(ANCHOR, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   AddText: 6 new fields (strokeOpacity nullable = old-project safe)')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 5 -- TextRenderUtils: real shadow + stroke transparency
+# ---------------------------------------------------------------------------
+r6_step5() {
+  echo "== r6 step 5: TextRenderUtils (drop shadow + stroke opacity)"
+  python3 - "$TRU" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'shadowDx' in s:
+    print('   [skip] TextRenderUtils already patched')
+    sys.exit(0)
+
+OLD = '''        // 2. Text lines (optional stroke outline first, then fill)
+        for ((index, line) in lines.withIndex()) {
+            val lineW = paint.measureText(line)
+            val lineX = when (op.textAlign) {
+                "left", "L" -> startX
+                "right", "R" -> startX + maxTextWidth - lineW
+                else -> startX + (maxTextWidth - lineW) / 2f
+            }
+            val lineY = startY + (index * textHeight)
+
+            if (op.borderThickness > 0) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = op.borderThickness * scale
+                paint.strokeJoin = Paint.Join.ROUND
+                val borderColorInt = try { Color.parseColor(op.borderColor) } catch (e: Exception) { Color.BLACK }
+                val fill = paint.color
+                paint.color = Color.argb(
+                    Color.alpha(fill),
+                    Color.red(borderColorInt), Color.green(borderColorInt), Color.blue(borderColorInt))
+                canvas.drawText(line, lineX, lineY, paint)
+                paint.style = Paint.Style.FILL
+                paint.color = fill
+            } else {
+                paint.style = Paint.Style.FILL
+            }
+
+            canvas.drawText(line, lineX, lineY, paint)
+        }
+'''
+NEW = '''        // 2. Text lines (optional stroke outline first, then fill).
+        //    Round 6: the stroke honors its own transparency, and a real
+        //    drop shadow (color / transparency / blur / angle / width) is
+        //    drawn under the widest pass only -- the stroke pass when a
+        //    stroke exists, otherwise the fill pass -- so the shadow
+        //    always matches the full glyph silhouette.
+        val fillColor = paint.color
+        val strokeAlphaFactor = op.strokeOpacity ?: 1.0f
+        val shadowOn = op.shadowColor != null && (op.shadowWidth > 0 || op.shadowBlur > 0)
+        var shadowDx = 0f
+        var shadowDy = 0f
+        var shadowArgb = 0
+        if (shadowOn) {
+            val shHex: String = op.shadowColor ?: "#000000"
+            val rad = Math.toRadians(op.shadowAngle.toDouble())
+            shadowDx = (op.shadowWidth * Math.cos(rad)).toFloat() * scale
+            shadowDy = (op.shadowWidth * Math.sin(rad)).toFloat() * scale
+            val shBase = try { Color.parseColor(shHex) } catch (e: Exception) { Color.BLACK }
+            val shAlpha = (op.shadowOpacity.coerceIn(0f, 1f) * Color.alpha(fillColor)).toInt().coerceIn(0, 255)
+            shadowArgb = Color.argb(shAlpha, Color.red(shBase), Color.green(shBase), Color.blue(shBase))
+        }
+        for ((index, line) in lines.withIndex()) {
+            val lineW = paint.measureText(line)
+            val lineX = when (op.textAlign) {
+                "left", "L" -> startX
+                "right", "R" -> startX + maxTextWidth - lineW
+                else -> startX + (maxTextWidth - lineW) / 2f
+            }
+            val lineY = startY + (index * textHeight)
+
+            if (op.borderThickness > 0) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = op.borderThickness * scale
+                paint.strokeJoin = Paint.Join.ROUND
+                val borderColorInt = try { Color.parseColor(op.borderColor) } catch (e: Exception) { Color.BLACK }
+                val strokeAlpha = (strokeAlphaFactor.coerceIn(0f, 1f) * Color.alpha(fillColor)).toInt().coerceIn(0, 255)
+                paint.color = Color.argb(
+                    strokeAlpha,
+                    Color.red(borderColorInt), Color.green(borderColorInt), Color.blue(borderColorInt))
+                if (shadowOn) {
+                    paint.setShadowLayer(op.shadowBlur * scale, shadowDx, shadowDy, shadowArgb)
+                } else {
+                    paint.clearShadowLayer()
+                }
+                canvas.drawText(line, lineX, lineY, paint)
+                paint.style = Paint.Style.FILL
+                paint.color = fillColor
+                paint.clearShadowLayer()
+            } else {
+                paint.style = Paint.Style.FILL
+                if (shadowOn) {
+                    paint.setShadowLayer(op.shadowBlur * scale, shadowDx, shadowDy, shadowArgb)
+                } else {
+                    paint.clearShadowLayer()
+                }
+            }
+
+            canvas.drawText(line, lineX, lineY, paint)
+        }
+        paint.clearShadowLayer()
+'''
+if s.count(OLD) != 1:
+    print('   [FAIL] drawBlock text section anchor mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+s = s.replace(OLD, NEW, 1)
+
+OLDPAD = '            val pad = (op.bgMargin + op.borderThickness + 8).coerceAtLeast(8)'
+NEWPAD = '            val pad = (op.bgMargin + op.borderThickness + op.shadowWidth + op.shadowBlur + 8).coerceAtLeast(8)'
+if s.count(OLDPAD) != 1:
+    print('   [FAIL] pad anchor mismatch (%d)' % s.count(OLDPAD))
+    sys.exit(1)
+s = s.replace(OLDPAD, NEWPAD, 1)
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   drawBlock: shadow + stroke transparency; PNG pad covers shadow')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 6 -- TextOverlayView: keep subtitle soft shadow
+# ---------------------------------------------------------------------------
+r6_step6() {
+  echo "== r6 step 6: TextOverlayView subtitle shadow restore"
+  python3 - "$TOV" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if '// Keep the subtitle' in s:
+    print('   [skip] subtitle shadow restore already present')
+    sys.exit(0)
+OLD = '''            paint.color = Color.WHITE
+'''
+NEW = '''            paint.color = Color.WHITE
+            // Keep the subtitle's original soft drop shadow (drawBlock now
+            // clears the shared paint's shadow layer after each text block).
+            paint.setShadowLayer(4f, 2f, 2f, Color.BLACK)
+'''
+if s.count(OLD) != 1:
+    print('   [FAIL] subtitle paint anchor mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+s = s.replace(OLD, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   subtitle soft shadow preserved')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 7 -- DraggableTextOverlayView: stroke/shadow state + preview
+# ---------------------------------------------------------------------------
+r6_step7() {
+  echo "== r6 step 7: DraggableTextOverlayView stroke/shadow support"
+  python3 - "$DRG" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'fun refreshTextEffects()' in s:
+    print('   [skip] draggable overlay already patched')
+    sys.exit(0)
+
+def req(old, cnt=1):
+    if s.count(old) != cnt:
+        print('   [FAIL] anchor mismatch (%d): %r' % (s.count(old), old[:60]))
+        sys.exit(1)
+
+# D1 -- callback signature
+OLD = 'bgCornerRadius: Int, bgMargin: Int) -> Unit)? = null'
+req(OLD)
+NEW = ('bgCornerRadius: Int, bgMargin: Int, strokeOpacity: Float, shadowColor: String?, '
+       'shadowOpacity: Float, shadowBlur: Int, shadowAngle: Int, shadowWidth: Int) -> Unit)? = null')
+s = s.replace(OLD, NEW, 1)
+
+# D2 -- state fields
+OLD = '    private var currentBgMargin = 0\n'
+req(OLD)
+NEW = OLD + (
+    '    private var currentStrokeOpacity = 1.0f\n'
+    '    private var currentShadowColor: String? = null\n'
+    '    private var currentShadowOpacity = 1.0f\n'
+    '    private var currentShadowBlur = 0\n'
+    '    private var currentShadowAngle = 0\n'
+    '    private var currentShadowWidth = 0\n')
+s = s.replace(OLD, NEW, 1)
+
+# D3 -- activate() defaults
+OLD = '        currentBgMargin = 0\n'
+req(OLD)
+NEW = OLD + (
+    '        currentStrokeOpacity = 1.0f\n'
+    '        currentShadowColor = null\n'
+    '        currentShadowOpacity = 1.0f\n'
+    '        currentShadowBlur = 0\n'
+    '        currentShadowAngle = 0\n'
+    '        currentShadowWidth = 0\n')
+s = s.replace(OLD, NEW, 1)
+
+OLD = '        applyTypefaceAndFlags()\n        refreshEditTextBackground()\n'
+req(OLD)
+NEW = OLD + '        refreshTextEffects()\n'
+s = s.replace(OLD, NEW, 1)
+
+# D4 -- activateForEdit() state load
+OLD = '        currentBgMargin = op.bgMargin\n'
+req(OLD)
+NEW = OLD + (
+    '        currentStrokeOpacity = op.strokeOpacity ?: 1.0f\n'
+    '        currentShadowColor = op.shadowColor\n'
+    '        currentShadowOpacity = op.shadowOpacity\n'
+    '        currentShadowBlur = op.shadowBlur\n'
+    '        currentShadowAngle = op.shadowAngle\n'
+    '        currentShadowWidth = op.shadowWidth\n')
+s = s.replace(OLD, NEW, 1)
+
+OLD = '        visibility = VISIBLE\n        refreshEditTextBackground()\n'
+req(OLD)
+NEW = OLD + '        refreshTextEffects()\n'
+s = s.replace(OLD, NEW, 1)
+
+# D5 -- commitText() passes the new state
+OLD = 'currentBgOpacity, currentBgCornerRadius, currentBgMargin\n            )'
+req(OLD)
+NEW = ('currentBgOpacity, currentBgCornerRadius, currentBgMargin,\n'
+       '                currentStrokeOpacity, currentShadowColor, currentShadowOpacity, '
+       'currentShadowBlur, currentShadowAngle, currentShadowWidth\n            )')
+s = s.replace(OLD, NEW, 1)
+
+# D6 -- replace setBorderThickness with stroke/shadow setters + preview
+OLD = '''    fun setBorderThickness(thickness: Int) {
+        currentBorderThickness = thickness.coerceAtLeast(0)
+        val borderColor = try {
+            Color.parseColor(currentBorderColor)
+        } catch (e: Exception) {
+            Color.BLACK
+        }
+
+        if (currentBorderThickness > 0) {
+            editText.setShadowLayer((currentBorderThickness * 1.2f).coerceAtLeast(1f), 0f, 0f, borderColor)
+        } else {
+            editText.setShadowLayer(4f, 2f, 2f, Color.BLACK)
+        }
+    }
+'''
+req(OLD)
+NEW = '''    // -- Stroke + shadow setters (CutStudio round 6) --
+    fun setStrokeColor(hex: String) { currentBorderColor = hex; refreshTextEffects() }
+    fun setStrokeOpacity(value: Float) { currentStrokeOpacity = value.coerceIn(0f, 1f); refreshTextEffects() }
+    fun setStrokeWidth(width: Int) { currentBorderThickness = width.coerceAtLeast(0); refreshTextEffects() }
+    fun setShadowColor(hex: String?) { currentShadowColor = hex; refreshTextEffects() }
+    fun setShadowOpacity(value: Float) { currentShadowOpacity = value.coerceIn(0f, 1f); refreshTextEffects() }
+    fun setShadowBlur(value: Int) { currentShadowBlur = value.coerceAtLeast(0); refreshTextEffects() }
+    fun setShadowAngle(value: Int) { currentShadowAngle = value.coerceIn(0, 360); refreshTextEffects() }
+    fun setShadowWidth(value: Int) { currentShadowWidth = value.coerceAtLeast(0); refreshTextEffects() }
+
+    fun getStrokeColor(): String = currentBorderColor
+    fun getStrokeOpacity(): Float = currentStrokeOpacity
+    fun getStrokeWidth(): Int = currentBorderThickness
+    fun getShadowColor(): String? = currentShadowColor
+    fun getShadowOpacity(): Float = currentShadowOpacity
+    fun getShadowBlur(): Int = currentShadowBlur
+    fun getShadowAngle(): Int = currentShadowAngle
+    fun getShadowWidth(): Int = currentShadowWidth
+
+    /**
+     * Live preview on the EditText (only one shadow layer is possible).
+     * Stroke wins over shadow while both are active; the committed render
+     * in TextRenderUtils draws both of them exactly.
+     */
+    private fun refreshTextEffects() {
+        val shadowHex = currentShadowColor
+        if (currentBorderThickness > 0) {
+            val c = try { Color.parseColor(currentBorderColor) } catch (e: Exception) { Color.BLACK }
+            val a = (currentStrokeOpacity.coerceIn(0f, 1f) * 255).toInt().coerceIn(0, 255)
+            editText.setShadowLayer((currentBorderThickness * 1.2f).coerceAtLeast(1f), 0f, 0f,
+                Color.argb(a, Color.red(c), Color.green(c), Color.blue(c)))
+        } else if (shadowHex != null && (currentShadowWidth > 0 || currentShadowBlur > 0)) {
+            val c = try { Color.parseColor(shadowHex) } catch (e: Exception) { Color.BLACK }
+            val a = (currentShadowOpacity.coerceIn(0f, 1f) * 255).toInt().coerceIn(0, 255)
+            val rad = Math.toRadians(currentShadowAngle.toDouble())
+            val dx = (currentShadowWidth * Math.cos(rad)).toFloat()
+            val dy = (currentShadowWidth * Math.sin(rad)).toFloat()
+            editText.setShadowLayer(currentShadowBlur.toFloat(), dx, dy,
+                Color.argb(a, Color.red(c), Color.green(c), Color.blue(c)))
+        } else {
+            editText.setShadowLayer(4f, 2f, 2f, Color.BLACK)
+        }
+    }
+'''
+s = s.replace(OLD, NEW, 1)
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   stroke/shadow setters + live preview + commit state')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 8 -- ViewModelExt.addTextOperation: new params
+# ---------------------------------------------------------------------------
+r6_step8() {
+  echo "== r6 step 8: addTextOperation signature (stroke/shadow)"
+  python3 - "$VME" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'shadowWidth: Int = 0' in s:
+    print('   [skip] addTextOperation already extended')
+    sys.exit(0)
+
+OLD = '    bgCornerRadius: Int = 0, bgMargin: Int = 0\n) {'
+if s.count(OLD) != 1:
+    print('   [FAIL] addTextOperation signature anchor mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+NEW = ('    bgCornerRadius: Int = 0, bgMargin: Int = 0,\n'
+       '    strokeOpacity: Float = 1.0f, shadowColor: String? = null, shadowOpacity: Float = 1.0f,\n'
+       '    shadowBlur: Int = 0, shadowAngle: Int = 0, shadowWidth: Int = 0\n) {')
+s = s.replace(OLD, NEW, 1)
+
+OLD = '        bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin\n    ), "Add Text"))'
+if s.count(OLD) != 1:
+    print('   [FAIL] AddText ctor anchor mismatch (%d)' % s.count(OLD))
+    sys.exit(1)
+NEW = ('        bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin,\n'
+       '        strokeOpacity = strokeOpacity, shadowColor = shadowColor, shadowOpacity = shadowOpacity,\n'
+       '        shadowBlur = shadowBlur, shadowAngle = shadowAngle, shadowWidth = shadowWidth\n    ), "Add Text"))')
+s = s.replace(OLD, NEW, 1)
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   addTextOperation + AddText ctor pass stroke/shadow state')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 STEP 9 -- VideoEditingActivity: wiring
+# ---------------------------------------------------------------------------
+r6_step9() {
+  echo "== r6 step 9: Activity wiring (tabs, sliders, palettes, commit, cleanup)"
+  python3 - "$ACT" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'setupShadowColorPicker' in s:
+    print('   [skip] Activity already patched for round 6')
+    sys.exit(0)
+
+def req(old):
+    if s.count(old) != 1:
+        print('   [FAIL] anchor mismatch (%d): %r' % (s.count(old), old[:70]))
+        sys.exit(1)
+    return old
+
+# A1 -- onTextCommitted lambda parameters
+OLD = req('bgCornerRadius, bgMargin ->')
+NEW = 'bgCornerRadius, bgMargin, strokeOpacity, shadowColor, shadowOpacity, shadowBlur, shadowAngle, shadowWidth ->'
+s = s.replace(OLD, NEW, 1)
+
+# A2 -- update branch: op.copy(...)
+OLD = req('''                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
+                                ))''')
+NEW = '''                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin,
+                                    strokeOpacity = strokeOpacity, shadowColor = shadowColor, shadowOpacity = shadowOpacity,
+                                    shadowBlur = shadowBlur, shadowAngle = shadowAngle, shadowWidth = shadowWidth
+                                ))'''
+s = s.replace(OLD, NEW, 1)
+
+# A3 -- new-text branch: addTextOperation(...)
+OLD = req('''                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin
+                        )''')
+NEW = '''                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin,
+                            strokeOpacity = strokeOpacity, shadowColor = shadowColor, shadowOpacity = shadowOpacity,
+                            shadowBlur = shadowBlur, shadowAngle = shadowAngle, shadowWidth = shadowWidth
+                        )'''
+s = s.replace(OLD, NEW, 1)
+
+# A4 -- remove the text Duplicate button wiring
+OLD = req('''                toolbar.findViewById<View>(R.id.btnTextDuplicate)?.setBounceClickListener {
+                    duplicateSelectedOverlay()
+                }
+''')
+s = s.replace(OLD, '', 1)
+
+# A5 -- tab + container view references
+OLD = req('''                val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)
+                val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)
+                val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)
+                val bgContainer = toolbar.findViewById<View>(R.id.bgSettingsContainer)''')
+NEW = '''                val btnStroke = toolbar.findViewById<ImageButton>(R.id.btnTextStrokeTab)
+                val btnShadow = toolbar.findViewById<ImageButton>(R.id.btnTextShadowTab)
+                val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)
+                val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)
+                val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)
+                val strokeContainer = toolbar.findViewById<View>(R.id.strokeSettingsContainer)
+                val shadowContainer = toolbar.findViewById<View>(R.id.shadowSettingsContainer)
+                val bgContainer = toolbar.findViewById<View>(R.id.bgSettingsContainer)'''
+s = s.replace(OLD, NEW, 1)
+
+# A6 -- resetTabs()
+OLD = req('''                fun resetTabs() {
+                    colorContainer?.visibility = View.GONE
+                    formatContainer?.visibility = View.GONE
+                    bgContainer?.visibility = View.GONE
+                    btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnBackground?.setColorFilter(getColor(R.color.toolTextInactive))
+                }''')
+NEW = '''                fun resetTabs() {
+                    colorContainer?.visibility = View.GONE
+                    formatContainer?.visibility = View.GONE
+                    strokeContainer?.visibility = View.GONE
+                    shadowContainer?.visibility = View.GONE
+                    bgContainer?.visibility = View.GONE
+                    btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnStroke?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnShadow?.setColorFilter(getColor(R.color.toolTextInactive))
+                    btnBackground?.setColorFilter(getColor(R.color.toolTextInactive))
+                }'''
+s = s.replace(OLD, NEW, 1)
+
+# A7a -- stroke/shadow slider sync + listeners (before the Format tab handler)
+OLD = req('                btnFormat?.setBounceClickListener {')
+NEW = '''                // Stroke tab sliders
+                fun syncStrokeSliders() {
+                    val textOverlay = draggableTextOverlay ?: return
+                    strokeContainer?.findViewById<Slider>(R.id.seekStrokeOpacity)?.value =
+                        (textOverlay.getStrokeOpacity() * 100f).coerceIn(0f, 100f)
+                    strokeContainer?.findViewById<Slider>(R.id.seekStrokeWidth)?.value =
+                        textOverlay.getStrokeWidth().toFloat().coerceIn(0f, 20f)
+                }
+                strokeContainer?.findViewById<Slider>(R.id.seekStrokeOpacity)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setStrokeOpacity(value / 100f)
+                }
+                strokeContainer?.findViewById<Slider>(R.id.seekStrokeWidth)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setStrokeWidth(value.toInt())
+                }
+
+                // Shadow tab sliders
+                fun syncShadowSliders() {
+                    val textOverlay = draggableTextOverlay ?: return
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowOpacity)?.value =
+                        (textOverlay.getShadowOpacity() * 100f).coerceIn(0f, 100f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowBlur)?.value =
+                        textOverlay.getShadowBlur().toFloat().coerceIn(0f, 50f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowAngle)?.value =
+                        textOverlay.getShadowAngle().toFloat().coerceIn(0f, 360f)
+                    shadowContainer?.findViewById<Slider>(R.id.seekShadowWidth)?.value =
+                        textOverlay.getShadowWidth().toFloat().coerceIn(0f, 50f)
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowOpacity)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowOpacity(value / 100f)
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowBlur)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowBlur(value.toInt())
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowAngle)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowAngle(value.toInt())
+                }
+                shadowContainer?.findViewById<Slider>(R.id.seekShadowWidth)?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setShadowWidth(value.toInt())
+                }
+
+                btnFormat?.setBounceClickListener {'''
+s = s.replace(OLD, NEW, 1)
+
+# A7b -- stroke/shadow tab click handlers (after the Background handler)
+OLD = req('''                    setupBgColorPicker(toolbar)
+                    syncBgSliders()
+                }''')
+NEW = '''                    setupBgColorPicker(toolbar)
+                    syncBgSliders()
+                }
+
+                btnStroke?.setBounceClickListener {
+                    draggableTextOverlay?.hideKeyboard()
+
+                    resetTabs()
+                    strokeContainer?.visibility = View.VISIBLE
+                    btnStroke.setColorFilter(getColor(R.color.colorPrimary))
+                    setupStrokeColorPicker(toolbar)
+                    syncStrokeSliders()
+                }
+
+                btnShadow?.setBounceClickListener {
+                    draggableTextOverlay?.hideKeyboard()
+
+                    resetTabs()
+                    shadowContainer?.visibility = View.VISIBLE
+                    btnShadow.setColorFilter(getColor(R.color.colorPrimary))
+                    setupShadowColorPicker(toolbar)
+                    syncShadowSliders()
+                }'''
+s = s.replace(OLD, NEW, 1)
+
+# A8 -- remove the Format tab Shadow slider listener
+OLD = req('''                val seekBorderWidth = formatContainer?.findViewById<Slider>(R.id.seekBorderWidth)
+                seekBorderWidth?.addOnChangeListener { _, value, _ ->
+                    draggableTextOverlay?.setBorderThickness(value.toInt())
+                }
+''')
+s = s.replace(OLD, '', 1)
+
+# A9 -- palette setup functions for stroke/shadow
+OLD = req('    private fun updateActiveBoundaries(')
+NEW = '''    private fun setupStrokeColorPicker(toolbar: View) {
+        val list = toolbar.findViewById<LinearLayout>(R.id.strokeColorPickerList) ?: return
+        buildTextPaletteRow(list, includeNone = false, selectedHex = draggableTextOverlay?.getStrokeColor()) { hex ->
+            draggableTextOverlay?.setStrokeColor(hex ?: "#000000")
+            setupStrokeColorPicker(toolbar)
+        }
+    }
+
+    private fun setupShadowColorPicker(toolbar: View) {
+        val list = toolbar.findViewById<LinearLayout>(R.id.shadowColorPickerList) ?: return
+        buildTextPaletteRow(list, includeNone = true, selectedHex = draggableTextOverlay?.getShadowColor()) { hex ->
+            draggableTextOverlay?.setShadowColor(hex)
+            setupShadowColorPicker(toolbar)
+        }
+    }
+
+    private fun updateActiveBoundaries('''
+s = s.replace(OLD, NEW, 1)
+
+# A10 -- enterTextEditingMode: hide new panels, reset new tab tints
+OLD = req('''            toolbar.findViewById<View>(R.id.bgSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))
+            toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))''')
+NEW = '''            toolbar.findViewById<View>(R.id.strokeSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.shadowSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<View>(R.id.bgSettingsContainer)?.visibility = View.GONE
+            toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))
+            toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextStrokeTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextShadowTab)?.setColorFilter(getColor(R.color.toolTextInactive))
+            toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))'''
+s = s.replace(OLD, NEW, 1)
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   tabs wired, sliders synced, palettes added, commit extended')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  R6 VERIFY
+# ---------------------------------------------------------------------------
+verify_round6() {
+  echo "== r6 verify"
+  python3 - <<'CUTPY'
+import glob, os, re, sys
+import xml.etree.ElementTree as ET
+
+bad = 0
+def fail(msg):
+    global bad
+    bad += 1
+    print('   [FAIL] ' + msg)
+
+PKG = 'app/src/main/java/com/tharunbirla/librecuts'
+TOOLBAR = 'app/src/main/res/layout/text_editing_toolbar.xml'
+FMT = 'app/src/main/res/layout/text_format_settings.xml'
+STROKEL = 'app/src/main/res/layout/text_stroke_settings.xml'
+SHADOWL = 'app/src/main/res/layout/text_shadow_settings.xml'
+AVEL = 'app/src/main/res/layout/activity_video_editing.xml'
+IMGT = 'app/src/main/res/layout/image_editing_toolbar.xml'
+
+# 1) XML validity
+xmls = [TOOLBAR, FMT, STROKEL, SHADOWL, AVEL,
+        'app/src/main/res/drawable/ic_text_stroke_24.xml',
+        'app/src/main/res/drawable/ic_text_shadow_24.xml',
+        'app/src/main/res/drawable/bg_play_pause_capsule.xml']
+for f in xmls:
+    try:
+        ET.parse(f)
+    except Exception as e:
+        fail('XML %s: %s' % (f, e))
+print('   [ok]   XML valid (%d files)' % len(xmls))
+
+toolbar = open(TOOLBAR, encoding='utf-8').read()
+fmt = open(FMT, encoding='utf-8').read()
+strokel = open(STROKEL, encoding='utf-8').read()
+shadowl = open(SHADOWL, encoding='utf-8').read()
+avel = open(AVEL, encoding='utf-8').read()
+act = open(PKG + '/VideoEditingActivity.kt', encoding='utf-8').read()
+
+# 2) toolbar structure
+if 'btnTextDuplicate' in toolbar:
+    fail('Duplicate button still in text toolbar')
+order = ['btnTextFormatTab', 'btnTextStrokeTab', 'btnTextShadowTab', 'btnTextBackgroundTab']
+pos = [toolbar.find(i) for i in order]
+if -1 in pos or pos != sorted(pos):
+    fail('tab order wrong: %r' % pos)
+for inc in ['text_stroke_settings', 'text_shadow_settings']:
+    if inc not in toolbar:
+        fail('toolbar missing include ' + inc)
+print('   [ok]   toolbar: no Duplicate, order Format|Stroke|Shadow|Background')
+
+# 3) format tab cleaned
+if 'seekBorderWidth' in fmt:
+    fail('format tab still has seekBorderWidth')
+if 'text="Shadow"' in fmt:
+    fail('format tab still has Shadow label')
+print('   [ok]   format tab: shadow slider removed')
+
+# 4) new ids defined + wired
+defined = set(re.findall(r'\+id/(\w+)', toolbar)) | set(re.findall(r'\+id/(\w+)', strokel)) | set(re.findall(r'\+id/(\w+)', shadowl))
+need = ['btnTextStrokeTab', 'btnTextShadowTab', 'strokeSettingsContainer', 'shadowSettingsContainer',
+        'strokeColorPickerList', 'seekStrokeOpacity', 'seekStrokeWidth',
+        'shadowColorPickerList', 'seekShadowOpacity', 'seekShadowBlur', 'seekShadowAngle', 'seekShadowWidth']
+for i in need:
+    if i not in defined:
+        fail('id %s missing from layouts' % i)
+    if ('R.id.' + i) not in act:
+        fail('id %s not wired in Activity' % i)
+print('   [ok]   R.id cross-check (%d new ids)' % len(need))
+
+# 5) model + renderer markers
+eop = open(PKG + '/models/EditOperation.kt', encoding='utf-8').read()
+tru = open(PKG + '/utils/TextRenderUtils.kt', encoding='utf-8').read()
+tov = open(PKG + '/customviews/TextOverlayView.kt', encoding='utf-8').read()
+drg = open(PKG + '/customviews/DraggableTextOverlayView.kt', encoding='utf-8').read()
+vme = open(PKG + '/viewmodels/VideoEditingViewModelExt.kt', encoding='utf-8').read()
+checks = [
+    ('AddText strokeOpacity (nullable)', 'val strokeOpacity: Float? = null,' in eop),
+    ('AddText shadow fields', 'val shadowColor: String? = null,' in eop and 'val shadowWidth: Int = 0,' in eop),
+    ('render stroke transparency', 'op.strokeOpacity ?: 1.0f' in tru),
+    ('render real shadow', 'setShadowLayer(op.shadowBlur * scale' in tru),
+    ('PNG pad covers shadow', 'op.shadowWidth + op.shadowBlur' in tru),
+    ('subtitle shadow preserved', '// Keep the subtitle' in tov),
+    ('callback 26 params', 'shadowWidth: Int) -> Unit' in drg),
+    ('stroke setters', 'fun setStrokeWidth(' in drg and 'fun setStrokeColor(' in drg),
+    ('shadow setters', 'fun setShadowColor(' in drg and 'fun setShadowWidth(' in drg),
+    ('live preview helper', 'fun refreshTextEffects()' in drg),
+    ('setBorderThickness removed', 'fun setBorderThickness(' not in drg),
+    ('Ext signature extended', 'shadowWidth: Int = 0' in vme),
+    ('Ext ctor passes shadow', 'strokeOpacity = strokeOpacity' in vme),
+    ('Activity duplicate gone', 'btnTextDuplicate' not in act),
+    ('Activity old slider gone', 'R.id.seekBorderWidth' not in act),
+    ('Activity stroke palette', 'setupStrokeColorPicker' in act),
+    ('Activity shadow palette', 'setupShadowColorPicker' in act),
+    ('Activity commit extended', 'shadowWidth ->' in act),
+    ('Activity stroke copy', 'strokeOpacity = strokeOpacity, shadowColor = shadowColor' in act),
+]
+for name, ok in checks:
+    if not ok:
+        fail(name)
+print('   [ok]   markers: ' + str(sum(1 for _, o in checks if o)) + '/' + str(len(checks)))
+
+# 6) image tool duplicate untouched
+if 'btnImageDuplicate' not in open(IMGT, encoding='utf-8').read():
+    fail('image toolbar duplicate button disappeared')
+if act.count('duplicateSelectedOverlay') < 2:
+    fail('duplicateSelectedOverlay still needed by image tool')
+print('   [ok]   image tool duplicate kept')
+
+# 7) play button capsule
+if avel.count('bg_play_pause_capsule') != 1:
+    fail('play button capsule reference wrong')
+capsule = open('app/src/main/res/drawable/bg_play_pause_capsule.xml', encoding='utf-8').read()
+if '<corners android:radius="20dp" />' not in capsule:
+    fail('capsule drawable missing 20dp corners')
+if 'android:layout_width="72dp"' not in avel:
+    fail('play button not resized to capsule width')
+print('   [ok]   play button: capsule 72x40dp + bounce effect untouched')
+
+# 8) Kotlin brace/paren balance (state-machine lexer)
+def strip_kotlin(src):
+    out = []
+    i, n = 0, len(src)
+    NORMAL, LINE_C, BLOCK_C, STR, RAW, CHAR = range(6)
+    st = NORMAL
+    while i < n:
+        c = src[i]
+        two = src[i:i+2]
+        if st == NORMAL:
+            if two == '//':
+                st = LINE_C; i += 2; continue
+            if two == '/*':
+                st = BLOCK_C; i += 2; continue
+            if src[i:i+3] == '"""':
+                st = RAW; i += 3; out.append(' '); continue
+            if c == '"':
+                st = STR; i += 1; out.append(' '); continue
+            if c == "'":
+                st = CHAR; i += 1; out.append(' '); continue
+            out.append(c); i += 1
+        elif st == LINE_C:
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+        elif st == BLOCK_C:
+            if two == '*/':
+                st = NORMAL; i += 2; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == STR:
+            if c == '\\':
+                i += 2; continue
+            if c == '"':
+                st = NORMAL
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == RAW:
+            if src[i:i+3] == '"""':
+                st = NORMAL; i += 3; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        else:
+            if c == '\\':
+                i += 2; continue
+            if c == "'":
+                st = NORMAL
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+    return ''.join(out)
+
+def balanced(path):
+    s = strip_kotlin(open(path, encoding='utf-8').read())
+    for a, b in [('{', '}'), ('(', ')'), ('[', ']')]:
+        if s.count(a) != s.count(b):
+            return '%s unbalanced (%d vs %d)' % (a, s.count(a), s.count(b))
+    return None
+
+for f in ['models/EditOperation.kt', 'customviews/TextOverlayView.kt',
+          'customviews/DraggableTextOverlayView.kt', 'viewmodels/VideoEditingViewModelExt.kt',
+          'VideoEditingActivity.kt', 'utils/TextRenderUtils.kt']:
+    r = balanced(PKG + '/' + f)
+    if r:
+        fail('%s: %s' % (f, r))
+print('   [ok]   Kotlin braces/parens balanced (6 files)')
+
+# 9) pure-ASCII on touched text resources
+for f in [TOOLBAR, FMT, STROKEL, SHADOWL, AVEL,
+          'app/src/main/res/drawable/ic_text_stroke_24.xml',
+          'app/src/main/res/drawable/ic_text_shadow_24.xml',
+          'app/src/main/res/drawable/bg_play_pause_capsule.xml']:
+    data = open(f, 'rb').read()
+    if any(b > 127 for b in data):
+        fail('non-ASCII byte in ' + f)
+print('   [ok]   touched resources are pure ASCII')
+
+if bad:
+    print('R6 VERIFY FAILED (%d problem(s))' % bad)
+    sys.exit(1)
+print('R6 VERIFY OK')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# --- R6 STEPS END ---------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
@@ -1684,5 +2990,18 @@ step6_viewmodel  || { echo "ABORT: step 6";     exit 1; }
 step7_ext        || { echo "ABORT: step 7";     exit 1; }
 step8_activity   || { echo "ABORT: step 8";     exit 1; }
 verify_all       || { echo "ABORT: verify";     exit 1; }
+
+# -- round 6 --
+r6_precheck      || { echo "ABORT: r6 pre-check"; exit 1; }
+r6_step1         || { echo "ABORT: r6 step 1";    exit 1; }
+r6_step2         || { echo "ABORT: r6 step 2";    exit 1; }
+r6_step3         || { echo "ABORT: r6 step 3";    exit 1; }
+r6_step4         || { echo "ABORT: r6 step 4";    exit 1; }
+r6_step5         || { echo "ABORT: r6 step 5";    exit 1; }
+r6_step6         || { echo "ABORT: r6 step 6";    exit 1; }
+r6_step7         || { echo "ABORT: r6 step 7";    exit 1; }
+r6_step8         || { echo "ABORT: r6 step 8";    exit 1; }
+r6_step9         || { echo "ABORT: r6 step 9";    exit 1; }
+verify_round6    || { echo "ABORT: r6 verify";   exit 1; }
 echo ""
-echo "ROUND 5 APPLIED SUCCESSFULLY"
+echo "ROUND 5 + ROUND 6 APPLIED SUCCESSFULLY"
