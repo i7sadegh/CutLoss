@@ -1,223 +1,1507 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  CutStudio change pipeline -- scripts/apply-changes.sh
-#  ROUND 4 -- incremental fixes on top of the already-applied v3 state
+#  ROUND 5 -- Text tool overhaul (WYSIWYG canvas text rendering)
 #
-#  IMPORTANT: this file is deliberately 100% pure ASCII. It gets pasted
-#  through mobile browsers into the GitHub web editor, and non-ASCII
-#  characters are double-encoded somewhere along that path (that is exactly
-#  how the "Importing Video" title ended up showing garbage on screen).
-#  Every special byte pattern below is written with \x escapes, so nothing
-#  in this file can be mangled by copy/paste.
+#  This file is 100% pure ASCII on purpose (paste-safe through mobile
+#  browsers into the GitHub web editor).
 #
-#  Round 4 contents:
-#    A) strings cleanup -- every ellipsis variant (clean U+2026, single
-#       mojibake, double mojibake, XML entity) is converted to plain "..."
-#       in ALL res/values*/ xml files; the three known progress strings
-#       ("Importing Video", "Saving video", "Analyzing beats") are forced
-#       to exact ASCII text no matter what bytes they currently contain.
-#    B) first-launch onboarding/welcome popup removed (MainActivity).
-#    C) bitrate "Same as input" chip restyled to be IDENTICAL to every
-#       other chip (same active color from the theme, NO check icon);
-#       the three custom resources added for it in v3 are deleted.
+#  Round 5 contents:
+#   1. AddText data model: bold / italic / underline / strikethrough /
+#      background color / background transparency / corner radius / margin.
+#   2. NEW utils/TextRenderUtils.kt: ONE shared Canvas rendering path used
+#      by the on-screen preview AND by export. AddText ops are rasterized
+#      to transparent PNGs and composited with the FFmpeg "overlay" filter
+#      (same machinery as image stickers), which unlocks everything
+#      drawtext cannot do: underline, strikethrough, letter spacing and
+#      rounded-corner backgrounds -- plus pixel-perfect WYSIWYG output and
+#      full RTL/Persian shaping. Classic drawtext stays as a fallback.
+#   3. Color tab: Draw-page style palette (custom color circle first +
+#      preset swatches + HSV custom color picker dialog).
+#   4. Format tab: new "Style" row with Bold / Italic / Underline /
+#      Strikethrough toggle buttons.
+#   5. NEW "Background" tab (after Format): color row (None/custom/presets)
+#      + Transparency / Corner Radius / Margin sliders, styled like Format.
 #
-#  Idempotent: every step skips itself when already applied.
-#  Requires: v3 state (export settings panel) already applied.
+#  Idempotent: every patch checks its own marker and skips if applied.
+#  Requires: the v3 export panel state (works with or without round 4).
 # ==========================================================================
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
-DLG="app/src/main/res/layout/dialog_export_settings.xml"
-MAIN="app/src/main/java/com/tharunbirla/librecuts/MainActivity.kt"
+PKG="app/src/main/java/com/tharunbirla/librecuts"
+EOP="$PKG/models/EditOperation.kt"
+TOV="$PKG/customviews/TextOverlayView.kt"
+DRG="$PKG/customviews/DraggableTextOverlayView.kt"
+VM="$PKG/viewmodels/VideoEditingViewModel.kt"
+VME="$PKG/viewmodels/VideoEditingViewModelExt.kt"
+ACT="$PKG/VideoEditingActivity.kt"
+TOOLBAR="app/src/main/res/layout/text_editing_toolbar.xml"
+FMT="app/src/main/res/layout/text_format_settings.xml"
 
 # ---------------------------------------------------------------------------
-#  PRE-CHECK -- this round expects the v3 export panel to exist already
+#  PRE-CHECK
 # ---------------------------------------------------------------------------
 precheck() {
   echo "== pre-check"
-  if [ ! -f "$DLG" ] || ! grep -q "chipBitrateSame" "$DLG"; then
-    echo "ABORT: dialog_export_settings.xml (v3 state) not found."
-    echo "       This script is incremental; re-apply the previous full"
-    echo "       apply-changes.sh first, then run this one."
+  if [ ! -f "$FMT" ]; then
+    echo "ABORT: text_format_settings.xml not found."
     return 1
   fi
-  echo "   [ok] v3 export panel present"
+  echo "   [ok] text tool layouts present"
 }
 
 # ---------------------------------------------------------------------------
-#  FIX A -- strings ellipsis / mojibake cleanup (byte level, all locales)
+#  STEP 1 -- EditOperation.AddText: new style + background fields
 # ---------------------------------------------------------------------------
-fix_a_strings() {
-  echo "== fix A: strings ellipsis / mojibake cleanup (byte level)"
-  python3 - <<'CUTPY'
-import glob, re, sys
-
-# byte patterns -> replacement. ALL written as \x escapes on purpose:
-# this keeps the whole script pure ASCII (paste-safe on mobile).
-PATTERNS = [
-    # single-layer mojibake (UTF-8 bytes re-decoded as CP1252, re-encoded)
-    (b'\xc3\xa2\xe2\x82\xac\xc2\xa6', b'...'),     # broken ellipsis on screen
-    (b'\xc3\xa2\xe2\x82\xac\xe2\x84\xa2', b"'"),   # broken right single quote
-    (b'\xc3\xa2\xe2\x82\xac\xe2\x80\xb9', b"'"),   # broken left single quote
-    (b'\xc3\xa2\xe2\x82\xac\xc5\x93',     b'"'),   # broken left double quote
-    (b'\xc3\xa2\xe2\x82\xac\xc2\x9d',     b'"'),   # broken right double quote
-    (b'\xc3\xa2\xe2\x82\xac\xe2\x80\x94', b'-'),   # broken em dash
-    (b'\xc3\xa2\xe2\x82\xac\xe2\x80\x93', b'-'),   # broken en dash
-    # double-layer mojibake (encoding mangled twice)
-    (b'\xc3\x83\xc2\xa2\xc3\xa2\xe2\x80\x9a\xc2\xac\xc3\x82\xc2\xa6', b'...'),
-    # clean forms
-    (b'\xe2\x80\xa6', b'...'),                     # clean U+2026 ellipsis
-    # XML entities
-    (b'&#8230;',  b'...'),
-    (b'&#x2026;', b'...'),
-]
-
-# the three progress strings the user actually sees during import/export
-FORCE_STRINGS = [
-    ('loading',               'Importing Video...'),
-    ('str_saving_video',      'Saving video...'),
-    ('toast_analyzing_beats', 'Analyzing beats...'),
-]
-
-files = sorted(glob.glob('app/src/main/res/values*/*.xml'))
-if not files:
-    print('   [FAIL] no res/values*/ xml files found')
+step1_model() {
+  echo "== step 1: AddText data model fields"
+  python3 - "$EOP" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+MARK = 'val bgCornerRadius: Int = 0,'
+if MARK in s:
+    print('   [skip] AddText fields already present')
+    sys.exit(0)
+ANCHOR = '        val letterSpacing: Float = 0f,\n        val lineSpacing: Float = 0f,\n'
+if s.count(ANCHOR) != 1:
+    print('   [FAIL] AddText anchor mismatch (%d found)' % s.count(ANCHOR))
     sys.exit(1)
-
-written = 0
-for f in files:
-    try:
-        data = open(f, 'rb').read()
-    except Exception as e:
-        print('   [FAIL] cannot read %s: %s' % (f, e))
-        sys.exit(1)
-    orig = data
-    hits = 0
-    for pat, rep in PATTERNS:
-        if pat in data:
-            hits += data.count(pat)
-            data = data.replace(pat, rep)
-    if f == 'app/src/main/res/values/strings.xml':
-        try:
-            text = data.decode('utf-8')
-        except UnicodeDecodeError as e:
-            print('   [FAIL] %s is not valid UTF-8: %s' % (f, e))
-            sys.exit(1)
-        for key, val in FORCE_STRINGS:
-            text = re.sub(r'(<string name="' + key + r'">)[^<]*(</string>)',
-                          r'\g<1>' + val + r'\g<2>', text)
-        data = text.encode('utf-8')
-    if data != orig:
-        open(f, 'wb').write(data)
-        written += 1
-        print('   [ok]   fixed (%d hit(s)): %s' % (hits, f) if hits
-              else '   [ok]   normalized: %s' % f)
-if written == 0:
-    print('   [skip] all values xml files already clean')
-print('   fix A done: %d file(s) written' % written)
+NEW = ANCHOR + (
+    '        val bold: Boolean = false,\n'
+    '        val italic: Boolean = false,\n'
+    '        val underline: Boolean = false,\n'
+    '        val strikethrough: Boolean = false,\n'
+    '        val bgColor: String? = null,\n'
+    '        val bgOpacity: Float = 1.0f,\n'
+    '        val bgCornerRadius: Int = 0,\n'
+    '        val bgMargin: Int = 0,\n')
+s = s.replace(ANCHOR, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   AddText: 8 new fields added (backward-compatible defaults)')
 CUTPY
   [ $? -ne 0 ] && return 1
   return 0
 }
 
 # ---------------------------------------------------------------------------
-#  FIX B -- remove the first-launch onboarding popup (MainActivity)
+#  STEP 2 -- NEW files: TextRenderUtils.kt, text_background_settings.xml,
+#            ic_text_bg_24.xml
 # ---------------------------------------------------------------------------
-fix_b_onboarding() {
-  echo "== fix B: remove first-launch onboarding popup"
-  python3 - "$MAIN" <<'CUTPY'
+step2_new_files() {
+  echo "== step 2: new files (TextRenderUtils + background settings layout + icon)"
+
+  if [ -f "$PKG/utils/TextRenderUtils.kt" ]; then
+    echo "   [skip] TextRenderUtils.kt exists"
+  else
+    mkdir -p "$PKG/utils"
+    cat > "$PKG/utils/TextRenderUtils.kt" <<'KTEOF'
+package com.tharunbirla.librecuts.utils
+
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import com.tharunbirla.librecuts.models.EditOperation
+import java.io.File
+import java.io.FileOutputStream
+
+/**
+ * Shared Canvas-based rendering for AddText operations.
+ *
+ * The SAME code path renders:
+ *  - the on-screen preview (TextOverlayView)
+ *  - the exported video (rasterized to a transparent PNG and composited
+ *    with the FFmpeg overlay filter)
+ *
+ * This guarantees a pixel-perfect WYSIWYG match between what the user sees
+ * and what FFmpeg writes, and unlocks features drawtext cannot do:
+ * underline, strikethrough, letter spacing and rounded-corner backgrounds.
+ */
+object TextRenderUtils {
+
+    /** Resolve the effective typeface (font file + synthesized bold/italic). */
+    fun resolveTypeface(op: EditOperation.AddText): Typeface {
+        val base = try {
+            if (op.fontPath.isNullOrBlank()) null else Typeface.createFromFile(op.fontPath)
+        } catch (e: Exception) {
+            null
+        }
+        val family = base ?: Typeface.DEFAULT
+        val style = when {
+            op.bold && op.italic -> Typeface.BOLD_ITALIC
+            op.bold -> Typeface.BOLD
+            op.italic -> Typeface.ITALIC
+            else -> Typeface.NORMAL
+        }
+        return if (style == Typeface.NORMAL) family else Typeface.create(family, style)
+    }
+
+    /** Configure a paint for this op (typeface, flags, spacing, color+alpha). */
+    fun configPaint(paint: Paint, op: EditOperation.AddText, alphaInt: Int = 255) {
+        paint.typeface = resolveTypeface(op)
+        paint.isUnderlineText = op.underline
+        paint.isStrikeThruText = op.strikethrough
+        paint.letterSpacing = op.letterSpacing
+        paint.style = Paint.Style.FILL
+        val baseColor = try { Color.parseColor(op.color) } catch (e: Exception) { Color.WHITE }
+        paint.color = Color.argb(
+            alphaInt.coerceIn(0, 255),
+            Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor))
+    }
+
+    /**
+     * Draw the text block (optional rounded background, optional outline,
+     * per-line alignment) starting at (startX, startY) where startY is the
+     * BASELINE of the first line. Matches the preview rendering exactly.
+     *
+     * @param scale video-pixel to canvas-pixel scale (1.0 for PNG rendering)
+     */
+    fun drawBlock(
+        canvas: Canvas,
+        paint: Paint,
+        op: EditOperation.AddText,
+        lines: List<String>,
+        maxTextWidth: Float,
+        startX: Float,
+        startY: Float,
+        textHeight: Float,
+        scale: Float
+    ) {
+        // 1. Rounded background box behind the whole block
+        if (op.bgColor != null) {
+            val marginPx = op.bgMargin * scale
+            val radiusPx = op.bgCornerRadius * scale
+            val bgBase = try { Color.parseColor(op.bgColor) } catch (e: Exception) { Color.BLACK }
+            val fill = paint.color
+            val bgAlpha = (op.bgOpacity.coerceIn(0f, 1f) * Color.alpha(fill)).toInt().coerceIn(0, 255)
+            val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.argb(bgAlpha, Color.red(bgBase), Color.green(bgBase), Color.blue(bgBase))
+            }
+            val top = startY + paint.ascent() - marginPx
+            val bottom = startY + (lines.size - 1) * textHeight + paint.descent() + marginPx
+            canvas.drawRoundRect(
+                startX - marginPx, top, startX + maxTextWidth + marginPx, bottom,
+                radiusPx, radiusPx, bgPaint)
+        }
+
+        // 2. Text lines (optional stroke outline first, then fill)
+        for ((index, line) in lines.withIndex()) {
+            val lineW = paint.measureText(line)
+            val lineX = when (op.textAlign) {
+                "left", "L" -> startX
+                "right", "R" -> startX + maxTextWidth - lineW
+                else -> startX + (maxTextWidth - lineW) / 2f
+            }
+            val lineY = startY + (index * textHeight)
+
+            if (op.borderThickness > 0) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = op.borderThickness * scale
+                paint.strokeJoin = Paint.Join.ROUND
+                val borderColorInt = try { Color.parseColor(op.borderColor) } catch (e: Exception) { Color.BLACK }
+                val fill = paint.color
+                paint.color = Color.argb(
+                    Color.alpha(fill),
+                    Color.red(borderColorInt), Color.green(borderColorInt), Color.blue(borderColorInt))
+                canvas.drawText(line, lineX, lineY, paint)
+                paint.style = Paint.Style.FILL
+                paint.color = fill
+            } else {
+                paint.style = Paint.Style.FILL
+            }
+
+            canvas.drawText(line, lineX, lineY, paint)
+        }
+    }
+
+    /**
+     * Rasterize a text operation to a transparent PNG at source-video pixel
+     * scale (fontSize px = source video px). Returns the file or null.
+     * The file is overwritten per operation id, so repeated builds do not
+     * accumulate cache files.
+     */
+    fun renderAddTextToPng(context: Context, op: EditOperation.AddText): File? {
+        return try {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+            paint.textSize = op.fontSize.toFloat().coerceIn(4f, 2000f)
+            configPaint(paint, op, 255)
+
+            val lines = op.text.split("\n")
+            val textHeight = (paint.descent() - paint.ascent()) + op.lineSpacing
+            var maxTextWidth = 0f
+            for (line in lines) {
+                val w = paint.measureText(line)
+                if (w > maxTextWidth) maxTextWidth = w
+            }
+            if (maxTextWidth <= 0f || lines.isEmpty()) return null
+
+            val pad = (op.bgMargin + op.borderThickness + 8).coerceAtLeast(8)
+            val width = (maxTextWidth + 2 * pad).toInt().coerceAtLeast(8)
+            val height = (lines.size * textHeight + 2 * pad).toInt().coerceAtLeast(8)
+            if (width > 8192 || height > 8192) return null
+
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            val startX = pad.toFloat()
+            val startY = pad.toFloat() - paint.ascent()
+            drawBlock(canvas, paint, op, lines, maxTextWidth, startX, startY, textHeight, 1.0f)
+
+            val file = File(context.cacheDir, "text_ov_" + op.id + ".png")
+            FileOutputStream(file).use { out ->
+                bitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+            bitmap.recycle()
+            file
+        } catch (e: Exception) {
+            null
+        }
+    }
+}
+KTEOF
+    echo "   [ok]   TextRenderUtils.kt created"
+  fi
+
+  if [ -f "app/src/main/res/layout/text_background_settings.xml" ]; then
+    echo "   [skip] text_background_settings.xml exists"
+  else
+    cat > "app/src/main/res/layout/text_background_settings.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp"
+    android:background="@drawable/bg_bottom_nav_floating"
+    android:elevation="12dp"
+    android:layout_marginHorizontal="16dp"
+    android:layout_marginBottom="8dp">
+
+    <!-- Background Color -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Color"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <HorizontalScrollView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:scrollbars="none"
+            android:requiresFadingEdge="horizontal"
+            android:fadingEdgeLength="16dp">
+            <LinearLayout
+                android:id="@+id/bgColorPickerList"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:gravity="center_vertical" />
+        </HorizontalScrollView>
+    </LinearLayout>
+
+    <!-- Transparency -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Transparency"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekBgOpacity"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="100"
+            android:stepSize="1"
+            android:value="100" />
+    </LinearLayout>
+
+    <!-- Corner Radius -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Corner Radius"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekBgCornerRadius"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="50"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+    <!-- Margin -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:layout_marginTop="8dp">
+        <TextView
+            android:layout_width="100dp"
+            android:layout_height="wrap_content"
+            android:text="Margin"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+        <com.google.android.material.slider.Slider
+            android:id="@+id/seekBgMargin"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:valueFrom="0"
+            android:valueTo="50"
+            android:stepSize="1"
+            android:value="0" />
+    </LinearLayout>
+
+</LinearLayout>
+XMLEOF
+    echo "   [ok]   text_background_settings.xml created"
+  fi
+
+  if [ -f "app/src/main/res/drawable/ic_text_bg_24.xml" ]; then
+    echo "   [skip] ic_text_bg_24.xml exists"
+  else
+    cat > "app/src/main/res/drawable/ic_text_bg_24.xml" <<'XMLEOF'
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF000000"
+        android:fillType="evenOdd"
+        android:pathData="M5,3h14c1.1,0 2,0.9 2,2v14c0,1.1 -0.9,2 -2,2H5c-1.1,0 -2,-0.9 -2,-2V5c0,-1.1 0.9,-2 2,-2zM5,13v6h14v-6H5z" />
+</vector>
+XMLEOF
+    echo "   [ok]   ic_text_bg_24.xml created"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 3 -- Layout patches: toolbar (Background tab + include) and
+#            format settings (Style row)
+# ---------------------------------------------------------------------------
+step3_layouts() {
+  echo "== step 3: toolbar + format layout patches"
+  python3 - "$TOOLBAR" "$FMT" <<'CUTPY'
+import re, sys
+toolbar, fmt = sys.argv[1], sys.argv[2]
+
+def rd(p):
+    return open(p, encoding='utf-8', newline='').read()
+
+def wr(p, s):
+    open(p, 'w', encoding='utf-8', newline='').write(s)
+
+def sub1(s, pat, repl, name, flags=0):
+    hits = re.findall(pat, s, flags)
+    if len(hits) != 1:
+        print('   [FAIL] %s: %d match(es)' % (name, len(hits)))
+        sys.exit(1)
+    return re.sub(pat, lambda m: repl, s, count=1, flags=flags)
+
+# --- toolbar: include the background settings panel -----------------------
+s = rd(toolbar)
+if 'bgSettingsContainer' in s:
+    print('   [skip] toolbar include already patched')
+else:
+    ANCHOR = ('    <!-- Format Settings Container -->\n'
+              '    <include layout="@layout/text_format_settings"\n'
+              '        android:id="@+id/formatSettingsContainer"\n'
+              '        android:visibility="gone" />')
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] toolbar include anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, ANCHOR + '\n\n'
+        '    <!-- Background Settings Container -->\n'
+        '    <include layout="@layout/text_background_settings"\n'
+        '        android:id="@+id/bgSettingsContainer"\n'
+        '        android:visibility="gone" />', 1)
+    wr(toolbar, s)
+    print('   [ok]   toolbar: background settings include added')
+
+# --- toolbar: Background tab button (after Format, before Duplicate) ------
+s = rd(toolbar)
+if 'btnTextBackgroundTab' in s:
+    print('   [skip] toolbar tab button already patched')
+else:
+    BTN = ('            <!-- Background Settings -->\n'
+           '            <LinearLayout\n'
+           '                android:layout_width="60dp"\n'
+           '                android:layout_height="wrap_content"\n'
+           '                android:orientation="vertical"\n'
+           '                android:gravity="center">\n'
+           '                <ImageButton\n'
+           '                    android:id="@+id/btnTextBackgroundTab"\n'
+           '                    android:layout_width="40dp"\n'
+           '                    android:layout_height="40dp"\n'
+           '                    android:background="@drawable/tool_button_inactive"\n'
+           '                    android:src="@drawable/ic_text_bg_24"\n'
+           '                    android:padding="8dp"\n'
+           '                    android:scaleType="fitCenter"\n'
+           '                    app:tint="@color/toolTextInactive" />\n'
+           '                <TextView\n'
+           '                    android:layout_width="wrap_content"\n'
+           '                    android:layout_height="wrap_content"\n'
+           '                    android:layout_marginTop="4dp"\n'
+           '                    android:text="Background"\n'
+           '                    android:textSize="10sp"\n'
+           '                    android:fontFamily="sans-serif-medium"\n'
+           '                    android:textColor="@color/toolTextInactive" />\n'
+           '            </LinearLayout>\n\n')
+    s = sub1(s, re.escape('            <!-- Duplicate -->'),
+             BTN + '            <!-- Duplicate -->',
+             'toolbar tab anchor')
+    wr(toolbar, s)
+    print('   [ok]   toolbar: Background tab button added after Format')
+
+# --- format settings: Style row (B / I / U / S) ---------------------------
+s = rd(fmt)
+if 'btnStyleBold' in s:
+    print('   [skip] format Style row already patched')
+else:
+    END = '    </LinearLayout>\n\n</LinearLayout>'
+    if s.count(END) != 1:
+        print('   [FAIL] format end anchor mismatch')
+        sys.exit(1)
+    ROW = (
+        '    </LinearLayout>\n\n'
+        '    <!-- Style: Bold / Italic / Underline / Strikethrough -->\n'
+        '    <LinearLayout\n'
+        '        android:layout_width="match_parent"\n'
+        '        android:layout_height="wrap_content"\n'
+        '        android:orientation="horizontal"\n'
+        '        android:gravity="center_vertical"\n'
+        '        android:layout_marginTop="8dp">\n'
+        '        <TextView\n'
+        '            android:layout_width="100dp"\n'
+        '            android:layout_height="wrap_content"\n'
+        '            android:text="Style"\n'
+        '            android:textColor="#FFFFFF"\n'
+        '            android:textSize="14sp" />\n'
+        '        <com.google.android.material.button.MaterialButton\n'
+        '            android:id="@+id/btnStyleBold"\n'
+        '            android:layout_width="0dp"\n'
+        '            android:layout_height="40dp"\n'
+        '            android:layout_weight="1"\n'
+        '            android:insetTop="0dp"\n'
+        '            android:insetBottom="0dp"\n'
+        '            android:text="B"\n'
+        '            android:textSize="16sp"\n'
+        '            android:textStyle="bold"\n'
+        '            android:textColor="#FFFFFF"\n'
+        '            android:backgroundTint="@color/inactiveToolBackground" />\n'
+        '        <com.google.android.material.button.MaterialButton\n'
+        '            android:id="@+id/btnStyleItalic"\n'
+        '            android:layout_width="0dp"\n'
+        '            android:layout_height="40dp"\n'
+        '            android:layout_weight="1"\n'
+        '            android:layout_marginHorizontal="4dp"\n'
+        '            android:insetTop="0dp"\n'
+        '            android:insetBottom="0dp"\n'
+        '            android:text="I"\n'
+        '            android:textSize="16sp"\n'
+        '            android:textStyle="italic"\n'
+        '            android:textColor="#FFFFFF"\n'
+        '            android:backgroundTint="@color/inactiveToolBackground" />\n'
+        '        <com.google.android.material.button.MaterialButton\n'
+        '            android:id="@+id/btnStyleUnderline"\n'
+        '            android:layout_width="0dp"\n'
+        '            android:layout_height="40dp"\n'
+        '            android:layout_weight="1"\n'
+        '            android:insetTop="0dp"\n'
+        '            android:insetBottom="0dp"\n'
+        '            android:text="U"\n'
+        '            android:textSize="16sp"\n'
+        '            android:textColor="#FFFFFF"\n'
+        '            android:backgroundTint="@color/inactiveToolBackground" />\n'
+        '        <com.google.android.material.button.MaterialButton\n'
+        '            android:id="@+id/btnStyleStrike"\n'
+        '            android:layout_width="0dp"\n'
+        '            android:layout_height="40dp"\n'
+        '            android:layout_weight="1"\n'
+        '            android:layout_marginStart="4dp"\n'
+        '            android:insetTop="0dp"\n'
+        '            android:insetBottom="0dp"\n'
+        '            android:text="S"\n'
+        '            android:textSize="16sp"\n'
+        '            android:textColor="#FFFFFF"\n'
+        '            android:backgroundTint="@color/inactiveToolBackground" />\n'
+        '    </LinearLayout>\n\n'
+        '</LinearLayout>')
+    s = s.replace(END, ROW, 1)
+    wr(fmt, s)
+    print('   [ok]   format: Style row (Bold/Italic/Underline/Strikethrough) added')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 4 -- TextOverlayView: delegate AddText rendering to TextRenderUtils
+# ---------------------------------------------------------------------------
+step4_textoverlayview() {
+  echo "== step 4: TextOverlayView shared rendering"
+  python3 - "$TOV" <<'CUTPY'
 import re, sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8', newline='').read()
-MARKER = '// Onboarding / Welcome Dialog removed (CutStudio)'
-if MARKER in s:
-    print('   [skip] onboarding call already removed')
-    sys.exit(0)
-pat = re.compile(
-    r'[ \t]*// Onboarding / Welcome Dialog\r?\n'
-    r'[ \t]*val isFirstLaunch = prefs\.getBoolean\("first_launch_v1", true\)\r?\n'
-    r'[ \t]*if \(isFirstLaunch\) \{\r?\n'
-    r'[ \t]*showOnboardingDialog\(prefs\)\r?\n'
-    r'[ \t]*\}\r?\n')
-m = pat.search(s)
-if not m:
-    print('   [FAIL] onboarding block not found in MainActivity.kt')
-    sys.exit(1)
-nl = '\r\n' if '\r\n' in s else '\n'
-s = s[:m.start()] + ' ' * 8 + MARKER + nl + s[m.end():]
+
+def sub1(s, pat, repl, name, flags=re.DOTALL):
+    hits = re.findall(pat, s, flags)
+    if len(hits) != 1:
+        print('   [FAIL] %s: %d match(es)' % (name, len(hits)))
+        sys.exit(1)
+    return re.sub(pat, lambda m: repl, s, count=1, flags=flags)
+
+# T1: typeface if/else block (fontPath) -> removed; configPaint handles it.
+# The pattern is anchored on the if(op.fontPath) line right after textSize
+# so it can never jump to the subtitle section's similar else-branch, and
+# it must run to the END of the else-branch close brace (not the inner
+# catch-close), otherwise broken remnants would be left behind.
+pat1 = (re.escape('paint.textSize = op.fontSize * scale') +
+        r'[ \t]*\n[ \t]*' + re.escape('if (op.fontPath != null) {') +
+        r'.*?' + re.escape('} else {') +
+        r'[ \t]*\n[ \t]*' + re.escape('paint.typeface = android.graphics.Typeface.DEFAULT') +
+        r'[ \t]*\n[ \t]*\}')
+# T2: color + letterSpacing block -> configPaint with interpolated alpha
+pat2 = (re.escape('val baseColorInt = try { Color.parseColor(op.color) }') +
+        r'.*?' + re.escape('paint.letterSpacing = op.letterSpacing'))
+# T3: per-line draw loop -> drawBlock (background + border + alignment)
+pat3 = (re.escape('// Draw each line') +
+        r'.*?' + re.escape('canvas.drawText(line, lineX, lineY, paint)') +
+        r'[ \t]*\n[ \t]*\}')
+
+if re.findall(pat1, s, re.DOTALL):
+    s = sub1(s, pat1, 'paint.textSize = op.fontSize * scale', 'T1 typeface block')
+    print('   [ok]   T1: typeface block delegated')
+else:
+    print('   [skip] T1: typeface block already delegated')
+
+if re.findall(pat2, s, re.DOTALL):
+    s = sub1(s, pat2,
+             'val alphaInt = (interpolatedOpacity * 255).toInt().coerceIn(0, 255)\n'
+             '                com.tharunbirla.librecuts.utils.TextRenderUtils.configPaint(paint, op, alphaInt)',
+             'T2 color block')
+    print('   [ok]   T2: paint config delegated (style flags included)')
+else:
+    print('   [skip] T2: paint config already delegated')
+
+if re.findall(pat3, s, re.DOTALL):
+    s = sub1(s, pat3,
+             'com.tharunbirla.librecuts.utils.TextRenderUtils.drawBlock(\n'
+             '                    canvas, paint, op, lines, maxTextWidth, startX, startY, textHeight, scale)',
+             'T3 draw loop')
+    print('   [ok]   T3: draw loop delegated (bg + styles render in preview)')
+else:
+    print('   [skip] T3: draw loop already delegated')
+
 open(p, 'w', encoding='utf-8', newline='').write(s)
-print('   [ok]   onboarding popup call removed (dialog will never show)')
 CUTPY
   [ $? -ne 0 ] && return 1
   return 0
 }
 
 # ---------------------------------------------------------------------------
-#  FIX C -- bitrate "Same as input" chip: same style/color as all other
-#           chips, no check icon; delete the 3 custom v3 resources
+#  STEP 5 -- DraggableTextOverlayView: style + background state
 # ---------------------------------------------------------------------------
-fix_c_chip() {
-  echo "== fix C: bitrate Same-as-input chip -> plain style like the others"
-  python3 - "$DLG" <<'CUTPY'
-import glob, os, re, sys
+step5_draggable() {
+  echo "== step 5: DraggableTextOverlayView style/background state"
+  python3 - "$DRG" <<'CUTPY'
+import re, sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8', newline='').read()
-i = s.find('chipBitrateSame')
-if i == -1:
-    print('   [FAIL] chipBitrateSame not found in dialog layout')
-    sys.exit(1)
-start = s.rfind('<com.google.android.material.chip.Chip', 0, i)
-end = s.find('/>', i)
-if start == -1 or end == -1:
-    print('   [FAIL] chip tag boundaries not found')
-    sys.exit(1)
-end += 2
-block = s[start:end]
-if 'Chip.Choice' in block and 'checkedIcon' not in block:
-    print('   [skip] chip already plain Choice style')
-else:
-    nl = '\r\n' if '\r\n' in s else '\n'
-    new_block = (
-        '            <com.google.android.material.chip.Chip android:id="@+id/chipBitrateSame"'
-        + nl +
-        '                style="@style/Widget.MaterialComponents.Chip.Choice"'
-        + nl +
-        '                android:layout_width="wrap_content" android:layout_height="wrap_content"'
-        + nl +
-        '                android:layout_marginStart="10dp" android:text="Same as input" android:checked="true" />'
-    )
-    s = s[:start] + new_block + s[end:]
-    open(p, 'w', encoding='utf-8', newline='').write(s)
-    print('   [ok]   chipBitrateSame now identical in style to all other chips')
 
-# --- delete the now-unused custom resources (with reference safety net) ---
-targets = [
-    'app/src/main/res/drawable/ic_dialog_check.xml',
-    'app/src/main/res/color/chip_bitrate_same_bg.xml',
-    'app/src/main/res/color/chip_bitrate_same_text.xml',
-]
-refs = []
-scan_files = []
-for ext in ('.xml', '.kt', '.java'):
-    scan_files += glob.glob('app/src/main/**/*' + ext, recursive=True)
-for f in scan_files:
-    if f in targets:
-        continue
-    try:
-        t = open(f, encoding='utf-8', errors='replace').read()
-    except Exception:
-        continue
-    if 'ic_dialog_check' in t or 'chip_bitrate_same' in t:
-        refs.append(f)
-if refs:
-    print('   [FAIL] custom resources still referenced in: ' + ', '.join(refs))
+# D-a: extend the commit callback signature (full suffix replace; slicing
+# the tail would keep the params-closing paren and produce invalid Kotlin)
+if 'bold: Boolean, italic: Boolean, underline: Boolean' not in s:
+    OLD_SIG = ('textAlign: String, letterSpacing: Float, lineSpacing: Float) -> Unit)? = null')
+    NEW_SIG = ('textAlign: String, letterSpacing: Float, lineSpacing: Float, '
+               'bold: Boolean, italic: Boolean, underline: Boolean, strikethrough: Boolean, '
+               'bgColor: String?, bgOpacity: Float, bgCornerRadius: Int, bgMargin: Int) -> Unit)? = null')
+    if s.count(OLD_SIG) != 1:
+        print('   [FAIL] D-a anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD_SIG, NEW_SIG, 1)
+    print('   [ok]   D-a: commit callback signature extended')
+else:
+    print('   [skip] D-a: callback already extended')
+
+# D-b: state fields
+if 'private var currentBgColor' not in s:
+    ANCHOR = '    var currentFontPath: String? = null'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] D-b anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, ANCHOR + '\n'
+        '    private var currentBold = false\n'
+        '    private var currentItalic = false\n'
+        '    private var currentUnderline = false\n'
+        '    private var currentStrikethrough = false\n'
+        '    private var currentBgColor: String? = null\n'
+        '    private var currentBgOpacity = 1.0f\n'
+        '    private var currentBgCornerRadius = 0\n'
+        '    private var currentBgMargin = 0', 1)
+    print('   [ok]   D-b: state fields added')
+else:
+    print('   [skip] D-b: state fields already present')
+
+# D-c: setFontPath applies synthesized styles
+if 'currentFontPath = fontPath\n        applyTypefaceAndFlags()' not in s:
+    OLD = ('    fun setFontPath(fontPath: String?) {\n'
+           '        currentFontPath = fontPath\n'
+           '        try {\n'
+           '            editText.typeface = if (fontPath.isNullOrBlank()) Typeface.DEFAULT else Typeface.createFromFile(fontPath)\n'
+           '        } catch (e: Exception) {\n'
+           '            editText.typeface = Typeface.DEFAULT\n'
+           '        }\n'
+           '    }')
+    if s.count(OLD) != 1:
+        print('   [FAIL] D-c anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, '    fun setFontPath(fontPath: String?) {\n'
+        '        currentFontPath = fontPath\n'
+        '        applyTypefaceAndFlags()\n'
+        '    }', 1)
+    print('   [ok]   D-c: setFontPath now applies styles')
+else:
+    print('   [skip] D-c: setFontPath already patched')
+
+# D-d: setters, getters, helpers (after setTextAlign)
+if 'fun setBgMargin(' not in s:
+    ANCHOR = ('    fun setTextAlign(align: String) {\n'
+              '        currentTextAlign = align\n'
+              '        when (align) {\n'
+              '            "left", "L" -> editText.gravity = Gravity.START or Gravity.CENTER_VERTICAL\n'
+              '            "right", "R" -> editText.gravity = Gravity.END or Gravity.CENTER_VERTICAL\n'
+              '            else -> editText.gravity = Gravity.CENTER\n'
+              '        }\n'
+              '    }')
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] D-d anchor mismatch')
+        sys.exit(1)
+    NEW = ANCHOR + '\n\n' + (
+        '    // -- Style + background setters (CutStudio round 5) --\n'
+        '    fun setBold(on: Boolean) { currentBold = on; applyTypefaceAndFlags() }\n'
+        '    fun setItalic(on: Boolean) { currentItalic = on; applyTypefaceAndFlags() }\n'
+        '    fun setUnderline(on: Boolean) { currentUnderline = on; applyTypefaceAndFlags() }\n'
+        '    fun setStrikethrough(on: Boolean) { currentStrikethrough = on; applyTypefaceAndFlags() }\n'
+        '    fun setBgColor(hex: String?) { currentBgColor = hex; refreshEditTextBackground() }\n'
+        '    fun setBgOpacity(value: Float) { currentBgOpacity = value.coerceIn(0f, 1f); refreshEditTextBackground() }\n'
+        '    fun setBgCornerRadius(value: Int) { currentBgCornerRadius = value.coerceAtLeast(0); refreshEditTextBackground() }\n'
+        '    fun setBgMargin(value: Int) { currentBgMargin = value.coerceAtLeast(0); refreshEditTextBackground() }\n'
+        '\n'
+        '    fun getBold(): Boolean = currentBold\n'
+        '    fun getItalic(): Boolean = currentItalic\n'
+        '    fun getUnderline(): Boolean = currentUnderline\n'
+        '    fun getStrikethrough(): Boolean = currentStrikethrough\n'
+        '    fun getBgColor(): String? = currentBgColor\n'
+        '    fun getBgOpacity(): Float = currentBgOpacity\n'
+        '    fun getBgCornerRadius(): Int = currentBgCornerRadius\n'
+        '    fun getBgMargin(): Int = currentBgMargin\n'
+        '\n'
+        '    private fun applyTypefaceAndFlags() {\n'
+        '        val base = try {\n'
+        '            if (currentFontPath.isNullOrBlank()) null else Typeface.createFromFile(currentFontPath)\n'
+        '        } catch (e: Exception) {\n'
+        '            null\n'
+        '        }\n'
+        '        val family = base ?: Typeface.DEFAULT\n'
+        '        val style = when {\n'
+        '            currentBold && currentItalic -> Typeface.BOLD_ITALIC\n'
+        '            currentBold -> Typeface.BOLD\n'
+        '            currentItalic -> Typeface.ITALIC\n'
+        '            else -> Typeface.NORMAL\n'
+        '        }\n'
+        '        editText.typeface = if (style == Typeface.NORMAL) family else Typeface.create(family, style)\n'
+        '        var flags = editText.paintFlags and (Paint.UNDERLINE_TEXT_FLAG or Paint.STRIKE_THRU_TEXT_FLAG).inv()\n'
+        '        if (currentUnderline) flags = flags or Paint.UNDERLINE_TEXT_FLAG\n'
+        '        if (currentStrikethrough) flags = flags or Paint.STRIKE_THRU_TEXT_FLAG\n'
+        '        editText.paintFlags = flags\n'
+        '    }\n'
+        '\n'
+        '    private fun refreshEditTextBackground() {\n'
+        '        val hex = currentBgColor\n'
+        '        if (hex == null) {\n'
+        '            editText.background = null\n'
+        '            editText.setPadding(16, 8, 16, 8)\n'
+        '            return\n'
+        '        }\n'
+        '        val scale = if (videoHeight > 0) {\n'
+        '            val rect = getVideoRect()\n'
+        '            if (rect.height() > 0f) rect.height() / videoHeight.toFloat() else 1f\n'
+        '        } else 1f\n'
+        '        val marginPx = (currentBgMargin * scale).toInt().coerceAtLeast(0)\n'
+        '        val radiusPx = (currentBgCornerRadius * scale).coerceAtLeast(0f)\n'
+        '        val baseColor = try { Color.parseColor(hex) } catch (e: Exception) { Color.BLACK }\n'
+        '        val alpha = (currentBgOpacity.coerceIn(0f, 1f) * 255).toInt()\n'
+        '        val drawable = android.graphics.drawable.GradientDrawable().apply {\n'
+        '            cornerRadius = radiusPx\n'
+        '            setColor(Color.argb(alpha, Color.red(baseColor), Color.green(baseColor), Color.blue(baseColor)))\n'
+        '        }\n'
+        '        editText.background = drawable\n'
+        '        editText.setPadding(16 + marginPx, 8 + marginPx / 2, 16 + marginPx, 8 + marginPx / 2)\n'
+        '    }')
+    s = s.replace(ANCHOR, NEW, 1)
+    print('   [ok]   D-d: setters/getters/helpers added')
+else:
+    print('   [skip] D-d: setters already present')
+
+# D-e: activate() resets
+if 'currentBgColor = null\n        currentBgOpacity = 1.0f' not in s:
+    ANCHOR = '        currentColorString = "#FFFFFF"\n        currentFontPath = null'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] D-e anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, ANCHOR + '\n'
+        '        currentBold = false\n'
+        '        currentItalic = false\n'
+        '        currentUnderline = false\n'
+        '        currentStrikethrough = false\n'
+        '        currentBgColor = null\n'
+        '        currentBgOpacity = 1.0f\n'
+        '        currentBgCornerRadius = 0\n'
+        '        currentBgMargin = 0\n'
+        '        applyTypefaceAndFlags()\n'
+        '        refreshEditTextBackground()', 1)
+    print('   [ok]   D-e: activate() resets new state')
+else:
+    print('   [skip] D-e: activate() already resets')
+
+# D-f: activateForEdit() loads op state
+if 'currentBold = op.bold' not in s:
+    ANCHOR = '        currentFontPath = op.fontPath\n\n        setFontPath(op.fontPath)'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] D-f anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, '        currentFontPath = op.fontPath\n'
+        '        currentBold = op.bold\n'
+        '        currentItalic = op.italic\n'
+        '        currentUnderline = op.underline\n'
+        '        currentStrikethrough = op.strikethrough\n'
+        '        currentBgColor = op.bgColor\n'
+        '        currentBgOpacity = op.bgOpacity\n'
+        '        currentBgCornerRadius = op.bgCornerRadius\n'
+        '        currentBgMargin = op.bgMargin\n\n'
+        '        setFontPath(op.fontPath)', 1)
+    print('   [ok]   D-f: activateForEdit() loads style + background')
+else:
+    print('   [skip] D-f: activateForEdit() already loads')
+
+# D-f2: refresh background preview when re-editing
+if 'refreshEditTextBackground()\n\n        post {\n            positionEditTextFromRelative()\n            editText.requestFocus()\n        }\n    }' not in s:
+    ANCHOR = ('        updateFontSizeOnScreen()\n'
+              '        visibility = VISIBLE\n'
+              '\n'
+              '        post {\n'
+              '            positionEditTextFromRelative()\n'
+              '            editText.requestFocus()\n'
+              '        }\n'
+              '    }')
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] D-f2 anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, '        updateFontSizeOnScreen()\n'
+        '        visibility = VISIBLE\n'
+        '        refreshEditTextBackground()\n'
+        '\n'
+        '        post {\n'
+        '            positionEditTextFromRelative()\n'
+        '            editText.requestFocus()\n'
+        '        }\n'
+        '    }', 1)
+    print('   [ok]   D-f2: background preview refreshed on re-edit')
+else:
+    print('   [skip] D-f2: already refreshed')
+
+# D-g: commitText passes new fields
+if 'currentBgMargin\n            )' not in s:
+    OLD = ('            onTextCommitted?.invoke(\n'
+           '                text, currentFontSize, relativeX, relativeY, currentColorString,\n'
+           '                currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing\n'
+           '            )')
+    if s.count(OLD) != 1:
+        print('   [FAIL] D-g anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, '            onTextCommitted?.invoke(\n'
+        '                text, currentFontSize, relativeX, relativeY, currentColorString,\n'
+        '                currentFontPath, currentOpacity, currentBorderThickness, currentBorderColor, currentTextAlign, currentLetterSpacing, currentLineSpacing,\n'
+        '                currentBold, currentItalic, currentUnderline, currentStrikethrough, currentBgColor, currentBgOpacity, currentBgCornerRadius, currentBgMargin\n'
+        '            )', 1)
+    print('   [ok]   D-g: commitText passes style + background')
+else:
+    print('   [skip] D-g: commitText already passes')
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 6 -- VideoEditingViewModel: PNG overlay path for AddText
+# ---------------------------------------------------------------------------
+step6_viewmodel() {
+  echo "== step 6: ViewModel PNG overlay path"
+  python3 - "$VM" <<'CUTPY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+
+def sub1(s, pat, repl, name, flags=re.DOTALL):
+    hits = re.findall(pat, s, flags)
+    if len(hits) != 1:
+        print('   [FAIL] %s: %d match(es)' % (name, len(hits)))
+        sys.exit(1)
+    return re.sub(pat, lambda m: repl, s, count=1, flags=flags)
+
+# V1: renderer property + prepare helper + overlay position map
+if 'var textPngRenderer' not in s:
+    ANCHOR = '    /** Build a drawtext filter expression for a text operation. */'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] V1 anchor mismatch')
+        sys.exit(1)
+    # (body continues below)
+    BLOCK = (
+        '    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).\n'
+        '     *  Set by the Activity; when set, text overlays are composited with the\n'
+        '     *  overlay filter instead of drawtext, so bold / italic / underline /\n'
+        '     *  strikethrough / letter spacing / rounded backgrounds all render\n'
+        '     *  exactly like the preview. */\n'
+        '    var textPngRenderer: ((EditOperation.AddText) -> String?)? = null\n'
+        '    private val textPngInputs = mutableListOf<Pair<EditOperation.AddText, String>>()\n'
+        '\n'
+        '    private fun prepareTextPngInputs(operations: List<EditOperation>) {\n'
+        '        textPngInputs.clear()\n'
+        '        val renderer = textPngRenderer ?: return\n'
+        '        for (textOp in operations.filterIsInstance<EditOperation.AddText>()) {\n'
+        '            try {\n'
+        '                val path = renderer(textOp)\n'
+        '                if (path != null) {\n'
+        '                    textPngInputs.add(Pair(textOp, path))\n'
+        '                }\n'
+        '            } catch (e: Exception) {\n'
+        '                Log.w(TAG, "Text PNG render failed for op " + textOp.id + ": " + e.message)\n'
+        '            }\n'
+        '        }\n'
+        '    }\n'
+        '\n'
+        '    /** overlay-filter position expressions (W/H = main video, w/h = text image). */\n'
+        '    private fun overlayPosExpr(pos: TextPosition): Pair<String, String> = when (pos) {\n'
+        '        TextPosition.BOTTOM_RIGHT -> Pair("\'W-w\'", "\'H-h\'")\n'
+        '        TextPosition.TOP_RIGHT -> Pair("\'W-w\'", "0")\n'
+        '        TextPosition.TOP_LEFT -> Pair("0", "0")\n'
+        '        TextPosition.BOTTOM_LEFT -> Pair("0", "\'H-h\'")\n'
+        '        TextPosition.CENTER_BOTTOM -> Pair("\'(W-w)/2\'", "\'H-h\'")\n'
+        '        TextPosition.CENTER_TOP -> Pair("\'(W-w)/2\'", "0")\n'
+        '        TextPosition.CENTER -> Pair("\'(W-w)/2\'", "\'(H-h)/2\'")\n'
+        '        TextPosition.TOP_CENTER -> Pair("\'(W-w)/2\'", "0")\n'
+        '        TextPosition.CENTER_LEFT -> Pair("0", "\'(H-h)/2\'")\n'
+        '        TextPosition.CENTER_RIGHT -> Pair("\'W-w\'", "\'(H-h)/2\'")\n'
+        '        TextPosition.BOTTOM_CENTER -> Pair("\'(W-w)/2\'", "\'H-h\'")\n'
+        '    }\n'
+        '\n')
+    s = s.replace(ANCHOR, BLOCK + ANCHOR, 1)
+    print('   [ok]   V1: renderer property + helpers added')
+else:
+    print('   [skip] V1: renderer property already present')
+
+# V2: buildVideoFilterStages signature gets textInputIndices
+if 'textInputIndices: List<Pair<Int, EditOperation.AddText>> = emptyList(),' not in s:
+    ANCHOR = '        imageInputIndices: List<Pair<Int, EditOperation.AddImageOverlay>> = emptyList(),'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] V2 anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, ANCHOR + '\n'
+        '        textInputIndices: List<Pair<Int, EditOperation.AddText>> = emptyList(),', 1)
+    print('   [ok]   V2: buildVideoFilterStages signature extended')
+else:
+    print('   [skip] V2: signature already extended')
+
+# V3: AddText branch -> PNG overlay with drawtext fallback
+if 'WYSIWYG path: canvas-rendered PNG' not in s:
+    pat = (re.escape('is EditOperation.AddText -> {') +
+           r'[ \t]*\n[ \t]*' + re.escape('val filterExpr = buildDrawtextExpr(op, fontFilePath)') +
+           r'.*?' + re.escape('stageIndex++') + r'[ \t]*\n[ \t]*\}')
+    NEW = (
+        'is EditOperation.AddText -> {\n'
+        '                    val textPngIndex = textInputIndices.find { it.second.id == op.id }?.first\n'
+        '                    if (textPngIndex != null) {\n'
+        '                        // WYSIWYG path: canvas-rendered PNG composited with overlay\n'
+        '                        val hasOpacityKfs = op.opacityKeyframes.isNotEmpty()\n'
+        '                        val rgbaLabel = "[txt_rgba_$stageIndex]"\n'
+        '                        if (hasOpacityKfs) {\n'
+        '                            stages.add("[$textPngIndex:v]format=rgba,loop=loop=-1:size=1:start=0,fps=25$rgbaLabel")\n'
+        '                        } else {\n'
+        '                            stages.add("[$textPngIndex:v]format=rgba$rgbaLabel")\n'
+        '                        }\n'
+        '                        var textLabel = rgbaLabel\n'
+        '                        if (hasOpacityKfs) {\n'
+        '                            val alphaLabel = "[txt_alpha_$stageIndex]"\n'
+        '                            val alphaExpr = buildFFmpegInterpolationExpr(\n'
+        '                                op.opacityKeyframes, useValueY = false, defaultValue = op.opacity,\n'
+        '                                startTimeMs = op.startTimeMs ?: 0L, timeVar = "T")\n'
+        '                            stages.add("${textLabel}geq=r=\'r(X,Y)\':g=\'g(X,Y)\':b=\'b(X,Y)\':a=\'alpha(X,Y)*($alphaExpr)\'$alphaLabel")\n'
+        '                            textLabel = alphaLabel\n'
+        '                        } else if (op.opacity < 1.0f) {\n'
+        '                            val alphaLabel = "[txt_alpha_$stageIndex]"\n'
+        '                            stages.add("${textLabel}colorchannelmixer=aa=${op.opacity}$alphaLabel")\n'
+        '                            textLabel = alphaLabel\n'
+        '                        }\n'
+        '                        val overlayX = if (op.positionKeyframes.isNotEmpty()) {\n'
+        '                            val xExpr = buildFFmpegInterpolationExpr(\n'
+        '                                op.positionKeyframes, useValueY = false,\n'
+        '                                defaultValue = op.relativeX ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)\n'
+        '                            "x=\'(W*($xExpr))-(w/2)\'"\n'
+        '                        } else if (op.hasCustomPosition()) {\n'
+        '                            "x=\'(W*${op.relativeX})-(w/2)\'"\n'
+        '                        } else {\n'
+        '                            "x=" + overlayPosExpr(op.position).first\n'
+        '                        }\n'
+        '                        val overlayY = if (op.positionKeyframes.isNotEmpty()) {\n'
+        '                            val yExpr = buildFFmpegInterpolationExpr(\n'
+        '                                op.positionKeyframes, useValueY = true,\n'
+        '                                defaultValue = op.relativeY ?: 0.5f, startTimeMs = op.startTimeMs ?: 0L)\n'
+        '                            "y=\'(H*($yExpr))-(h/2)\'"\n'
+        '                        } else if (op.hasCustomPosition()) {\n'
+        '                            "y=\'(H*${op.relativeY})-(h/2)\'"\n'
+        '                        } else {\n'
+        '                            "y=" + overlayPosExpr(op.position).second\n'
+        '                        }\n'
+        '                        val enablePart = buildEnableExpr(op.startTimeMs, op.endTimeMs)\n'
+        '                        val shortestPart = if (hasOpacityKfs) ":shortest=1" else ""\n'
+        '                        val nextLabel = "[v$stageIndex]"\n'
+        '                        stages.add("$currentLabel${textLabel}overlay=$overlayX:$overlayY$shortestPart$enablePart$nextLabel")\n'
+        '                        currentLabel = nextLabel\n'
+        '                        stageIndex++\n'
+        '                    } else {\n'
+        '                        // Fallback: classic drawtext filter\n'
+        '                        val filterExpr = buildDrawtextExpr(op, fontFilePath)\n'
+        '                        val nextLabel = "[v$stageIndex]"\n'
+        '                        stages.add("$currentLabel$filterExpr$nextLabel")\n'
+        '                        currentLabel = nextLabel\n'
+        '                        stageIndex++\n'
+        '                    }\n'
+        '                }')
+    s = sub1(s, pat, NEW, 'V3 AddText branch')
+    print('   [ok]   V3: AddText branch -> PNG overlay (drawtext fallback kept)')
+else:
+    print('   [skip] V3: AddText branch already patched')
+
+# V4: prepare PNGs before input assembly
+if 'prepareTextPngInputs(operations)' not in s:
+    ANCHOR = '        val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] V4 anchor mismatch')
+        sys.exit(1)
+    s = s.replace(ANCHOR, ANCHOR + '\n'
+        '        // Render text overlay PNGs before inputs are indexed\n'
+        '        prepareTextPngInputs(operations)', 1)
+    print('   [ok]   V4: PNG preparation hooked before input assembly')
+else:
+    print('   [skip] V4: PNG preparation already hooked')
+
+# V5: text PNG inputs section (before canvas background input)
+if '// 4b. Text Overlay PNG Inputs' not in s:
+    ANCHOR = '        // 5. Canvas Background Image Input'
+    if s.count(ANCHOR) != 1:
+        print('   [FAIL] V5 anchor mismatch')
+        sys.exit(1)
+    BLOCK = (
+        '        // 4b. Text Overlay PNG Inputs (WYSIWYG canvas-rendered text)\n'
+        '        val textInputIndices = mutableListOf<Pair<Int, EditOperation.AddText>>()\n'
+        '        for ((textOp, pngPath) in textPngInputs) {\n'
+        '            cmd.append(" -i \\"$pngPath\\"")\n'
+        '            textInputIndices.add(Pair(inputIndex, textOp))\n'
+        '            inputIndex++\n'
+        '        }\n'
+        '\n')
+    s = s.replace(ANCHOR, BLOCK + ANCHOR, 1)
+    print('   [ok]   V5: text PNG input section added')
+else:
+    print('   [skip] V5: text input section already present')
+
+# V6: pass textInputIndices at both call sites
+# NOTE: anchors are newline-prefixed so the 12-space pattern cannot match
+# as a substring of the 16-space (merge) call site line.
+if 'textInputIndices = textInputIndices,' not in s:
+    A_MERGE = '\n                imageInputIndices = imageInputIndices,'
+    A_PLAIN = '\n            imageInputIndices = imageInputIndices,'
+    if s.count(A_MERGE) != 1 or s.count(A_PLAIN) != 1:
+        print('   [FAIL] V6 anchors mismatch (merge=%d plain=%d)' % (s.count(A_MERGE), s.count(A_PLAIN)))
+        sys.exit(1)
+    s = s.replace(A_MERGE, A_MERGE + '\n                textInputIndices = textInputIndices,', 1)
+    s = s.replace(A_PLAIN, A_PLAIN + '\n            textInputIndices = textInputIndices,', 1)
+    print('   [ok]   V6: both buildVideoFilterStages call sites pass text inputs')
+else:
+    print('   [skip] V6: call sites already pass text inputs')
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 7 -- VideoEditingViewModelExt: addTextOperation new params
+# ---------------------------------------------------------------------------
+step7_ext() {
+  echo "== step 7: addTextOperation extended"
+  python3 - "$VME" <<'CUTPY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+if 'bgMargin: Int = 0' in s:
+    print('   [skip] addTextOperation already extended')
+    sys.exit(0)
+OLD = (
+    'fun VideoEditingViewModel.addTextOperation(\n'
+    '    text: String, fontSize: Int, position: String, relativeX: Float? = null,\n'
+    '    relativeY: Float? = null, color: String = "#FFFFFF", startTimeMs: Long? = null,\n'
+    '    endTimeMs: Long? = null, fontPath: String? = null, opacity: Float = 1.0f,\n'
+    '    borderThickness: Int = 0, borderColor: String = "#000000", textAlign: String = "center",\n'
+    '    letterSpacing: Float = 0f, lineSpacing: Float = 0f\n'
+    ') {\n'
+    '    executeCommand(AddOperationCommand(EditOperation.AddText(\n'
+    '        text, fontSize, TextPosition.fromLabel(position), relativeX, relativeY, color, startTimeMs,\n'
+    '        endTimeMs, fontPath = fontPath, opacity = opacity, borderThickness = borderThickness,\n'
+    '        borderColor = borderColor, textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing\n'
+    '    ), "Add Text"))\n'
+    '}')
+NEW = (
+    'fun VideoEditingViewModel.addTextOperation(\n'
+    '    text: String, fontSize: Int, position: String, relativeX: Float? = null,\n'
+    '    relativeY: Float? = null, color: String = "#FFFFFF", startTimeMs: Long? = null,\n'
+    '    endTimeMs: Long? = null, fontPath: String? = null, opacity: Float = 1.0f,\n'
+    '    borderThickness: Int = 0, borderColor: String = "#000000", textAlign: String = "center",\n'
+    '    letterSpacing: Float = 0f, lineSpacing: Float = 0f,\n'
+    '    bold: Boolean = false, italic: Boolean = false, underline: Boolean = false,\n'
+    '    strikethrough: Boolean = false, bgColor: String? = null, bgOpacity: Float = 1.0f,\n'
+    '    bgCornerRadius: Int = 0, bgMargin: Int = 0\n'
+    ') {\n'
+    '    executeCommand(AddOperationCommand(EditOperation.AddText(\n'
+    '        text, fontSize, TextPosition.fromLabel(position), relativeX, relativeY, color, startTimeMs,\n'
+    '        endTimeMs, fontPath = fontPath, opacity = opacity, borderThickness = borderThickness,\n'
+    '        borderColor = borderColor, textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing,\n'
+    '        bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,\n'
+    '        bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin\n'
+    '    ), "Add Text"))\n'
+    '}')
+if s.count(OLD) != 1:
+    print('   [FAIL] addTextOperation anchor mismatch')
     sys.exit(1)
-for f in targets:
-    if os.path.exists(f):
-        os.remove(f)
-        print('   [ok]   deleted ' + f)
+s = s.replace(OLD, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   addTextOperation extended')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 8 -- VideoEditingActivity wiring
+# ---------------------------------------------------------------------------
+step8_activity() {
+  echo "== step 8: Activity wiring"
+  python3 - "$ACT" <<'CUTPY'
+import re, sys
+p = sys.argv[1]
+s = open(p, encoding='utf-8', newline='').read()
+
+def sub1(s, pat, repl, name, flags=re.DOTALL):
+    hits = re.findall(pat, s, flags)
+    if len(hits) != 1:
+        print('   [FAIL] %s: %d match(es)' % (name, len(hits)))
+        sys.exit(1)
+    return re.sub(pat, lambda m: repl, s, count=1, flags=flags)
+
+# A1: hook the WYSIWYG text renderer after the font copy block
+if 'viewModel.textPngRenderer = { op ->' not in s:
+    pat = re.escape('Make sure assets/fonts/Roboto-Regular.ttf exists in the project.")') + r'\n[ \t]*\}'
+    NEW = ('Make sure assets/fonts/Roboto-Regular.ttf exists in the project.")\n'
+           '        }\n'
+           '\n'
+           '        // WYSIWYG text rendering: AddText ops are rasterized with the same\n'
+           '        // Canvas pipeline used by the preview, then composited via overlay.\n'
+           '        viewModel.textPngRenderer = { op ->\n'
+           '            com.tharunbirla.librecuts.utils.TextRenderUtils.renderAddTextToPng(this@VideoEditingActivity, op)?.absolutePath\n'
+           '        }')
+    s = sub1(s, pat, NEW, 'A1 renderer hook')
+    print('   [ok]   A1: textPngRenderer hooked')
+
+# A2a: onTextCommitted lambda params
+if 'bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->' not in s:
+    OLD = ('overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, '
+           'borderThickness, borderColor, textAlign, letterSpacing, lineSpacing ->')
+    if s.count(OLD) != 1:
+        print('   [FAIL] A2a anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, 'overlay.onTextCommitted = { text, fontSize, relX, relY, color, fontPath, opacity, '
+        'borderThickness, borderColor, textAlign, letterSpacing, lineSpacing, '
+        'bold, italic, underline, strikethrough, bgColor, bgOpacity, bgCornerRadius, bgMargin ->', 1)
+    print('   [ok]   A2a: commit lambda params extended')
+
+# A2b: updateOperation call carries new fields
+if 'bold = bold, italic = italic, underline = underline' not in s:
+    OLD = ('viewModel.updateOperation(op.copy(\n'
+           '                                    text = text, fontSize = fontSize, relativeX = relX, relativeY = relY, color = color,\n'
+           '                                    fontPath = fontPath, opacity = opacity, borderThickness = borderThickness, borderColor = borderColor,\n'
+           '                                    textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing\n'
+           '                                ))')
+    if s.count(OLD) != 1:
+        print('   [FAIL] A2b anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, 'viewModel.updateOperation(op.copy(\n'
+        '                                    text = text, fontSize = fontSize, relativeX = relX, relativeY = relY, color = color,\n'
+        '                                    fontPath = fontPath, opacity = opacity, borderThickness = borderThickness, borderColor = borderColor,\n'
+        '                                    textAlign = textAlign, letterSpacing = letterSpacing, lineSpacing = lineSpacing,\n'
+        '                                    bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,\n'
+        '                                    bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin\n'
+        '                                ))', 1)
+    print('   [ok]   A2b: updateOperation carries new fields')
+
+# A2c: addTextOperation call carries new fields
+if 'bgMargin = bgMargin\n                        )' not in s:
+    OLD = ('                            textAlign = textAlign,\n'
+           '                            letterSpacing = letterSpacing,\n'
+           '                            lineSpacing = lineSpacing\n'
+           '                        )')
+    if s.count(OLD) != 1:
+        print('   [FAIL] A2c anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, '                            textAlign = textAlign,\n'
+        '                            letterSpacing = letterSpacing,\n'
+        '                            lineSpacing = lineSpacing,\n'
+        '                            bold = bold, italic = italic, underline = underline, strikethrough = strikethrough,\n'
+        '                            bgColor = bgColor, bgOpacity = bgOpacity, bgCornerRadius = bgCornerRadius, bgMargin = bgMargin\n'
+        '                        )', 1)
+    print('   [ok]   A2c: addTextOperation carries new fields')
+
+# A3: tab declarations + resetTabs
+if 'val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)' not in s:
+    OLD = ('                val btnKeyboard = toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)\n'
+           '                val btnPalette = toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)\n'
+           '                val btnFormat = toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)\n'
+           '                val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)\n'
+           '                val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)\n'
+           '\n'
+           '                fun resetTabs() {\n'
+           '                    colorContainer?.visibility = View.GONE\n'
+           '                    formatContainer?.visibility = View.GONE\n'
+           '                    btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                    btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                    btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                }')
+    NEW = ('                val btnKeyboard = toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)\n'
+           '                val btnPalette = toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)\n'
+           '                val btnFormat = toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)\n'
+           '                val btnBackground = toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)\n'
+           '                val colorContainer = toolbar.findViewById<View>(R.id.colorPickerContainer)\n'
+           '                val formatContainer = toolbar.findViewById<View>(R.id.formatSettingsContainer)\n'
+           '                val bgContainer = toolbar.findViewById<View>(R.id.bgSettingsContainer)\n'
+           '\n'
+           '                fun resetTabs() {\n'
+           '                    colorContainer?.visibility = View.GONE\n'
+           '                    formatContainer?.visibility = View.GONE\n'
+           '                    bgContainer?.visibility = View.GONE\n'
+           '                    btnKeyboard?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                    btnPalette?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                    btnFormat?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                    btnBackground?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '                }')
+    if s.count(OLD) != 1:
+        print('   [FAIL] A3 anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, NEW, 1)
+    print('   [ok]   A3: Background tab declared + resetTabs extended')
+
+# A4: style toggles + bg sliders + btnFormat sync + btnBackground handler
+if 'btnBackground?.setBounceClickListener' not in s:
+    pat = (re.escape('btnFormat?.setBounceClickListener {') +
+           r'.*?' + re.escape('btnFormat.setColorFilter(getColor(R.color.colorPrimary))') +
+           r'[ \t]*\n[ \t]*\}')
+    NEW = (
+        '// Style toggle helpers: Bold / Italic / Underline / Strikethrough\n'
+        '                fun styleTint(button: android.widget.Button?, active: Boolean) {\n'
+        '                    button?.backgroundTintList = android.content.res.ColorStateList.valueOf(\n'
+        '                        getColor(if (active) R.color.colorPrimary else R.color.inactiveToolBackground))\n'
+        '                }\n'
+        '                fun syncStyleButtons() {\n'
+        '                    val textOverlay = draggableTextOverlay\n'
+        '                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleBold), textOverlay?.getBold() == true)\n'
+        '                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleItalic), textOverlay?.getItalic() == true)\n'
+        '                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleUnderline), textOverlay?.getUnderline() == true)\n'
+        '                    styleTint(formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleStrike), textOverlay?.getStrikethrough() == true)\n'
+        '                }\n'
+        '                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleBold)?.setOnClickListener {\n'
+        '                    draggableTextOverlay?.let { it.setBold(!it.getBold()) }\n'
+        '                    syncStyleButtons()\n'
+        '                }\n'
+        '                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleItalic)?.setOnClickListener {\n'
+        '                    draggableTextOverlay?.let { it.setItalic(!it.getItalic()) }\n'
+        '                    syncStyleButtons()\n'
+        '                }\n'
+        '                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleUnderline)?.setOnClickListener {\n'
+        '                    draggableTextOverlay?.let { it.setUnderline(!it.getUnderline()) }\n'
+        '                    syncStyleButtons()\n'
+        '                }\n'
+        '                formatContainer?.findViewById<android.widget.Button>(R.id.btnStyleStrike)?.setOnClickListener {\n'
+        '                    draggableTextOverlay?.let { it.setStrikethrough(!it.getStrikethrough()) }\n'
+        '                    syncStyleButtons()\n'
+        '                }\n'
+        '\n'
+        '                // Background tab sliders\n'
+        '                fun syncBgSliders() {\n'
+        '                    val textOverlay = draggableTextOverlay ?: return\n'
+        '                    bgContainer?.findViewById<Slider>(R.id.seekBgOpacity)?.value =\n'
+        '                        (textOverlay.getBgOpacity() * 100f).coerceIn(0f, 100f)\n'
+        '                    bgContainer?.findViewById<Slider>(R.id.seekBgCornerRadius)?.value =\n'
+        '                        textOverlay.getBgCornerRadius().toFloat().coerceIn(0f, 50f)\n'
+        '                    bgContainer?.findViewById<Slider>(R.id.seekBgMargin)?.value =\n'
+        '                        textOverlay.getBgMargin().toFloat().coerceIn(0f, 50f)\n'
+        '                }\n'
+        '                bgContainer?.findViewById<Slider>(R.id.seekBgOpacity)?.addOnChangeListener { _, value, _ ->\n'
+        '                    draggableTextOverlay?.setBgOpacity(value / 100f)\n'
+        '                }\n'
+        '                bgContainer?.findViewById<Slider>(R.id.seekBgCornerRadius)?.addOnChangeListener { _, value, _ ->\n'
+        '                    draggableTextOverlay?.setBgCornerRadius(value.toInt())\n'
+        '                }\n'
+        '                bgContainer?.findViewById<Slider>(R.id.seekBgMargin)?.addOnChangeListener { _, value, _ ->\n'
+        '                    draggableTextOverlay?.setBgMargin(value.toInt())\n'
+        '                }\n'
+        '\n'
+        '                btnFormat?.setBounceClickListener {\n'
+        '                    draggableTextOverlay?.hideKeyboard()\n'
+        '\n'
+        '                    resetTabs()\n'
+        '                    formatContainer?.visibility = View.VISIBLE\n'
+        '                    btnFormat.setColorFilter(getColor(R.color.colorPrimary))\n'
+        '                    syncStyleButtons()\n'
+        '                }\n'
+        '\n'
+        '                btnBackground?.setBounceClickListener {\n'
+        '                    draggableTextOverlay?.hideKeyboard()\n'
+        '\n'
+        '                    resetTabs()\n'
+        '                    bgContainer?.visibility = View.VISIBLE\n'
+        '                    btnBackground.setColorFilter(getColor(R.color.colorPrimary))\n'
+        '                    setupBgColorPicker(toolbar)\n'
+        '                    syncBgSliders()\n'
+        '                }')
+    s = sub1(s, pat, NEW, 'A4 style/bg wiring')
+    print('   [ok]   A4: style toggles + bg sliders + Background tab handler wired')
+
+# A5a: enterTextEditingMode keeps edited op color
+if 'if (isReEditing) (draggableTextOverlay?.getTextColor()' not in s:
+    OLD = '        selectedTextColor = "#FFFFFF"'
+    if s.count(OLD) != 1:
+        print('   [FAIL] A5a anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, '        selectedTextColor = if (isReEditing) (draggableTextOverlay?.getTextColor() ?: "#FFFFFF") else "#FFFFFF"', 1)
+    print('   [ok]   A5a: re-edit keeps the text color')
+
+# A5b: enterTextEditingMode resets Format/Background tabs too
+if 'toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))' not in s:
+    OLD = ('            toolbar.findViewById<View>(R.id.colorPickerContainer)?.visibility = View.GONE\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))')
+    NEW = ('            toolbar.findViewById<View>(R.id.colorPickerContainer)?.visibility = View.GONE\n'
+           '            toolbar.findViewById<View>(R.id.formatSettingsContainer)?.visibility = View.GONE\n'
+           '            toolbar.findViewById<View>(R.id.bgSettingsContainer)?.visibility = View.GONE\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextKeyboardTab)?.setColorFilter(getColor(R.color.colorPrimary))\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextPaletteTab)?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextFormatTab)?.setColorFilter(getColor(R.color.toolTextInactive))\n'
+           '            toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))')
+    if s.count(OLD) != 1:
+        print('   [FAIL] A5b anchor mismatch')
+        sys.exit(1)
+    s = s.replace(OLD, NEW, 1)
+    print('   [ok]   A5b: all tabs reset on edit-mode entry')
+
+# A6: Draw-style palette (custom circle first) replacing the old color picker
+if 'buildTextPaletteRow' not in s:
+    pat = (re.escape('    private val colorsList = listOf(') +
+           r'.*?' + re.escape('colorPickerList.addView(colorView)\n        }\n    }'))
+    NEW = (
+        '    private val textPalettePresets = listOf(\n'
+        '        "#FFFFFF", "#000000", "#FF007A", "#FF3B30",\n'
+        '        "#FF9500", "#FFCC00", "#34C759", "#32ADE6",\n'
+        '        "#007AFF", "#AF52DE"\n'
+        '    )\n'
+        '    private var selectedTextColor = "#FFFFFF"\n'
+        '\n'
+        '    private fun markPaletteSelection(container: LinearLayout, selectedTag: String?) {\n'
+        '        for (i in 0 until container.childCount) {\n'
+        '            val child = container.getChildAt(i) as? FrameLayout ?: continue\n'
+        '            val tagHex = child.tag as? String\n'
+        '            if (tagHex != null && tagHex == selectedTag) {\n'
+        '                child.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)\n'
+        '                child.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)\n'
+        '            } else {\n'
+        '                child.setBackgroundResource(R.drawable.bg_aspect_ratio_item)\n'
+        '                child.foreground = null\n'
+        '            }\n'
+        '        }\n'
+        '    }\n'
+        '\n'
+        '    private fun buildTextPaletteRow(\n'
+        '        container: LinearLayout,\n'
+        '        includeNone: Boolean,\n'
+        '        selectedHex: String?,\n'
+        '        onPick: (String?) -> Unit\n'
+        '    ) {\n'
+        '        container.removeAllViews()\n'
+        '        val density = resources.displayMetrics.density\n'
+        '        val swatchSize = (36 * density).toInt()\n'
+        '        val innerSize = (24 * density).toInt()\n'
+        '        val margin = (4 * density).toInt()\n'
+        '\n'
+        '        var selectedTag: String? = null\n'
+        '        if (includeNone && selectedHex == null) selectedTag = "__none__"\n'
+        '        if (selectedHex != null && !textPalettePresets.contains(selectedHex)) selectedTag = "__custom__"\n'
+        '        if (selectedHex != null && textPalettePresets.contains(selectedHex)) selectedTag = selectedHex\n'
+        '\n'
+        '        if (includeNone) {\n'
+        '            val frame = FrameLayout(this).apply {\n'
+        '                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {\n'
+        '                    setMargins(margin, 0, margin, 0)\n'
+        '                }\n'
+        '                tag = "__none__"\n'
+        '                setBackgroundResource(R.drawable.bg_aspect_ratio_item)\n'
+        '                isClickable = true\n'
+        '                isFocusable = true\n'
+        '            }\n'
+        '            val circle = View(this).apply {\n'
+        '                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)\n'
+        '                background = android.graphics.drawable.GradientDrawable().apply {\n'
+        '                    shape = android.graphics.drawable.GradientDrawable.OVAL\n'
+        '                    setStroke((1 * density).toInt(), Color.parseColor("#66FFFFFF"))\n'
+        '                }\n'
+        '            }\n'
+        '            frame.addView(circle)\n'
+        '            val mark = android.widget.ImageView(this).apply {\n'
+        '                layoutParams = FrameLayout.LayoutParams((12 * density).toInt(), (12 * density).toInt(), Gravity.CENTER)\n'
+        '                setImageResource(R.drawable.ic_close_24)\n'
+        '                setColorFilter(getColor(R.color.iconSecondary))\n'
+        '            }\n'
+        '            frame.addView(mark)\n'
+        '            frame.setOnClickListener { onPick(null) }\n'
+        '            container.addView(frame)\n'
+        '        }\n'
+        '\n'
+        '        // Custom color circle (opens the HSV picker, Draw-page style)\n'
+        '        run {\n'
+        '            val frame = FrameLayout(this).apply {\n'
+        '                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {\n'
+        '                    setMargins(margin, 0, margin, 0)\n'
+        '                }\n'
+        '                tag = "__custom__"\n'
+        '                setBackgroundResource(R.drawable.bg_aspect_ratio_item)\n'
+        '                isClickable = true\n'
+        '                isFocusable = true\n'
+        '            }\n'
+        '            val circle = View(this).apply {\n'
+        '                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)\n'
+        '                background = android.graphics.drawable.GradientDrawable().apply {\n'
+        '                    shape = android.graphics.drawable.GradientDrawable.OVAL\n'
+        '                    val customActive = selectedHex != null && !textPalettePresets.contains(selectedHex)\n'
+        '                    if (customActive) {\n'
+        '                        setColor(try { Color.parseColor(selectedHex) } catch (e: Exception) { Color.WHITE })\n'
+        '                    }\n'
+        '                    setStroke((1 * density).toInt(), Color.parseColor("#44FFFFFF"))\n'
+        '                }\n'
+        '            }\n'
+        '            frame.addView(circle)\n'
+        '            val icon = android.widget.ImageView(this).apply {\n'
+        '                layoutParams = FrameLayout.LayoutParams((13 * density).toInt(), (13 * density).toInt(), Gravity.CENTER)\n'
+        '                setImageResource(R.drawable.ic_palette_24)\n'
+        '                setColorFilter(getColor(R.color.textColor))\n'
+        '            }\n'
+        '            frame.addView(icon)\n'
+        '            frame.setOnClickListener {\n'
+        '                val initial = if (selectedHex != null && !textPalettePresets.contains(selectedHex)) selectedHex else "#FFFFFF"\n'
+        '                showCustomColorPicker(initial) { customHex -> onPick(customHex) }\n'
+        '            }\n'
+        '            container.addView(frame)\n'
+        '        }\n'
+        '\n'
+        '        for (hex in textPalettePresets) {\n'
+        '            val frame = FrameLayout(this).apply {\n'
+        '                layoutParams = LinearLayout.LayoutParams(swatchSize, swatchSize).apply {\n'
+        '                    setMargins(margin, 0, margin, 0)\n'
+        '                }\n'
+        '                tag = hex\n'
+        '                setBackgroundResource(R.drawable.bg_aspect_ratio_item)\n'
+        '                isClickable = true\n'
+        '                isFocusable = true\n'
+        '            }\n'
+        '            val circleView = View(this).apply {\n'
+        '                layoutParams = FrameLayout.LayoutParams(innerSize, innerSize, Gravity.CENTER)\n'
+        '                val drawable = android.graphics.drawable.GradientDrawable().apply {\n'
+        '                    shape = android.graphics.drawable.GradientDrawable.OVAL\n'
+        '                    setColor(try { Color.parseColor(hex) } catch (e: Exception) { Color.WHITE })\n'
+        '                    setStroke((1 * density).toInt(), Color.parseColor("#44FFFFFF"))\n'
+        '                }\n'
+        '                background = drawable\n'
+        '            }\n'
+        '            frame.addView(circleView)\n'
+        '            frame.setOnClickListener { onPick(hex) }\n'
+        '            container.addView(frame)\n'
+        '        }\n'
+        '\n'
+        '        markPaletteSelection(container, selectedTag)\n'
+        '    }\n'
+        '\n'
+        '    private fun setupColorPicker(toolbar: View) {\n'
+        '        val colorPickerList = toolbar.findViewById<LinearLayout>(R.id.colorPickerList) ?: return\n'
+        '        buildTextPaletteRow(colorPickerList, includeNone = false, selectedHex = selectedTextColor) { hex ->\n'
+        '            selectedTextColor = hex ?: "#FFFFFF"\n'
+        '            draggableTextOverlay?.setTextColor(selectedTextColor)\n'
+        '            setupColorPicker(toolbar)\n'
+        '        }\n'
+        '    }\n'
+        '\n'
+        '    private fun setupBgColorPicker(toolbar: View) {\n'
+        '        val list = toolbar.findViewById<LinearLayout>(R.id.bgColorPickerList) ?: return\n'
+        '        buildTextPaletteRow(list, includeNone = true, selectedHex = draggableTextOverlay?.getBgColor()) { hex ->\n'
+        '            draggableTextOverlay?.setBgColor(hex)\n'
+        '            setupBgColorPicker(toolbar)\n'
+        '        }\n'
+        '    }')
+    s = sub1(s, pat, NEW, 'A6 palette rewrite')
+    print('   [ok]   A6: Draw-style palette (custom first) + bg palette installed')
+
+open(p, 'w', encoding='utf-8', newline='').write(s)
 CUTPY
   [ $? -ne 0 ] && return 1
   return 0
@@ -238,8 +1522,13 @@ def fail(msg):
     bad += 1
     print('   [FAIL] ' + msg)
 
+PKG = 'app/src/main/java/com/tharunbirla/librecuts'
+
 # 1) XML validity
-xmls = ['app/src/main/res/layout/dialog_export_settings.xml',
+xmls = ['app/src/main/res/layout/text_editing_toolbar.xml',
+        'app/src/main/res/layout/text_format_settings.xml',
+        'app/src/main/res/layout/text_background_settings.xml',
+        'app/src/main/res/drawable/ic_text_bg_24.xml',
         'app/src/main/AndroidManifest.xml'] + sorted(glob.glob('app/src/main/res/values*/*.xml'))
 for f in xmls:
     try:
@@ -248,79 +1537,130 @@ for f in xmls:
         fail('XML %s: %s' % (f, e))
 print('   [ok]   XML valid (%d files)' % len(xmls))
 
-# 2) strings: no forbidden byte patterns left in any values xml
-FORBIDDEN = [
-    (b'\xe2\x80\xa6',      'clean ellipsis'),
-    (b'\xc3\xa2\xe2\x82\xac', 'mojibake sequence'),
-    (b'\xc3\x83\xc2\xa2',  'double mojibake'),
-    (b'&#8230;',           'ellipsis entity'),
-    (b'&#x2026;',          'ellipsis hex entity'),
+# 2) Kotlin brace/paren balance via a real state-machine lexer
+#    (handles // and /* */ comments, "..", ".."".."" raw strings, 'c' literals
+#     and backslash escapes -- regex stripping produces false positives)
+def strip_kotlin(src):
+    out = []
+    i, n = 0, len(src)
+    NORMAL, LINE_C, BLOCK_C, STR, RAW, CHAR = range(6)
+    st = NORMAL
+    while i < n:
+        c = src[i]
+        two = src[i:i+2]
+        if st == NORMAL:
+            if two == '//':
+                st = LINE_C; i += 2; continue
+            if two == '/*':
+                st = BLOCK_C; i += 2; continue
+            if src[i:i+3] == '"""':
+                st = RAW; i += 3; out.append(' '); continue
+            if c == '"':
+                st = STR; i += 1; out.append(' '); continue
+            if c == "'":
+                st = CHAR; i += 1; out.append(' '); continue
+            out.append(c); i += 1
+        elif st == LINE_C:
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+        elif st == BLOCK_C:
+            if two == '*/':
+                st = NORMAL; i += 2; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == STR:
+            if c == '\\':
+                i += 2; continue
+            if c == '"':
+                st = NORMAL
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        elif st == RAW:
+            if src[i:i+3] == '"""':
+                st = NORMAL; i += 3; continue
+            if c == '\n':
+                out.append('\n')
+            i += 1
+        else:  # CHAR
+            if c == '\\':
+                i += 2; continue
+            if c == "'":
+                st = NORMAL
+            if c == '\n':
+                st = NORMAL; out.append('\n')
+            i += 1
+    return ''.join(out)
+
+def balanced(path):
+    s = strip_kotlin(open(path, encoding='utf-8').read())
+    for a, b in [('{', '}'), ('(', ')'), ('[', ']')]:
+        if s.count(a) != s.count(b):
+            return '%s unbalanced (%d vs %d)' % (a, s.count(a), s.count(b))
+    return None
+
+for f in ['models/EditOperation.kt', 'customviews/TextOverlayView.kt',
+          'customviews/DraggableTextOverlayView.kt', 'viewmodels/VideoEditingViewModel.kt',
+          'viewmodels/VideoEditingViewModelExt.kt', 'VideoEditingActivity.kt',
+          'utils/TextRenderUtils.kt']:
+    r = balanced(PKG + '/' + f)
+    if r:
+        fail('%s: %s' % (f, r))
+print('   [ok]   Kotlin braces/parens balanced (7 files)')
+
+# 3) R.id cross-check
+toolbar = open('app/src/main/res/layout/text_editing_toolbar.xml', encoding='utf-8').read()
+fmt = open('app/src/main/res/layout/text_format_settings.xml', encoding='utf-8').read()
+bgl = open('app/src/main/res/layout/text_background_settings.xml', encoding='utf-8').read()
+act = open(PKG + '/VideoEditingActivity.kt', encoding='utf-8').read()
+defined = set(re.findall(r'\+id/(\w+)', toolbar)) | set(re.findall(r'\+id/(\w+)', fmt)) | set(re.findall(r'\+id/(\w+)', bgl))
+need = ['btnTextBackgroundTab', 'bgSettingsContainer', 'bgColorPickerList',
+        'seekBgOpacity', 'seekBgCornerRadius', 'seekBgMargin',
+        'btnStyleBold', 'btnStyleItalic', 'btnStyleUnderline', 'btnStyleStrike']
+for i in need:
+    if i not in defined:
+        fail('id %s missing from layouts' % i)
+    if ('R.id.' + i) not in act:
+        fail('id %s not wired in Activity' % i)
+print('   [ok]   R.id cross-check (%d ids verified)' % len(need))
+
+# 4) key markers
+eop = open(PKG + '/models/EditOperation.kt', encoding='utf-8').read()
+tov = open(PKG + '/customviews/TextOverlayView.kt', encoding='utf-8').read()
+drg = open(PKG + '/customviews/DraggableTextOverlayView.kt', encoding='utf-8').read()
+vm = open(PKG + '/viewmodels/VideoEditingViewModel.kt', encoding='utf-8').read()
+vme = open(PKG + '/viewmodels/VideoEditingViewModelExt.kt', encoding='utf-8').read()
+tru = open(PKG + '/utils/TextRenderUtils.kt', encoding='utf-8').read()
+checks = [
+    ('AddText bgMargin field', 'val bgMargin: Int = 0,' in eop),
+    ('AddText bold field', 'val bold: Boolean = false,' in eop),
+    ('TextRenderUtils renders PNG', 'fun renderAddTextToPng' in tru),
+    ('preview uses shared paint', 'TextRenderUtils.configPaint' in tov),
+    ('preview draws bg block', 'TextRenderUtils.drawBlock' in tov),
+    ('draggable has setters', 'fun setBgMargin(' in drg and 'fun setBold(' in drg),
+    ('draggable commit passes state', 'currentBgMargin\n            )' in drg),
+    ('VM renderer property', 'var textPngRenderer' in vm),
+    ('VM overlay stages', 'WYSIWYG path: canvas-rendered PNG' in vm),
+    ('VM text input section', '// 4b. Text Overlay PNG Inputs' in vm),
+    ('VM call sites pass indices', vm.count('textInputIndices = textInputIndices,') == 2),
+    ('VM drawtext fallback kept', 'Fallback: classic drawtext filter' in vm),
+    ('Ext addTextOperation params', 'bgMargin: Int = 0' in vme),
+    ('Activity renderer hook', 'viewModel.textPngRenderer = { op ->' in act),
+    ('Activity palette builder', 'buildTextPaletteRow' in act),
+    ('Activity bg palette', 'setupBgColorPicker' in act),
+    ('Activity style toggles', 'btnStyleBold' in act),
+    ('Activity background tab', 'btnTextBackgroundTab' in act),
+    ('Activity commit extended', 'bgCornerRadius = bgCornerRadius' in act),
+    ('toolbar has background tab', 'btnTextBackgroundTab' in toolbar),
+    ('toolbar includes bg panel', 'text_background_settings' in toolbar),
+    ('format has style row', 'btnStyleStrike' in fmt),
 ]
-for f in sorted(glob.glob('app/src/main/res/values*/*.xml')):
-    d = open(f, 'rb').read()
-    for pat, name in FORBIDDEN:
-        if pat in d:
-            fail('%s still present in %s' % (name, f))
-sts = open('app/src/main/res/values/strings.xml', 'rb').read()
-for line in [b'<string name="loading">Importing Video...</string>',
-             b'<string name="str_saving_video">Saving video...</string>',
-             b'<string name="toast_analyzing_beats">Analyzing beats...</string>']:
-    if line not in sts:
-        fail('missing exact string: ' + line.decode())
-print('   [ok]   strings: every ellipsis variant gone, progress strings exact')
-
-# 3) repo-wide mojibake scan (xml/kt/java under app/src/main)
-scan = []
-for f in glob.glob('app/src/main/**/*', recursive=True):
-    if os.path.isfile(f) and f.endswith(('.xml', '.kt', '.java')):
-        d = open(f, 'rb').read()
-        if b'\xc3\xa2\xe2\x82\xac' in d or b'\xc3\x83\xc2\xa2' in d:
-            scan.append(f)
-if scan:
-    for f in scan:
-        fail('mojibake bytes still in ' + f)
-else:
-    print('   [ok]   repo-wide mojibake scan clean')
-
-# 4) MainActivity: popup removed + braces balanced
-m = open('app/src/main/java/com/tharunbirla/librecuts/MainActivity.kt', encoding='utf-8').read()
-if '// Onboarding / Welcome Dialog removed' not in m:
-    fail('onboarding marker missing')
-if 'showOnboardingDialog(prefs)' in m:
-    fail('onboarding call still present')
-if m.count('{') != m.count('}'):
-    fail('MainActivity braces unbalanced')
-print('   [ok]   MainActivity: popup gone, braces balanced')
-
-# 5) chip styling + custom resources gone
-x = open('app/src/main/res/layout/dialog_export_settings.xml', encoding='utf-8').read()
-i = x.find('chipBitrateSame')
-if i == -1:
-    fail('chipBitrateSame missing from layout')
-else:
-    blk = x[max(0, x.rfind('<com.google.android.material.chip.Chip', 0, i)): x.find('/>', i) + 2]
-    if 'Chip.Choice' not in blk:
-        fail('chipBitrateSame is not plain Choice style')
-if 'checkedIcon' in x:
-    fail('checkedIcon still present in dialog layout')
-if 'ic_dialog_check' in x or 'chip_bitrate_same' in x:
-    fail('custom chip resources still referenced in dialog layout')
-for f in ['app/src/main/res/drawable/ic_dialog_check.xml',
-          'app/src/main/res/color/chip_bitrate_same_bg.xml',
-          'app/src/main/res/color/chip_bitrate_same_text.xml']:
-    if os.path.exists(f):
-        fail('stale resource still exists: ' + f)
-print('   [ok]   bitrate chip identical to siblings; custom resources deleted')
-
-# 6) R.id cross-check dialog <-> ExportSettingsDialog.kt
-k = open('app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt', encoding='utf-8').read()
-used = set(re.findall(r'R\.id\.(\w+)', k))
-defined = set(re.findall(r'\+id/(\w+)', x))
-missing = used - defined
-if missing:
-    fail('R.id missing in layout: ' + str(sorted(missing)))
-else:
-    print('   [ok]   R.id cross-check (%d ids)' % len(used))
+for name, ok in checks:
+    if not ok:
+        fail(name)
+print('   [ok]   markers: ' + str(sum(1 for _, o in checks if o)) + '/' + str(len(checks)))
 
 if bad:
     print('VERIFY FAILED (%d problem(s))' % bad)
@@ -334,10 +1674,15 @@ CUTPY
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
-precheck          || { echo "ABORT: pre-check"; exit 1; }
-fix_a_strings     || { echo "ABORT: fix A";     exit 1; }
-fix_b_onboarding  || { echo "ABORT: fix B";     exit 1; }
-fix_c_chip        || { echo "ABORT: fix C";     exit 1; }
-verify_all        || { echo "ABORT: verify";    exit 1; }
+precheck         || { echo "ABORT: pre-check";  exit 1; }
+step1_model      || { echo "ABORT: step 1";     exit 1; }
+step2_new_files  || { echo "ABORT: step 2";     exit 1; }
+step3_layouts    || { echo "ABORT: step 3";     exit 1; }
+step4_textoverlayview || { echo "ABORT: step 4"; exit 1; }
+step5_draggable  || { echo "ABORT: step 5";     exit 1; }
+step6_viewmodel  || { echo "ABORT: step 6";     exit 1; }
+step7_ext        || { echo "ABORT: step 7";     exit 1; }
+step8_activity   || { echo "ABORT: step 8";     exit 1; }
+verify_all       || { echo "ABORT: verify";     exit 1; }
 echo ""
-echo "ROUND 4 APPLIED SUCCESSFULLY"
+echo "ROUND 5 APPLIED SUCCESSFULLY"
