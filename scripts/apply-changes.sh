@@ -1,46 +1,54 @@
 #!/usr/bin/env bash
 # ==========================================================================
-#  CutStudio change pipeline -- scripts/apply-changes.sh
-#  PHASE 0 (v2) -- repository cleanup
+#  CutStudio -> Cutloss rebrand pipeline -- scripts/apply-changes.sh
+#  PHASE 1 -- rebrand the app to "Cutloss" (unique install identity)
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
 #
-#  v2 CHANGE (after the first red run of v1):
-#   v1 tried to fix .github/workflows/ci.yml itself. That is impossible
-#   by design: this pipeline pushes with the built-in GITHUB_TOKEN, and
-#   GitHub REFUSES to let a GitHub App / bot create or update workflow
-#   files ("refusing to allow a GitHub App to create or update workflow
-#   ... without workflows permission"). Only YOU, the repo owner logged
-#   in, can edit workflow files through the web editor. Therefore this
-#   script NEVER touches .github/workflows/ anymore; step 2 below only
-#   CHECKS ci.yml and prints the exact manual fix if it is still broken.
+#  Why this is needed:
+#   The fork still uses the ORIGINAL applicationId
+#   (com.tharunbirla.librecuts). On Android the applicationId is the
+#   install identity: two apps with the same id cannot coexist -- the
+#   fork OVERWRITES (or fails to update) the original LibreCuts app.
+#   Changing the applicationId to something unique lets Cutloss be
+#   installed side-by-side with LibreCuts or any other video editor.
 #
-#  This script REPLACES the old round 5-9 pipeline. All round 5-9
-#  patches are already committed to the repo, so the old 3888-line
-#  script is obsolete. This new script performs only the phase-0
-#  cleanup and is safe to re-run any number of times.
+#  Phase 1 contents:
+#   1. Launcher label: app_name -> "Cutloss" in values/strings.xml AND
+#      every translated values-*/strings.xml (16 files, including the
+#      Spanish "libreCuts" and Chinese translated names -- brand names
+#      are not translated).
+#   1b. Brand mentions inside OTHER user-visible string VALUES (export
+#      location names "Downloads/CutStudio", help text, translate
+#      button) -> "Cutloss" across all locale files. String KEYS (like
+#      str_downloads_librecuts) are internal identifiers and stay.
+#   2. Install identity: applicationId -> "com.i7sadegh.cutloss" in
+#      app/build.gradle.
+#      DELIBERATELY UNCHANGED: the gradle namespace, all Kotlin package
+#      names/imports, the CutStudioApplication class and the ProGuard
+#      keep rules (they reference Kotlin packages, which stay valid).
+#      Zero code churn, zero R8 risk.
+#   3. Internal broadcast action constants (ExportService x3,
+#      ProxyGenerationService x1) -> new package prefix. They travel
+#      over LocalBroadcastManager today (never leave the app), this is
+#      prophylactic hygiene for any future migration to global
+#      broadcasts.
+#   4. User-visible "CutStudio" string literals -> "Cutloss" in the 3
+#      files that show them: proxy notification title, exported file
+#      name prefixes, media folder names (Movies/Music/Pictures),
+#      snapshot frame names, export path preview labels, default track
+#      title. Internal comments, log tags ("CutStudioCrash") and class
+#      names stay untouched.
+#   5. Fastlane store title (en-US) -> "Cutloss Beta". Store
+#      descriptions stay untouched on purpose: they link to the real
+#      upstream LibreCuts GitHub/wiki/Discord URLs, which must not be
+#      rewritten to broken links.
 #
-#  Phase 0 (v2) contents:
-#   1. Delete dead code: ScratchTest.java / ScratchTest.kt (they were
-#      compiled INTO the shipped APK) and the root-level test_exo.kt /
-#      test_ext.kt / test_heavy.kt (never compiled, repo noise).
-#   2. CHECK .github/workflows/ci.yml (read-only): the "paths-ignore:"
-#      line was indented with 8 spaces instead of 4, making the whole
-#      file invalid YAML. GitHub silently rejected the workflow, so CI
-#      (build / lint / unit tests) has NEVER run on this fork. This
-#      step prints the 30-second manual fix; it cannot edit the file
-#      for you (see v2 CHANGE above).
-#   3. Enable R8 minification for release builds (minifyEnabled true)
-#      in app/build.gradle -- smaller APK, dead-code elimination.
-#   4. Rewrite app/proguard-rules.pro with safe keep rules:
-#      - models package kept verbatim: ProjectSerializer stores the
-#        runtime class simple name ("type": "Trim", "AddText", ...)
-#        inside .lcprj project files, so renaming breaks old projects
-#      - com.antonkarpenko.ffmpegkit kept: JNI resolves native methods
-#        by name
-#      - Signature/annotations kept for Gson generic type resolution
-#      - enum values()/valueOf() kept for name-based serialization
+#  NOTE for existing installs: after the applicationId change the new
+#  APK installs NEXT TO the old build (Android treats it as a new app).
+#  Uninstall the old "CutStudio" build manually if you want; .lcprj
+#  project files live in Downloads/Documents and are not affected.
 #
 #  Idempotent: every step checks its own marker and skips if applied.
 #  POLICY: this pipeline must never modify files under .github/workflows/
@@ -52,173 +60,210 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 # ---------------------------------------------------------------------------
-#  STEP 1 -- delete dead code files
+#  STEP 1 -- app_name -> Cutloss in every locale
 # ---------------------------------------------------------------------------
-step1_delete_dead() {
-    echo "== step 1: delete dead code files"
-    local removed=0
-    local f
-    for f in \
-        "app/src/main/java/com/tharunbirla/librecuts/ScratchTest.java" \
-        "app/src/main/java/com/tharunbirla/librecuts/ScratchTest.kt" \
-        "test_exo.kt" \
-        "test_ext.kt" \
-        "test_heavy.kt"
-    do
-        if [ -f "$f" ]; then
-            rm -f "$f"
-            echo "   [ok]   removed $f"
-            removed=1
-        else
-            echo "   [skip] $f already absent"
-        fi
-    done
-    if [ "$removed" -eq 1 ]; then
-        echo "   [ok]   dead code cleanup complete (5 candidates checked)"
-    fi
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 2 -- CHECK ci.yml (read-only; workflow files need manual edits)
-# ---------------------------------------------------------------------------
-step2_check_ci() {
-    echo "== step 2: check ci.yml (read-only; workflows need manual edits)"
-    if [ ! -f ".github/workflows/ci.yml" ]; then
-        echo "   [warn] .github/workflows/ci.yml not found (renamed?)"
-        return 0
-    fi
+step1_app_name() {
+    echo "== step 1: app_name -> Cutloss (all locales)"
     python3 - <<'CUTPY'
-s = open('.github/workflows/ci.yml', encoding='utf-8', newline='').read()
-BAD = '\n        paths-ignore:\n'
-GOOD = '\n    paths-ignore:\n'
-if GOOD in s and BAD not in s:
-    print('   [ok]   ci.yml is valid: paths-ignore correctly indented')
-elif BAD in s:
-    print('   [warn] ci.yml is STILL BROKEN: paths-ignore uses 8 spaces')
-    print('   [warn] GitHub rejects the whole workflow as invalid YAML,')
-    print('   [warn] so CI (build/lint/test) never runs on this fork.')
-    print('   [warn]')
-    print('   [warn] FIX IT YOURSELF (30 seconds, web editor):')
-    print('   [warn]   1. open .github/workflows/ci.yml on github.com')
-    print('   [warn]   2. find the line:      paths-ignore:   (8 spaces)')
-    print('   [warn]   3. change it to:   paths-ignore:   (4 spaces)')
-    print('   [warn]   4. Commit directly to main.')
-    print('   [warn] Bots cannot edit workflow files (GitHub blocks this')
-    print('   [warn] on purpose), so this script cannot do it for you.')
+import glob, re
+pat = re.compile(r'(<string\s+name="app_name"[^>]*>)[^<]*(</string>)')
+files = sorted(glob.glob('app/src/main/res/values*/strings.xml'))
+if not files:
+    print('   [FAIL] no values*/strings.xml found')
+    raise SystemExit(1)
+changed, already = 0, 0
+for f in files:
+    s = open(f, encoding='utf-8', newline='').read()
+    m = pat.search(s)
+    if not m:
+        continue
+    if 'Cutloss' in m.group(0):
+        already += 1
+        continue
+    s = pat.sub(r'\1Cutloss\2', s, count=1)
+    open(f, 'w', encoding='utf-8', newline='').write(s)
+    changed += 1
+    print('   [ok]   %s -> Cutloss' % f)
+if changed == 0:
+    print('   [skip] app_name already Cutloss everywhere (%d files)' % already)
 else:
-    print('   [warn] ci.yml has no paths-ignore line -- verify manually')
-# warning only: never fail the pipeline over workflow files
-CUTPY
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 3 -- enable R8 minification for release builds
-# ---------------------------------------------------------------------------
-step3_minify() {
-    echo "== step 3: enable R8 minify for release builds"
-    if [ ! -f "app/build.gradle" ]; then
-        echo "   [FAIL] app/build.gradle not found"
-        return 1
-    fi
-    python3 - <<'CUTPY'
-import sys
-p = 'app/build.gradle'
-s = open(p, encoding='utf-8', newline='').read()
-MARK = 'minifyEnabled true'
-if MARK in s:
-    print('   [skip] minifyEnabled already true')
-    sys.exit(0)
-ANCHOR = 'minifyEnabled false'
-if s.count(ANCHOR) != 1:
-    print('   [FAIL] expected exactly one minifyEnabled false, found %d'
-          % s.count(ANCHOR))
-    sys.exit(1)
-NEW = (
-    '// Phase 0 cleanup: enable R8 code shrinking/optimization for release\n'
-    '            // builds. Safe rules for Gson-serialized models and ffmpeg-kit JNI\n'
-    '            // bindings live in proguard-rules.pro.\n'
-    '            minifyEnabled true')
-s = s.replace(ANCHOR, NEW, 1)
-open(p, 'w', encoding='utf-8', newline='').write(s)
-print('   [ok]   minifyEnabled false -> true (release APK now shrunk)')
+    print('   [ok]   %d locale file(s) updated, %d already ok' % (changed, already))
 CUTPY
     [ $? -ne 0 ] && return 1
     return 0
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 4 -- write safe ProGuard / R8 keep rules
+#  STEP 1b -- brand mentions in other user-visible string VALUES
 # ---------------------------------------------------------------------------
-step4_proguard() {
-    echo "== step 4: write safe ProGuard / R8 keep rules"
-    if [ ! -f "app/proguard-rules.pro" ]; then
-        echo "   [FAIL] app/proguard-rules.pro not found"
-        return 1
-    fi
-    if grep -q "CutStudio release ProGuard / R8 rules" app/proguard-rules.pro; then
-        echo "   [skip] proguard-rules.pro already updated"
+step1b_brand_values() {
+    echo "== step 1b: brand mentions in string values -> Cutloss"
+    python3 - <<'CUTPY'
+import glob, re
+# Only the TEXT of <string> elements is rewritten; the name="..." keys
+# (e.g. str_downloads_librecuts) are internal identifiers and stay put.
+elem = re.compile(r'(<string\s+name="[^"]*"[^>]*>)([^<]*)(</string>)')
+changed = [0]
+def fix(m):
+    v = m.group(2)
+    v2 = v.replace('CutStudio', 'Cutloss').replace('LibreCuts', 'Cutloss').replace('libreCuts', 'Cutloss')
+    if v2 != v:
+        changed[0] += 1
+    return m.group(1) + v2 + m.group(3)
+files = sorted(glob.glob('app/src/main/res/values*/strings.xml'))
+touched = 0
+for f in files:
+    s = open(f, encoding='utf-8', newline='').read()
+    if not any(b in s for b in ('CutStudio', 'LibreCuts', 'libreCuts')):
+        continue
+    changed[0] = 0
+    s2 = elem.sub(fix, s)
+    if changed[0]:
+        open(f, 'w', encoding='utf-8', newline='').write(s2)
+        touched += 1
+        print('   [ok]   %s: %d value(s) rebranded' % (f, changed[0]))
+if touched == 0:
+    print('   [skip] no brand mentions left in string values')
+else:
+    print('   [ok]   %d file(s) rebranded' % touched)
+CUTPY
+    [ $? -ne 0 ] && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 2 -- applicationId -> com.i7sadegh.cutloss
+# ---------------------------------------------------------------------------
+step2_application_id() {
+    echo "== step 2: applicationId -> com.i7sadegh.cutloss"
+    python3 - <<'CUTPY'
+import sys
+p = 'app/build.gradle'
+s = open(p, encoding='utf-8', newline='').read()
+NEW = 'applicationId "com.i7sadegh.cutloss"'
+OLD = 'applicationId "com.tharunbirla.librecuts"'
+if NEW in s:
+    print('   [skip] applicationId already com.i7sadegh.cutloss')
+    sys.exit(0)
+if s.count(OLD) != 1:
+    print('   [FAIL] expected exactly one applicationId line, found %d' % s.count(OLD))
+    sys.exit(1)
+s = s.replace(OLD, NEW, 1)
+open(p, 'w', encoding='utf-8', newline='').write(s)
+print('   [ok]   applicationId: com.tharunbirla.librecuts -> com.i7sadegh.cutloss')
+print('   [ok]   namespace stays com.tharunbirla.librecuts (no code churn)')
+CUTPY
+    [ $? -ne 0 ] && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 3 -- broadcast action constants -> new package prefix
+# ---------------------------------------------------------------------------
+step3_actions() {
+    echo "== step 3: broadcast action constants -> new package prefix"
+    python3 - <<'CUTPY'
+FILES = [
+    'app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/services/ProxyGenerationService.kt',
+]
+OLDP = 'com.tharunbirla.librecuts.ACTION_'
+NEWP = 'com.i7sadegh.cutloss.ACTION_'
+total = 0
+for p in FILES:
+    s = open(p, encoding='utf-8', newline='').read()
+    n = s.count(OLDP)
+    if n == 0:
+        if NEWP in s:
+            print('   [skip] %s already migrated' % p.rsplit('/', 1)[-1])
+        else:
+            print('   [warn] %s: no action constants found (changed upstream?)' % p.rsplit('/', 1)[-1])
+        continue
+    s = s.replace(OLDP, NEWP)
+    open(p, 'w', encoding='utf-8', newline='').write(s)
+    total += n
+    print('   [ok]   %s: %d action constant(s) migrated' % (p.rsplit('/', 1)[-1], n))
+if total == 0:
+    print('   [skip] no old action constants remain')
+CUTPY
+    [ $? -ne 0 ] && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 4 -- user-visible "CutStudio" literals -> "Cutloss"
+# ---------------------------------------------------------------------------
+step4_literals() {
+    echo "== step 4: user-visible CutStudio literals -> Cutloss"
+    python3 - <<'CUTPY'
+FILES = [
+    'app/src/main/java/com/tharunbirla/librecuts/services/ProxyGenerationService.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt',
+    'app/src/main/res/layout/dialog_welcome_onboarding.xml',
+]
+# ORDER MATTERS: longer/specific patterns first, generic bare name last.
+RULES = [
+    ('"CutStudio_Audio_"',  '"Cutloss_Audio_"'),
+    # Frame rule matches the TEMPLATE start ("CutStudio_Frame_${ ... )
+    # because in source the literal continues with ${...}, not a quote.
+    ('"CutStudio_Frame_${', '"Cutloss_Frame_${'),
+    ('"CutStudio_"',        '"Cutloss_"'),
+    ('"CutStudio (Default)"', '"Cutloss (Default)"'),
+    ('"Downloads/CutStudio"', '"Downloads/Cutloss"'),
+    ('"/CutStudio"',        '"/Cutloss"'),
+    ('/CutStudio"',         '/Cutloss"'),
+    ('"CutStudio App Icon"', '"Cutloss App Icon"'),
+    ('"CutStudio"',         '"Cutloss"'),
+]
+stale = 0
+for p in FILES:
+    name = p.rsplit('/', 1)[-1]
+    s = open(p, encoding='utf-8', newline='').read()
+    hits = 0
+    for old, new in RULES:
+        if old in s:
+            hits += s.count(old)
+            s = s.replace(old, new)
+    if hits:
+        open(p, 'w', encoding='utf-8', newline='').write(s)
+        print('   [ok]   %s: %d literal(s) renamed' % (name, hits))
+    else:
+        if '"Cutloss' in s:
+            print('   [skip] %s already renamed' % name)
+        else:
+            print('   [warn] %s: no CutStudio literals found (nothing user-visible?)' % name)
+    stale += s.count('"CutStudio')
+if stale:
+    print('   [FAIL] %d quoted CutStudio literal(s) still remain' % stale)
+    raise SystemExit(1)
+CUTPY
+    [ $? -ne 0 ] && return 1
+    return 0
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 5 -- fastlane store title -> Cutloss Beta
+# ---------------------------------------------------------------------------
+step5_title() {
+    echo "== step 5: fastlane store title -> Cutloss Beta"
+    if [ ! -f "fastlane/metadata/android/en-US/title.txt" ]; then
+        echo "   [skip] fastlane title.txt not found"
         return 0
     fi
-    cat > app/proguard-rules.pro <<'PROEOF'
-# ==========================================================================
-#  CutStudio release ProGuard / R8 rules
-#  Introduced with the phase-0 cleanup (minifyEnabled true).
-#
-#  IMPORTANT -- why these rules exist:
-#   1. ProjectSerializer (utils/ProjectSerializer.kt) serializes the edit
-#      graph to .lcprj project files using Gson REFLECTION and stores the
-#      runtime class simple name ("type"/"operationType": "Trim",
-#      "AddText", ...). If R8 renames any class or field in the models
-#      package, every previously saved project file becomes unreadable.
-#   2. ffmpeg-kit talks to native code through JNI. JNI resolves native
-#      methods by class/method NAME, so renaming breaks the whole render
-#      engine at runtime.
-#   3. Gson resolves generic field types (List<EditOperation>, etc.) via
-#      the Signature attribute -- it must be preserved.
-# ==========================================================================
-
-# ---- Keep stack traces readable in crash logs (name is still obfuscated,
-#      but file/line numbers survive for error diagnostics) ----
--keepattributes SourceFile,LineNumberTable
--renamesourcefileattribute SourceFile
-
-# ---- Required by Gson reflection (generic type resolution) ----
--keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*,AnnotationDefault
-
-# ---- .lcprj project models: keep verbatim (class names + field names) ----
-#  Covers EditOperation (sealed, all subclasses), EditRecipe, VideoProject,
-#  SubtitleCue and anything else added to the models package later.
--keep class com.tharunbirla.librecuts.models.** { *; }
-
-#  Serializable machinery for the same package (EditOperation : Serializable)
--keepclassmembers class com.tharunbirla.librecuts.models.** implements java.io.Serializable {
-    static final long serialVersionUID;
-    private static final java.io.ObjectStreamField[] serialPersistentFields;
-    private void writeObject(java.io.ObjectOutputStream);
-    private void readObject(java.io.ObjectInputStream);
-    java.lang.Object writeReplace();
-    java.lang.Object readResolve();
-}
-
-# ---- ffmpeg-kit (com.antonkarpenko repack): JNI bindings must keep names ----
--keep class com.antonkarpenko.ffmpegkit.** { *; }
-
-# ---- Gson TypeToken (anonymous subclasses capture generic types) ----
--keep class com.google.gson.reflect.TypeToken { *; }
--keep class * extends com.google.gson.reflect.TypeToken
-
-# ---- Enums: Gson serializes by constant name; R8 must not rename them ----
--keepclassmembers enum com.tharunbirla.librecuts.** {
-    public static **[] values();
-    public static ** valueOf(java.lang.String);
-}
-
-# ---- Lottie animations load by file name from assets (no rules needed),
-#      ExoPlayer / Material / aboutlibraries ship their own consumer rules ----
-PROEOF
-    echo "   [ok]   proguard-rules.pro written (models + ffmpeg-kit + Gson kept)"
+    python3 - <<'CUTPY'
+import sys
+p = 'fastlane/metadata/android/en-US/title.txt'
+s = open(p, encoding='utf-8', newline='').read()
+if 'Cutloss' in s:
+    print('   [skip] title already Cutloss')
+    sys.exit(0)
+if 'LibreCuts' not in s:
+    print('   [warn] title has no LibreCuts brand, leaving as-is: %r' % s.strip())
+    sys.exit(0)
+open(p, 'w', encoding='utf-8', newline='').write(s.replace('LibreCuts', 'Cutloss', 1))
+print('   [ok]   fastlane title: LibreCuts -> Cutloss')
+CUTPY
     return 0
 }
 
@@ -226,22 +271,24 @@ PROEOF
 #  MAIN
 # ---------------------------------------------------------------------------
 echo "=========================================================="
-echo " CutStudio phase-0 cleanup -- start"
+echo " Cutloss rebrand (phase 1) -- start"
 echo "=========================================================="
 FAILED=0
-step1_delete_dead || FAILED=1
-step2_check_ci    || FAILED=1
-step3_minify      || FAILED=1
-step4_proguard    || FAILED=1
+step1_app_name     || FAILED=1
+step1b_brand_values || FAILED=1
+step2_application_id || FAILED=1
+step3_actions      || FAILED=1
+step4_literals     || FAILED=1
+step5_title        || FAILED=1
 echo "----------------------------------------------------------"
 if [ "$FAILED" -ne 0 ]; then
-    echo " PHASE 0 FAILED -- see the [FAIL] lines above"
+    echo " PHASE 1 FAILED -- see the [FAIL] lines above"
     echo "----------------------------------------------------------"
     exit 1
 fi
-echo " Phase 0 (v2) cleanup complete. All steps ok, skipped or warned."
-echo " NOTE: if step 2 warned above, fix ci.yml manually in the web"
-echo " editor -- bots cannot edit workflow files by design."
+echo " Phase 1 rebrand complete. All steps ok or skipped."
+echo " Result: label Cutloss, applicationId com.i7sadegh.cutloss."
+echo " Installs side-by-side with LibreCuts (no conflicts)."
 echo " Next: the workflow commits these changes and builds the APK."
 echo "----------------------------------------------------------"
 exit 0
