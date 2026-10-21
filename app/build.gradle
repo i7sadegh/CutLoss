@@ -42,7 +42,10 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled false
+            // Phase 0 cleanup: enable R8 code shrinking/optimization for release
+            // builds. Safe rules for Gson-serialized models and ffmpeg-kit JNI
+            // bindings live in proguard-rules.pro.
+            minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
