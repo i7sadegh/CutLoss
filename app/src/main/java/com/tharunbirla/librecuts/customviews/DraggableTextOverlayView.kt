@@ -529,10 +529,10 @@ class DraggableTextOverlayView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 val touchX = ev.x
                 val touchY = ev.y
-                val editLeft = editText.left.toFloat()
-                val editTop = editText.top.toFloat()
-                val editRight = editText.right.toFloat()
-                val editBottom = editText.bottom.toFloat()
+                val editLeft = editText.x
+                val editTop = editText.y
+                val editRight = editText.x + editText.width
+                val editBottom = editText.y + editText.height
 
                 if (touchX in editLeft..editRight && touchY in editTop..editBottom) {
                     return false
@@ -683,6 +683,8 @@ class DraggableTextOverlayView @JvmOverloads constructor(
 
     private fun positionEditTextFromRelative() {
         if (width <= 0 || height <= 0) return
+        // round 9: never fight an active drag (see DraggableImageOverlayView)
+        if (isDragging) return
         val videoRect = getVideoRect()
 
         val targetCenterX = videoRect.left + (relativeX * videoRect.width())

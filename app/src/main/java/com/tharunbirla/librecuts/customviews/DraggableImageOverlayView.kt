@@ -135,6 +135,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
             relativeWidth = (relativeWidth * scaleFactor).coerceIn(0.05f, 5.0f)
             val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
             relativeHeight = relativeWidth * videoRatio / imageAspectRatio
+            syncRelativePositionFromVisual()
             updateImageViewSizeAndPosition()
             return true
         }
@@ -184,6 +185,10 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 
     private fun updateImageViewSizeAndPosition() {
         if (width <= 0 || height <= 0 || imageUri == null) return
+        // round 9: never fight an active drag -- external reposition calls
+        // (setVideoSize / setProperties / keyframe ticks) used to snap the
+        // image back to its last committed relative position mid-drag.
+        if (isDragging) return
         val videoRect = getVideoRect()
 
         // Calculate size on screen based on relative width/height
@@ -203,15 +208,21 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         invalidate()
     }
 
-    private fun updateRelativePosition() {
-        if (width <= 0 || height <= 0) return
+    // round 9: derive relativeX/relativeY from where the image currently
+    // sits on screen (used after drags and before pinch-driven resizing so
+    // a scale keeps the visual anchor instead of recentering).
+    private fun syncRelativePositionFromVisual() {
+        if (width <= 0 || height <= 0 || imageView.width <= 0) return
         val videoRect = getVideoRect()
-
         val centerX = imageView.x + imageView.width / 2f
         val centerY = imageView.y + imageView.height / 2f
+        relativeX = if (videoRect.width() > 0) ((centerX - videoRect.left) / videoRect.width()).coerceIn(0f, 1f) else relativeX
+        relativeY = if (videoRect.height() > 0) ((centerY - videoRect.top) / videoRect.height()).coerceIn(0f, 1f) else relativeY
+    }
 
-        relativeX = if (videoRect.width() > 0) ((centerX - videoRect.left) / videoRect.width()).coerceIn(0f, 1f) else 0.5f
-        relativeY = if (videoRect.height() > 0) ((centerY - videoRect.top) / videoRect.height()).coerceIn(0f, 1f) else 0.5f
+    private fun updateRelativePosition() {
+        if (width <= 0 || height <= 0) return
+        syncRelativePositionFromVisual()
         onPositionChanged?.invoke(relativeX, relativeY)
     }
 
@@ -438,10 +449,10 @@ class DraggableImageOverlayView @JvmOverloads constructor(
             MotionEvent.ACTION_DOWN -> {
                 val touchX = ev.x
                 val touchY = ev.y
-                val imgLeft = imageView.left.toFloat()
-                val imgTop = imageView.top.toFloat()
-                val imgRight = imageView.right.toFloat()
-                val imgBottom = imageView.bottom.toFloat()
+                val imgLeft = imageView.x
+                val imgTop = imageView.y
+                val imgRight = imageView.x + imageView.width
+                val imgBottom = imageView.y + imageView.height
 
                 // Check if touch is inside the image bounds
                 if (touchX in imgLeft..imgRight && touchY in imgTop..imgBottom) {
@@ -474,6 +485,15 @@ class DraggableImageOverlayView @JvmOverloads constructor(
                 if (isColorPickingMode) {
                     pickColorAt(event.x, event.y)
                     return true
+                }
+                if (!isMaskEditingMode) {
+                    // round 9: the press must land on the image itself
+                    // (plus room for the selection handles) -- presses on
+                    // empty canvas no longer yank the overlay around.
+                    val slop = 32f
+                    val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
+                    val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
+                    if (!inX || !inY) return false
                 }
                 isDragging = true
                 if (isMaskEditingMode) {

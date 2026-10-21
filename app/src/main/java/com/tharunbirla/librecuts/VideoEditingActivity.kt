@@ -7546,7 +7546,7 @@ class VideoEditingActivity : AppCompatActivity() {
             seekerContainer.layoutParams = lpSeeker
 
             val lpTimeline = timelineContainer.layoutParams as LinearLayout.LayoutParams
-            lpTimeline.height = 140.dpToPx()
+            lpTimeline.height = 150.dpToPx()
             lpTimeline.weight = 0f
             timelineContainer.layoutParams = lpTimeline
         }
