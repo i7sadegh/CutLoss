@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  CutStudio change pipeline -- scripts/apply-changes.sh
-#  ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 -- text tool WYSIWYG,
-#  stroke/shadow tabs, Duplicate restored, capsule back button and
-#  the ORIGINAL Electric Pink theme (amber recolor reverted)
+#  ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 + ROUND 9 -- text tool WYSIWYG,
+#  stroke/shadow tabs, Duplicate restored, capsule back button, the
+#  ORIGINAL Electric Pink theme (amber recolor reverted), taller timeline
+#  (150dp) and rock-solid overlay dragging (no more jump / revert)
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
@@ -60,10 +61,22 @@
 #      back button and the restored text Duplicate button stay as they
 #      are -- only the colors are reverted.
 #
+#  Round 9 contents:
+#   1. Timeline (video track strip) height raised from 140dp to 150dp,
+#      including the value restored when collapsing expanded-timeline mode.
+#   2. Overlay drag fix for text / image / video stickers: while dragging,
+#      the overlay no longer teleports back to its previous position,
+#      oscillates between two spots or lands on the old spot after release
+#      (was most visible near the canvas corners). The press hit test now
+#      uses the live on-screen position instead of stale layout bounds,
+#      repositioning from the committed relative spot is suspended during
+#      an active drag, presses on empty canvas no longer yank the image,
+#      and pinch-to-scale keeps the visual anchor point.
+#
 #  Idempotent: every patch checks its own marker and skips if applied.
 #  Requires: the v3 export panel state (works with or without round 4).
 #  Round 5 steps run first (skipped when already applied), then round 6,
-#  then round 7, then round 8.
+#  then round 7, then round 8, then round 9.
 # ==========================================================================
 set -uo pipefail
 
@@ -3491,6 +3504,349 @@ CUTPY
 
 # --- ROUND 8 STAGES END ----------------------------------------------------
 
+# --- ROUND 9 STAGES --------------------------------------------------------
+#
+#  R9 STEP 1 -- timeline height 140dp -> 150dp
+#      (timelineContainer in activity_video_editing.xml + the expanded-mode
+#       restore value 140.dpToPx() in VideoEditingActivity.kt)
+#
+#  R9 STEP 2 -- DraggableImageOverlayView drag fixes (jump / revert bug)
+#      Symptom: while dragging an image/video overlay it teleports back to
+#      its previous committed position, oscillates between two spots and
+#      sometimes lands on the old position after release -- mostly near the
+#      canvas corners. Root causes fixed here:
+#        a) hit test used the LAYOUT bounds (left/top/right/bottom) instead
+#           of the live translated position (x/y) -- after the first drag
+#           the grab region was wrong, so presses near corners engaged the
+#           drag through the fallback path with a big offset;
+#        b) updateImageViewSizeAndPosition() reapplied the STALE
+#           relativeX/relativeY whenever setVideoSize() / setProperties()
+#           fired mid-drag (canvas re-layout, project emissions, keyframe
+#           ticks) -- that is the actual teleport;
+#        c) onTouchEvent started a drag from ANY press on the canvas, even
+#           far away from the image -- now the press must land on the
+#           image (plus room for the selection handles);
+#        d) pinch-to-scale recentered the image on the stale relative spot
+#           -- the visual anchor position is now synced before resizing.
+#
+#  R9 STEP 3 -- DraggableTextOverlayView drag fixes (same patterns a/b;
+#      the text drag keeps its designed "grab outside the text" behaviour,
+#      but the bounds are now the live visual bounds, and repositioning is
+#      suspended while a drag is active)
+#
+#  All patches are line-context anchored and idempotent.
+#
+r9_step1() {
+  echo "== r9 step 1: timeline height 140dp -> 150dp"
+  python3 - <<'CUTPY'
+import os, sys
+
+def patch(path, patches):
+    if not os.path.exists(path):
+        print('   [FAIL] missing file: ' + path)
+        sys.exit(1)
+    s = open(path, encoding='utf-8', newline='').read()
+    n = 0
+    for old, new in patches:
+        c = s.count(old)
+        if c == 0:
+            if new in s:
+                continue
+            print('   [FAIL] anchor not found in ' + path)
+            sys.exit(1)
+        if c != 1:
+            print('   [FAIL] anchor found %d times (expected 1) in %s' % (c, path))
+            sys.exit(1)
+        s = s.replace(old, new, 1)
+        n += 1
+    if n:
+        open(path, 'w', encoding='utf-8', newline='').write(s)
+        print('   [ok]   %-64s %d patch(es)' % (path, n))
+    else:
+        print('   [skip] %s (already applied)' % path)
+
+AVEL = 'app/src/main/res/layout/activity_video_editing.xml'
+ACT   = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+
+patch(AVEL, [(
+'''            <FrameLayout
+                android:id="@+id/timelineContainer"
+                android:layout_width="match_parent"
+                android:layout_height="140dp"''',
+'''            <FrameLayout
+                android:id="@+id/timelineContainer"
+                android:layout_width="match_parent"
+                android:layout_height="150dp"''')])
+
+patch(ACT, [(
+'''            lpTimeline.height = 140.dpToPx()''',
+'''            lpTimeline.height = 150.dpToPx()''')])
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+r9_step2() {
+  echo "== r9 step 2: DraggableImageOverlayView -- stable drag + live hit test"
+  python3 - <<'CUTPY'
+import os, sys
+
+DRG = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt'
+if not os.path.exists(DRG):
+    print('   [FAIL] missing file: ' + DRG)
+    sys.exit(1)
+
+s = open(DRG, encoding='utf-8', newline='').read()
+patches = []
+
+# (a) hit test must use the live translated position, not layout bounds
+patches.append((
+'''                val imgLeft = imageView.left.toFloat()
+                val imgTop = imageView.top.toFloat()
+                val imgRight = imageView.right.toFloat()
+                val imgBottom = imageView.bottom.toFloat()''',
+'''                val imgLeft = imageView.x
+                val imgTop = imageView.y
+                val imgRight = imageView.x + imageView.width
+                val imgBottom = imageView.y + imageView.height'''))
+
+# (b) never reposition from the stale relative spot while a drag is active
+patches.append((
+'''    private fun updateImageViewSizeAndPosition() {
+        if (width <= 0 || height <= 0 || imageUri == null) return
+        val videoRect = getVideoRect()''',
+'''    private fun updateImageViewSizeAndPosition() {
+        if (width <= 0 || height <= 0 || imageUri == null) return
+        // round 9: never fight an active drag -- external reposition calls
+        // (setVideoSize / setProperties / keyframe ticks) used to snap the
+        // image back to its last committed relative position mid-drag.
+        if (isDragging) return
+        val videoRect = getVideoRect()'''))
+
+# (d) helper: derive relativeX/relativeY from the live visual position
+patches.append((
+'''    private fun updateRelativePosition() {
+        if (width <= 0 || height <= 0) return
+        val videoRect = getVideoRect()
+
+        val centerX = imageView.x + imageView.width / 2f
+        val centerY = imageView.y + imageView.height / 2f
+
+        relativeX = if (videoRect.width() > 0) ((centerX - videoRect.left) / videoRect.width()).coerceIn(0f, 1f) else 0.5f
+        relativeY = if (videoRect.height() > 0) ((centerY - videoRect.top) / videoRect.height()).coerceIn(0f, 1f) else 0.5f
+        onPositionChanged?.invoke(relativeX, relativeY)
+    }''',
+'''    // round 9: derive relativeX/relativeY from where the image currently
+    // sits on screen (used after drags and before pinch-driven resizing so
+    // a scale keeps the visual anchor instead of recentering).
+    private fun syncRelativePositionFromVisual() {
+        if (width <= 0 || height <= 0 || imageView.width <= 0) return
+        val videoRect = getVideoRect()
+        val centerX = imageView.x + imageView.width / 2f
+        val centerY = imageView.y + imageView.height / 2f
+        relativeX = if (videoRect.width() > 0) ((centerX - videoRect.left) / videoRect.width()).coerceIn(0f, 1f) else relativeX
+        relativeY = if (videoRect.height() > 0) ((centerY - videoRect.top) / videoRect.height()).coerceIn(0f, 1f) else relativeY
+    }
+
+    private fun updateRelativePosition() {
+        if (width <= 0 || height <= 0) return
+        syncRelativePositionFromVisual()
+        onPositionChanged?.invoke(relativeX, relativeY)
+    }'''))
+
+# (d2) pinch keeps the anchor point: sync before the repositioning resize
+patches.append((
+'''            relativeWidth = (relativeWidth * scaleFactor).coerceIn(0.05f, 5.0f)
+            val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
+            relativeHeight = relativeWidth * videoRatio / imageAspectRatio
+            updateImageViewSizeAndPosition()''',
+'''            relativeWidth = (relativeWidth * scaleFactor).coerceIn(0.05f, 5.0f)
+            val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
+            relativeHeight = relativeWidth * videoRatio / imageAspectRatio
+            syncRelativePositionFromVisual()
+            updateImageViewSizeAndPosition()'''))
+
+# (c) a press must land on the image (plus handle room) to start a drag
+patches.append((
+'''            MotionEvent.ACTION_DOWN -> {
+                if (isColorPickingMode) {
+                    pickColorAt(event.x, event.y)
+                    return true
+                }
+                isDragging = true
+                if (isMaskEditingMode) {''',
+'''            MotionEvent.ACTION_DOWN -> {
+                if (isColorPickingMode) {
+                    pickColorAt(event.x, event.y)
+                    return true
+                }
+                if (!isMaskEditingMode) {
+                    // round 9: the press must land on the image itself
+                    // (plus room for the selection handles) -- presses on
+                    // empty canvas no longer yank the overlay around.
+                    val slop = 32f
+                    val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
+                    val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
+                    if (!inX || !inY) return false
+                }
+                isDragging = true
+                if (isMaskEditingMode) {'''))
+
+n = 0
+for old, new in patches:
+    c = s.count(old)
+    if c == 0:
+        if new in s:
+            continue
+        print('   [FAIL] anchor not found: ' + old.strip().split('\n')[0][:70])
+        sys.exit(1)
+    if c != 1:
+        print('   [FAIL] anchor found %d times (expected 1): %s' % (c, old.strip().split('\n')[0][:70]))
+        sys.exit(1)
+    s = s.replace(old, new, 1)
+    n += 1
+
+if n:
+    open(DRG, 'w', encoding='utf-8', newline='').write(s)
+    print('   [ok]   %-64s %d patch(es)' % (DRG, n))
+else:
+    print('   [skip] %s (already applied)' % DRG)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+r9_step3() {
+  echo "== r9 step 3: DraggableTextOverlayView -- stable drag + live hit test"
+  python3 - <<'CUTPY'
+import os, sys
+
+DRG = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableTextOverlayView.kt'
+if not os.path.exists(DRG):
+    print('   [FAIL] missing file: ' + DRG)
+    sys.exit(1)
+
+s = open(DRG, encoding='utf-8', newline='').read()
+patches = []
+
+# (a) hit test must use the live translated position, not layout bounds
+patches.append((
+'''                val editLeft = editText.left.toFloat()
+                val editTop = editText.top.toFloat()
+                val editRight = editText.right.toFloat()
+                val editBottom = editText.bottom.toFloat()''',
+'''                val editLeft = editText.x
+                val editTop = editText.y
+                val editRight = editText.x + editText.width
+                val editBottom = editText.y + editText.height'''))
+
+# (b) never reposition from the stale relative spot while a drag is active
+patches.append((
+'''    private fun positionEditTextFromRelative() {
+        if (width <= 0 || height <= 0) return
+        val videoRect = getVideoRect()''',
+'''    private fun positionEditTextFromRelative() {
+        if (width <= 0 || height <= 0) return
+        // round 9: never fight an active drag (see DraggableImageOverlayView)
+        if (isDragging) return
+        val videoRect = getVideoRect()'''))
+
+n = 0
+for old, new in patches:
+    c = s.count(old)
+    if c == 0:
+        if new in s:
+            continue
+        print('   [FAIL] anchor not found: ' + old.strip().split('\n')[0][:70])
+        sys.exit(1)
+    if c != 1:
+        print('   [FAIL] anchor found %d times (expected 1): %s' % (c, old.strip().split('\n')[0][:70]))
+        sys.exit(1)
+    s = s.replace(old, new, 1)
+    n += 1
+
+if n:
+    open(DRG, 'w', encoding='utf-8', newline='').write(s)
+    print('   [ok]   %-64s %d patch(es)' % (DRG, n))
+else:
+    print('   [skip] %s (already applied)' % DRG)
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+verify_round9() {
+  echo "== verify round 9"
+  python3 - <<'CUTPY'
+import re, sys
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+AVEL = 'app/src/main/res/layout/activity_video_editing.xml'
+ACT  = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+DIMG = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt'
+DTXT = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableTextOverlayView.kt'
+
+# 1) timeline height 150dp
+a = open(AVEL, encoding='utf-8').read()
+m = re.search(r'@\+id/timelineContainer".*?/>', a, re.S)
+if not m or 'android:layout_height="150dp"' not in m.group(0):
+    fail('timelineContainer height is not 150dp')
+if 'android:layout_height="140dp"' in a:
+    fail('a 140dp height is still present in activity_video_editing.xml')
+
+# 2) expanded-mode restore value
+k = open(ACT, encoding='utf-8').read()
+if 'lpTimeline.height = 150.dpToPx()' not in k:
+    fail('expanded-mode timeline restore is not 150.dpToPx()')
+if '140.dpToPx()' in k:
+    fail('a 140.dpToPx() is still present in VideoEditingActivity.kt')
+
+# 3) image overlay view
+d = open(DIMG, encoding='utf-8').read()
+checks = [
+    ('live hit test x',     'val imgLeft = imageView.x' in d),
+    ('no layout-bounds hit','imageView.left.toFloat()' not in d),
+    ('drag guard',          'if (isDragging) return' in d),
+    ('sync helper def',     'private fun syncRelativePositionFromVisual()' in d),
+    ('press bounds check',  'val slop = 32f' in d),
+    ('old 0.5f fallback gone', 'coerceIn(0f, 1f) else 0.5f' not in d),
+]
+if d.count('syncRelativePositionFromVisual()') != 3:
+    fail('syncRelativePositionFromVisual() must appear exactly 3 times (def + 2 calls)')
+for name, ok in checks:
+    if not ok:
+        fail('DraggableImageOverlayView: ' + name)
+
+# 4) text overlay view
+t = open(DTXT, encoding='utf-8').read()
+checks = [
+    ('live hit test x',     'val editLeft = editText.x' in t),
+    ('no layout-bounds hit','editText.left.toFloat()' not in t),
+    ('drag guard',          'if (isDragging) return' in t),
+]
+if t.count('if (isDragging) return') != 1:
+    fail('DraggableTextOverlayView: drag guard must appear exactly once')
+for name, ok in checks:
+    if not ok:
+        fail('DraggableTextOverlayView: ' + name)
+
+# 5) brace balance sanity on both patched views
+for path in (DIMG, DTXT):
+    src = open(path, encoding='utf-8').read()
+    if src.count('{') != src.count('}'):
+        fail('unbalanced braces in ' + path)
+
+print('   [ok]   round 9 verified (timeline 150dp + stable overlay drags)')
+CUTPY
+  [ $? -ne 0 ] && return 1
+  return 0
+}
+
+# --- ROUND 9 STAGES END ----------------------------------------------------
+
 # ---------------------------------------------------------------------------
 #  MAIN
 # ---------------------------------------------------------------------------
@@ -3518,11 +3874,15 @@ r6_step8         || { echo "ABORT: r6 step 8";    exit 1; }
 r6_step9         || { echo "ABORT: r6 step 9";    exit 1; }
 verify_round6    || { echo "ABORT: r6 verify";   exit 1; }
 
-# -- round 7 + round 8 --
+# -- round 7 + round 8 + round 9 --
 r7_step1         || { echo "ABORT: r7 step 1";    exit 1; }
 r7_step2         || { echo "ABORT: r7 step 2";    exit 1; }
 r7_step3         || { echo "ABORT: r7 step 3";    exit 1; }
 r8_step1         || { echo "ABORT: r8 step 1";    exit 1; }
+r9_step1         || { echo "ABORT: r9 step 1";    exit 1; }
+r9_step2         || { echo "ABORT: r9 step 2";    exit 1; }
+r9_step3         || { echo "ABORT: r9 step 3";    exit 1; }
 verify_round7    || { echo "ABORT: r7+r8 verify"; exit 1; }
+verify_round9    || { echo "ABORT: r9 verify";    exit 1; }
 echo ""
-echo "ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 APPLIED SUCCESSFULLY"
+echo "ROUND 5 + ROUND 6 + ROUND 7 + ROUND 8 + ROUND 9 APPLIED SUCCESSFULLY"
