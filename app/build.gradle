@@ -22,7 +22,7 @@ android {
     }
 
     defaultConfig {
-        applicationId "com.tharunbirla.librecuts"
+        applicationId "com.i7sadegh.cutloss"
         minSdk 26
         targetSdk 34
         versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 10

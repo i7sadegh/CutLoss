@@ -29,7 +29,7 @@ class ProxyGenerationService : Service() {
     private lateinit var ffmpegEngine: FFmpegRenderEngine
 
     companion object {
-        const val ACTION_PROXY_GENERATED = "com.tharunbirla.librecuts.ACTION_PROXY_GENERATED"
+        const val ACTION_PROXY_GENERATED = "com.i7sadegh.cutloss.ACTION_PROXY_GENERATED"
         const val EXTRA_SOURCE_URI = "extra_source_uri"
         const val EXTRA_PROXY_URI = "extra_proxy_uri"
         const val EXTRA_DEPENDENCY_ID = "extra_dependency_id"
@@ -126,7 +126,7 @@ class ProxyGenerationService : Service() {
 
     private fun buildNotification(title: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("CutStudio")
+            .setContentTitle("Cutloss")
             .setContentText(title)
             .setSmallIcon(R.drawable.ic_save_24) // Reusing save icon
             .setProgress(0, 0, true)

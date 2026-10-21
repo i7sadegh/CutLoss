@@ -35,9 +35,9 @@ class ExportService : Service() {
     private lateinit var ffmpegEngine: FFmpegRenderEngine
 
     companion object {
-        const val ACTION_EXPORT_PROGRESS = "com.tharunbirla.librecuts.ACTION_EXPORT_PROGRESS"
-        const val ACTION_EXPORT_SUCCESS = "com.tharunbirla.librecuts.ACTION_EXPORT_SUCCESS"
-        const val ACTION_EXPORT_FAILURE = "com.tharunbirla.librecuts.ACTION_EXPORT_FAILURE"
+        const val ACTION_EXPORT_PROGRESS = "com.i7sadegh.cutloss.ACTION_EXPORT_PROGRESS"
+        const val ACTION_EXPORT_SUCCESS = "com.i7sadegh.cutloss.ACTION_EXPORT_SUCCESS"
+        const val ACTION_EXPORT_FAILURE = "com.i7sadegh.cutloss.ACTION_EXPORT_FAILURE"
 
         const val EXTRA_PROGRESS = "extra_progress"
         const val EXTRA_SAVED_URI = "extra_saved_uri"
@@ -209,7 +209,7 @@ class ExportService : Service() {
     private fun saveVideoToGallery(videoFile: File, isAudioOnly: Boolean): Uri? {
         val mimeType = if (isAudioOnly) "audio/mpeg" else "video/mp4"
         val ext = if (isAudioOnly) ".mp3" else ".mp4"
-        val prefix = if (isAudioOnly) "CutStudio_Audio_" else "CutStudio_"
+        val prefix = if (isAudioOnly) "Cutloss_Audio_" else "Cutloss_"
         
         val sharedPreferences = getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
         val prefKey = if (isAudioOnly) "export_audio_directory_uri" else "export_directory_uri"
@@ -244,9 +244,9 @@ class ExportService : Service() {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "${prefix}${System.currentTimeMillis()}$ext")
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 if (isAudioOnly) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/CutStudio")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Cutloss")
                 } else {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/CutStudio")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Cutloss")
                 }
             }
             val collectionUri = if (isAudioOnly) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI

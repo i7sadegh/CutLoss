@@ -2591,7 +2591,7 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun saveBitmapToGallery(bitmap: android.graphics.Bitmap) {
-        val filename = "CutStudio_Frame_${System.currentTimeMillis()}.png"
+        val filename = "Cutloss_Frame_${System.currentTimeMillis()}.png"
         var fos: java.io.OutputStream? = null
         var imageUri: Uri? = null
         try {
@@ -2623,13 +2623,13 @@ class VideoEditingActivity : AppCompatActivity() {
                     val contentValues = android.content.ContentValues().apply {
                         put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, filename)
                         put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
-                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/CutStudio")
+                        put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, android.os.Environment.DIRECTORY_PICTURES + "/Cutloss")
                     }
                     imageUri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
                     fos = imageUri?.let { resolver.openOutputStream(it) }
                 } else {
                     val imagesDir = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES)
-                    val directory = java.io.File(imagesDir, "CutStudio")
+                    val directory = java.io.File(imagesDir, "Cutloss")
                     if (!directory.exists()) directory.mkdirs()
                     val image = java.io.File(directory, filename)
                     fos = java.io.FileOutputStream(image)
@@ -5096,7 +5096,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     
                     val mimeType = if (isAudioOnly) "audio/mpeg" else "video/mp4"
                     val ext = if (isAudioOnly) ".mp3" else ".mp4"
-                    val prefix = if (isAudioOnly) "CutStudio_Audio_" else "CutStudio_"
+                    val prefix = if (isAudioOnly) "Cutloss_Audio_" else "Cutloss_"
 
                     if (customUriString != null) {
                         try {
@@ -5121,7 +5121,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     } else {
                         // Default fallback
                         val defaultDir = if (isAudioOnly) Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC) else Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                        val outputDir = File(defaultDir, "CutStudio")
+                        val outputDir = File(defaultDir, "Cutloss")
                         if (!outputDir.exists()) outputDir.mkdirs()
                         val file = File(outputDir, "${prefix}${System.currentTimeMillis()}$ext")
                         outputFile = file
@@ -5162,7 +5162,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         val displayPath = if (customFileUri != null) {
                             "Custom Folder"
                         } else {
-                            outputFile?.absolutePath ?: "Downloads/CutStudio"
+                            outputFile?.absolutePath ?: "Downloads/Cutloss"
                         }
                         Toast.makeText(
                             this@VideoEditingActivity,
@@ -5225,8 +5225,8 @@ class VideoEditingActivity : AppCompatActivity() {
             titleView.text = displayName
             pathView.text = customUri.path ?: customUriString
         } else {
-            titleView.text = "CutStudio (Default)"
-            pathView.text = if (isAudioOnly) "Music/CutStudio" else "Movies/CutStudio"
+            titleView.text = "Cutloss (Default)"
+            pathView.text = if (isAudioOnly) "Music/Cutloss" else "Movies/Cutloss"
         }
     }
 
@@ -7567,7 +7567,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val isAudioOnly = videoFile.name.endsWith(".mp3")
         val mimeType = if (isAudioOnly) "audio/mpeg" else "video/mp4"
         val ext = if (isAudioOnly) ".mp3" else ".mp4"
-        val prefix = if (isAudioOnly) "CutStudio_Audio_" else "CutStudio_"
+        val prefix = if (isAudioOnly) "Cutloss_Audio_" else "Cutloss_"
         
         val sharedPreferences = getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
         val prefKey = if (isAudioOnly) "export_audio_directory_uri" else "export_directory_uri"
@@ -7602,9 +7602,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "${prefix}${System.currentTimeMillis()}$ext")
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
                 if (isAudioOnly) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/CutStudio")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Cutloss")
                 } else {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/CutStudio")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Cutloss")
                 }
             }
             val collectionUri = if (isAudioOnly) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI

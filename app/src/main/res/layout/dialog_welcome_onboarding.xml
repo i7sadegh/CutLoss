@@ -34,7 +34,7 @@
                     android:layout_width="72dp"
                     android:layout_height="72dp"
                     android:src="@mipmap/ic_launcher"
-                    android:contentDescription="CutStudio App Icon" />
+                    android:contentDescription="Cutloss App Icon" />
 
                 <TextView
                     android:id="@+id/tvOnboardingTitle"
