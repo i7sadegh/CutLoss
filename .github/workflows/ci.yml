@@ -4,7 +4,7 @@ on:
   push:
     branches: ['**']
     tags-ignore: ['**']
-        paths-ignore:
+    paths-ignore:
       - 'scripts/apply-changes.sh'
   pull_request:
 
