@@ -1,36 +1,39 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  Cutloss simplification pipeline -- scripts/apply-changes.sh
-#  PHASE 2 -- remove the "Voice Over" and "Draw" (Handwriting) features
+#  PHASE 3 -- remove the "Subtitles" tool (SRT import + editing UI)
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
 #
-#  What this phase does (feature removal):
-#   1. Deletes the feature source files:
-#        - customviews/HandwritingCanvasView.kt  (Draw canvas)
-#        - customviews/BrushSizeDotView.kt       (brush size preview dot)
-#        - layout/layout_handwriting_panel.xml   (Draw toolbar panel)
-#        - layout/dialog_voice_over.xml          (Voice Over bottom sheet)
-#        - drawable/ic_brush_24.xml, ic_mic_24.xml (orphaned icons)
-#   2. AndroidManifest.xml: drops the RECORD_AUDIO permission (the only
-#      user of the microphone was Voice Over -> better privacy now).
-#   3. activity_video_editing.xml: removes the Draw and Voice tool
-#      buttons, the handwriting canvas overlay view and the handwriting
-#      panel include.
-#   4. VideoEditingActivity.kt: removes every line of Voice Over code
-#      (fields, permission launcher, tool button wiring, dialog with the
-#      MediaRecorder logic) and every line of Draw/Handwriting code
-#      (state flag, controls setup, open/close mode, save+commit logic).
-#      Shared plumbing (image overlay ops, background audio ops, custom
-#      color picker, shared icons) is deliberately KEPT -- other tools
-#      still use it.
-#   5. strings.xml (all 17 locales): removes the 8 now-dead string keys
-#      (str_draw, str_voice, str_voice_over, str_handwriting, ...).
-#   6. Verification gate: scans app/src/main for any leftover reference
-#      (class names, view ids, string keys, icons, permission). If any
-#      leftover is found the script FAILS BEFORE anything is committed,
-#      so main can never receive a half-removed feature.
+#  What this phase does:
+#   1. Deletes the feature UI files:
+#        - layout/subtitles_editing_toolbar.xml   (the editing toolbar)
+#        - drawable/ic_closed_caption_24.xml      (tool button icon, orphan)
+#        - drawable/ic_subtitles_24.xml           (already-orphaned icon)
+#        - utils/SubtitleParser.kt                (SRT file parser, now dead)
+#   2. activity_video_editing.xml: removes the btnSubtitles tool button
+#      block and the subtitlesEditingToolbar include.
+#   3. VideoEditingActivity.kt: removes every line of subtitle editing
+#      code -- the 7 feature functions (subtitlesAction, enter/exit
+#      editing mode, updateSubtitlesUi, updateSubtitleOp, pickSrtFile,
+#      removeSubtitles), the toolbar setup block, the subtitle font
+#      selector, the fields, the SRT import branch in onActivityResult,
+#      the PICK_SRT_REQUEST constant and the btnSubtitles wiring.
+#   4. strings.xml (all locales): removes the 6 now-dead string keys.
+#   5. Verification gate: scans for leftover references and FAILS
+#      BEFORE anything is committed.
+#
+#  DELIBERATELY KEPT (old project compatibility):
+#   - models/EditOperation.kt: AddSubtitles + SubtitleCue classes.
+#   - utils/ProjectSerializer.kt: "AddSubtitles" type mapping.
+#   - viewmodels/VideoEditingViewModel.kt: the FFmpeg filter-graph code
+#     that burns subtitle cues into the EXPORTED video.
+#   - customviews/TextOverlayView.kt: the subtitle RENDERING half
+#     (draws cues of existing projects in the editor preview).
+#   Why: .lcprj project files saved earlier may contain subtitle
+#   operations. Those projects must still open, preview and export
+#   correctly. Only the UI to CREATE/EDIT subtitle tracks is removed.
 #
 #  Idempotent: every step checks its own marker and skips if applied.
 #  POLICY: this pipeline must never modify files under .github/workflows/
@@ -47,15 +50,13 @@ VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 #  STEP 1 -- delete feature files
 # ---------------------------------------------------------------------------
 step1_delete_files() {
-    echo "== step 1: delete Voice/Draw feature files"
+    echo "== step 1: delete Subtitles feature files"
     local n=0 f
     for f in \
-        app/src/main/java/com/tharunbirla/librecuts/customviews/HandwritingCanvasView.kt \
-        app/src/main/java/com/tharunbirla/librecuts/customviews/BrushSizeDotView.kt \
-        app/src/main/res/layout/layout_handwriting_panel.xml \
-        app/src/main/res/layout/dialog_voice_over.xml \
-        app/src/main/res/drawable/ic_brush_24.xml \
-        app/src/main/res/drawable/ic_mic_24.xml
+        app/src/main/res/layout/subtitles_editing_toolbar.xml \
+        app/src/main/res/drawable/ic_closed_caption_24.xml \
+        app/src/main/res/drawable/ic_subtitles_24.xml \
+        app/src/main/java/com/tharunbirla/librecuts/utils/SubtitleParser.kt
     do
         if [ -f "$f" ]; then
             rm -f "$f" && echo "   [del] $f" && n=$((n+1))
@@ -68,42 +69,18 @@ step1_delete_files() {
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 2 -- manifest: drop RECORD_AUDIO permission
+#  STEP 2 -- activity_video_editing.xml: remove tool button + include
 # ---------------------------------------------------------------------------
-step2_manifest() {
-    echo "== step 2: AndroidManifest.xml -- drop RECORD_AUDIO permission"
+step2_main_layout() {
+    echo "== step 2: activity_video_editing.xml -- remove Subtitles UI"
     python3 - <<'CUTPY'
-import sys
-p = 'app/src/main/AndroidManifest.xml'
-s = open(p, encoding='utf-8', newline='').read()
-line = '    <uses-permission android:name="android.permission.RECORD_AUDIO" />\n'
-if line in s:
-    s = s.replace(line, '', 1)
-    open(p, 'w', encoding='utf-8', newline='').write(s)
-    print('   [ok] RECORD_AUDIO permission removed')
-elif 'RECORD_AUDIO' in s:
-    print('   [FAIL] RECORD_AUDIO present but not in expected form')
-    sys.exit(1)
-else:
-    print('   [skip] permission already absent')
-CUTPY
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 3 -- activity_video_editing.xml: remove tool buttons + views
-# ---------------------------------------------------------------------------
-step3_main_layout() {
-    echo "== step 3: activity_video_editing.xml -- remove Draw/Voice UI"
-    python3 - <<'CUTPY'
-import sys
+import re, sys
+import xml.dom.minidom
 p = 'app/src/main/res/layout/activity_video_editing.xml'
 s = open(p, encoding='utf-8', newline='').read()
+changed = []
 
 def cut_element(s, id_marker, open_hint, close_hint, name):
-    """Cut the whole element that contains id_marker.
-    open_hint: tag opening to search backwards for.
-    close_hint: closing token to search forwards for ('/>' or '</LinearLayout>').
-    Whitespace after the element is swallowed up to the next '<'."""
     i = s.find(id_marker)
     if i < 0:
         print('   [skip] ' + name + ' (already gone)')
@@ -122,31 +99,29 @@ def cut_element(s, id_marker, open_hint, close_hint, name):
     print('   [ok] ' + name)
     return s[:start] + s[end:]
 
-# 1. Draw tool button (whole LinearLayout: ImageButton + TextView)
-s = cut_element(s, 'android:id="@+id/btnDraw"', '<LinearLayout', '</LinearLayout>', 'btnDraw tool button block')
-# 2. Voice tool button (whole LinearLayout: ImageButton + TextView)
-s = cut_element(s, 'android:id="@+id/btnVoiceOver"', '<LinearLayout', '</LinearLayout>', 'btnVoiceOver tool button block')
-# 3. Handwriting canvas overlay view (custom view element)
-s = cut_element(s, 'android:id="@+id/handwritingCanvasView"',
-                '<com.tharunbirla.librecuts.customviews.HandwritingCanvasView',
-                '/>', 'handwritingCanvasView overlay element')
-# 4. Handwriting panel include
-s = cut_element(s, 'android:id="@+id/handwritingPanel"', '<include', '/>', 'handwritingPanel include')
+# 1. btnSubtitles tool button (whole LinearLayout: ImageButton + TextView)
+s = cut_element(s, 'android:id="@+id/btnSubtitles"', '<LinearLayout', '</LinearLayout>', 'btnSubtitles tool button block')
+# 2. subtitlesEditingToolbar include
+s = cut_element(s, 'android:id="@+id/subtitlesEditingToolbar"', '<include', '/>', 'subtitlesEditingToolbar include')
+# 3. the comment line above the old include position
+s2 = re.sub(r'^[ \t]*<!-- Subtitles Editing Toolbar[^>]*-->\r?\n', '', s, flags=re.MULTILINE)
+if s2 != s:
+    changed.append('toolbar comment')
+    s = s2
 
 open(p, 'w', encoding='utf-8', newline='').write(s)
-import xml.dom.minidom
 xml.dom.minidom.parse(p)
 print('   [ok] layout still parses as valid XML')
 CUTPY
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 4 -- VideoEditingActivity.kt: strip all Voice + Draw code
+#  STEP 3 -- VideoEditingActivity.kt: strip all subtitle editing code
 # ---------------------------------------------------------------------------
-step4_activity() {
-    echo "== step 4: VideoEditingActivity.kt -- strip Voice/Draw code"
+step3_activity() {
+    echo "== step 3: VideoEditingActivity.kt -- strip Subtitles editing code"
     python3 - <<'CUTPY'
-import sys
+import re, sys
 p = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
 s = open(p, encoding='utf-8', newline='').read()
 orig = s
@@ -156,7 +131,6 @@ def rep(name):
     applied.append(name)
 
 def one(name, old, new=''):
-    """Replace exactly one occurrence of old with new."""
     global s
     n = s.count(old)
     if n == 0:
@@ -166,17 +140,6 @@ def one(name, old, new=''):
         rep(name)
     else:
         failed.append(name + ' (' + str(n) + ' occurrences)')
-
-def many(name, old, new, expect):
-    global s
-    n = s.count(old)
-    if n == 0:
-        skipped.append(name)
-    elif n == expect:
-        s = s.replace(old, new)
-        rep(name)
-    else:
-        failed.append(name + ' (found ' + str(n) + ', expected ' + str(expect) + ')')
 
 def cut_span(name, start_marker, end_marker):
     global s
@@ -191,87 +154,96 @@ def cut_span(name, start_marker, end_marker):
     s = s[:i] + s[j:]
     rep(name)
 
-# 4a. imports of the two deleted custom views
-one('remove HandwritingCanvasView + BrushSizeDotView imports',
-    'import com.tharunbirla.librecuts.customviews.HandwritingCanvasView\n'
-    'import com.tharunbirla.librecuts.customviews.BrushSizeDotView\n')
+def cut_lines(name, pattern, expect):
+    global s
+    s2, n = re.subn(pattern, '', s, flags=re.MULTILINE)
+    if n == 0:
+        skipped.append(name)
+    elif n == expect:
+        s = s2
+        rep(name)
+    else:
+        failed.append(name + ' (found ' + str(n) + ', expected ' + str(expect) + ')')
 
-# 4b. Voice Over fields + RECORD_AUDIO permission launcher
-one('remove voiceOver fields + permission launcher',
-    '    private var mediaRecorder: android.media.MediaRecorder? = null\n'
-    '    private var isRecordingVoiceOver = false\n'
-    '    private var voiceOverFile: File? = null\n'
-    '    private var voiceOverStartTimeMs = 0L\n'
-    '\n'
-    '    private val requestRecordAudioPermissionLauncher = registerForActivityResult(\n'
-    '        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()\n'
-    '    ) { isGranted ->\n'
-    '        if (isGranted) {\n'
-    '            showVoiceOverDialog()\n'
-    '        } else {\n'
-    '            Toast.makeText(this, R.string.toast_microphone_permission_required, Toast.LENGTH_SHORT).show()\n'
-    '        }\n'
-    '    }\n'
-    '\n')
+# 3a. the whole setupSubtitleFontSelector() function
+cut_span('remove setupSubtitleFontSelector() function',
+         '    private fun setupSubtitleFontSelector(subtitlesToolbar: View?) {',
+         '    private fun showFontManagerBottomSheet(')
 
-# 4c. back-press handler: drop the handwriting branch
-one('simplify back-press handler (drop handwriting branch)',
-    '                } else if (isHandwritingActive) {\n'
-    '                    val canvasView = findViewById<HandwritingCanvasView>(R.id.handwritingCanvasView)\n'
-    '                    if (canvasView != null && !canvasView.isEmpty()) {\n'
-    '                        MaterialAlertDialogBuilder(this@VideoEditingActivity)\n'
-    '                            .setTitle("Discard Handwriting?")\n'
-    '                            .setMessage("Are you sure you want to discard your drawing?")\n'
-    '                            .setPositiveButton("Discard") { _, _ -> closeHandwritingMode() }\n'
-    '                            .setNegativeButton("Keep Editing", null)\n'
-    '                            .show()\n'
-    '                    } else {\n'
-    '                        closeHandwritingMode()\n'
+# 3b. its 3 call sites (importFontLauncher + 2 inside FontManagerAdapter callbacks)
+cut_lines('remove setupSubtitleFontSelector call sites (x3)',
+          r'^[ \t]*setupSubtitleFontSelector\(subtitlesEditingToolbar\)\r?\n', 3)
+
+# 3c. the two fields
+one('remove subtitlesEditingToolbar + isSubtitlesEditingActive fields',
+    '    private var subtitlesEditingToolbar: View? = null\n'
+    '    private var isSubtitlesEditingActive = false\n')
+
+# 3d. textOverlayView setup: drop the subtitle drag callback registration
+one('simplify textOverlayView setup (drop drag callback)',
+    '        textOverlayView = try {\n'
+    '            findViewById<com.tharunbirla.librecuts.customviews.TextOverlayView>(R.id.textOverlayView)?.also { overlay ->\n'
+    '                overlay.onSubtitlePositionChanged = { relX, relY ->\n'
+    '                    val project = viewModel.project.value\n'
+    '                    val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles\n'
+    '                    if (subOp != null) {\n'
+    '                        updateSubtitleOp(subOp.copy(relativeX = relX, relativeY = relY))\n'
     '                    }\n'
-    '                } else {\n',
-    '                } else {\n')
+    '                }\n'
+    '            }\n'
+    '        } catch (e: Exception) {\n',
+    '        textOverlayView = try {\n'
+    '            findViewById<com.tharunbirla.librecuts.customviews.TextOverlayView>(R.id.textOverlayView)\n'
+    '        } catch (e: Exception) {\n')
 
-# 4d. setupHandwritingControls() call in onCreate flow
-one('remove setupHandwritingControls() call',
-    '        setupHandwritingControls()\n')
+# 3e. the subtitles toolbar setup block (assigns subtitlesEditingToolbar)
+cut_span('remove subtitles toolbar setup block',
+         '        subtitlesEditingToolbar = try {',
+         '        backgroundEditingToolbar = try {')
 
-# 4e. btnVoiceOver click wiring
-one('remove btnVoiceOver click wiring',
-    '        findViewById<ImageButton>(R.id.btnVoiceOver)?.setBounceClickListener {\n'
-    '            setActiveToolButton(R.id.btnVoiceOver)\n'
-    '            voiceOverAction()\n'
+# 3f. btnSubtitles click wiring
+one('remove btnSubtitles click wiring',
+    '        findViewById<ImageButton>(R.id.btnSubtitles).setBounceClickListener {\n'
+    '            setActiveToolButton(R.id.btnSubtitles)\n'
+    '            subtitlesAction()\n'
     '        }\n'
     '\n')
 
-# 4f. tool id list: drop btnDraw + btnVoiceOver
-one('drop btnDraw/btnVoiceOver from tool id list',
-    '        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnDraw, R.id.btnAudio, R.id.btnCrop, R.id.btnSubtitles, R.id.btnVoiceOver, R.id.btnCanvasBackground)\n',
-    '        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnSubtitles, R.id.btnCanvasBackground)\n')
+# 3g. tool id list: drop btnSubtitles
+one('drop btnSubtitles from tool id list',
+    ', R.id.btnSubtitles', '')
 
-# 4g. crop-preview overlay lists: drop hwCanvas (2 identical spots)
-many('drop hwCanvas from crop preview overlay lists (x2)',
-     '            val hwCanvas = findViewById<com.tharunbirla.librecuts.customviews.HandwritingCanvasView>(R.id.handwritingCanvasView)\n'
-     '            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView, videoMaskOverlayView, hwCanvas)\n',
-     '            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView, videoMaskOverlayView)\n',
-     2)
+# 3h. renderTracks: drop the editing-mode UI refresh (rendering stays!)
+one('drop updateSubtitlesUi() refresh from renderTracks',
+    '                    if (isSubtitlesEditingActive) {\n'
+    '                        updateSubtitlesUi()\n'
+    '                    }\n'
+    '\n')
 
-# 4h. handwriting state flag + all five handwriting functions
-#     (setupHandwritingControls, getVideoRect, openHandwritingMode,
-#      closeHandwritingMode, saveAndCommitHandwriting) -- contiguous span
-cut_span('remove handwriting state + 5 functions',
-         '    private var isHandwritingActive = false',
-         '    @SuppressLint("InflateParams")\n    private fun textAction() {')
-
-# 4i. closeActiveEditingModes(): drop handwriting branch
-one('drop handwriting branch from closeActiveEditingModes()',
-    '        if (isHandwritingActive) {\n'
-    '            closeHandwritingMode()\n'
+# 3i. closeActiveEditingModes(): drop subtitles branch
+one('drop subtitles branch from closeActiveEditingModes()',
+    '        if (isSubtitlesEditingActive) {\n'
+    '            isSubtitlesEditingActive = false\n'
     '        }\n')
 
-# 4j. voiceOverAction() + showVoiceOverDialog() -- contiguous span
-cut_span('remove voiceOverAction + showVoiceOverDialog',
-         '    private fun voiceOverAction() {',
-         '    private fun subtitlesAction() {')
+# 3j. the 7 feature functions (subtitlesAction .. removeSubtitles)
+cut_span('remove 7 subtitle feature functions',
+         '    private fun subtitlesAction() {',
+         '    private fun mediaOverlayAction() {')
+
+# 3j-2. closeActiveEditingModes(): drop toolbar hide line
+#        (must run AFTER 3j: the span above also contained one copy)
+one('drop subtitlesEditingToolbar hide line from closeActiveEditingModes()',
+    '        subtitlesEditingToolbar?.visibility = View.GONE\n')
+
+# 3k. onActivityResult: SRT import branch
+cut_span('remove SRT import branch from onActivityResult()',
+         '        } else if (requestCode == PICK_SRT_REQUEST && resultCode == Activity.RESULT_OK) {',
+         '        } else if (requestCode == PICK_DIRECTORY_REQUEST')
+
+# 3l. PICK_SRT_REQUEST constant
+one('remove PICK_SRT_REQUEST constant',
+    '        private const val PICK_SRT_REQUEST = 4\n')
 
 for n in applied:
     print('   [ok] ' + n)
@@ -304,15 +276,15 @@ CUTPY
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 5 -- strings.xml: remove the 8 dead keys from every locale
+#  STEP 4 -- strings.xml: remove the 6 dead keys from every locale
 # ---------------------------------------------------------------------------
-step5_strings() {
-    echo "== step 5: strings.xml -- remove dead keys (all locales)"
+step4_strings() {
+    echo "== step 4: strings.xml -- remove dead keys (all locales)"
     python3 - <<'CUTPY'
 import glob, re, sys
-keys = ['str_record_live_commentary_while_t', 'str_tap_to_start_recording',
-        'toast_microphone_permission_required', 'toast_failed_to_start_recording',
-        'str_voice_over', 'str_voice', 'str_handwriting', 'str_draw']
+keys = ['str_subtitles', 'str_subtitles_srt', 'str_upload_subtitle_file',
+        'str_supports_standard_srt_formatte', 'toast_subtitles_removed',
+        'toast_failed_to_parse_subtitle_file']
 pat = re.compile(r'^[ \t]*<string\s+name="(?:' + '|'.join(keys) + r')"[^>]*>[^<]*</string>[ \t]*\r?\n',
                  re.MULTILINE)
 files = sorted(glob.glob('app/src/main/res/values*/strings.xml'))
@@ -334,46 +306,67 @@ CUTPY
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 6 -- verification gate (fails BEFORE anything gets committed)
+#  STEP 5 -- verification gate (fails BEFORE anything gets committed)
 # ---------------------------------------------------------------------------
-step6_verify() {
-    echo "== step 6: leftover reference check (hard gate)"
+step5_verify() {
+    echo "== step 5: leftover reference check (hard gate)"
     python3 - <<'CUTPY'
 import os, re, sys
 
+VEA = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+# Files that KEEP subtitle code on purpose (old project compatibility):
+KEEP = {
+    'app/src/main/java/com/tharunbirla/librecuts/customviews/TextOverlayView.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt',
+    'app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt',
+}
+
 bad = []
-tokens = [
-    'HandwritingCanvasView', 'BrushSizeDotView', 'handwritingPanel',
-    'handwritingCanvasView', 'btnDraw', 'btnVoiceOver', 'isHandwritingActive',
-    'voiceOver', 'VoiceOver', 'mediaRecorder', 'showVoiceOverDialog',
-    'requestRecordAudioPermissionLauncher', 'setupHandwritingControls',
-    'openHandwritingMode', 'closeHandwritingMode', 'saveAndCommitHandwriting',
-    'hwCanvas', 'RECORD_AUDIO', 'dialog_voice_over', 'layout_handwriting_panel',
-    'ic_brush_24', 'ic_mic_24',
+# tokens that must be absent EVERYWHERE in app/src/main
+global_tokens = [
+    'subtitlesAction', 'enterSubtitlesEditingMode', 'exitSubtitlesEditingMode',
+    'updateSubtitlesUi', 'updateSubtitleOp', 'removeSubtitles', 'pickSrtFile',
+    'setupSubtitleFontSelector', 'PICK_SRT_REQUEST', 'SubtitleParser',
+    'subtitles_editing_toolbar', 'ic_closed_caption_24', 'ic_subtitles_24',
+    'btnSubtitles', 'subtitlesEditingToolbar', 'btnUploadSrt', 'btnChangeSrt',
+    'btnDeleteSrt', 'btnSaveSubtitles', 'btnCloseSubtitlesSheet',
+    'subtitleFontSizeSlider', 'layoutNoSubtitles', 'layoutHasSubtitles',
+    'tvSubtitleFileName', 'tvSubtitleFontSizeValue', 'btnSelectSubtitleFont',
+    'tvSelectedSubtitleFontName',
 ]
-keypat = re.compile(r'name="(?:str_draw|str_voice|str_voice_over|str_handwriting'
-                    r'|str_record_live_commentary_while_t|str_tap_to_start_recording'
-                    r'|toast_microphone_permission_required|toast_failed_to_start_recording)"')
-roots = ['app/src/main']
-for root in roots:
-    for dirpath, dirnames, filenames in os.walk(root):
-        for fn in filenames:
-            fp = os.path.join(dirpath, fn)
-            try:
-                blob = open(fp, encoding='utf-8', errors='ignore').read()
-            except OSError:
-                continue
-            for t in tokens:
+# tokens that must be absent from the activity only (kept in TextOverlayView)
+vea_tokens = ['isSubtitlesEditingActive', 'onSubtitlePositionChanged']
+keypat = re.compile(r'name="(?:str_subtitles|str_subtitles_srt|str_upload_subtitle_file'
+                    r'|str_supports_standard_srt_formatte|toast_subtitles_removed'
+                    r'|toast_failed_to_parse_subtitle_file)"')
+
+for dirpath, dirnames, filenames in os.walk('app/src/main'):
+    for fn in filenames:
+        fp = os.path.join(dirpath, fn)
+        try:
+            blob = open(fp, encoding='utf-8', errors='ignore').read()
+        except OSError:
+            continue
+        if fp in KEEP:
+            continue
+        for t in global_tokens:
+            if t in blob:
+                bad.append(fp + ' :: ' + t)
+        if fp.endswith('.xml') and keypat.search(blob):
+            bad.append(fp + ' :: dead string key')
+        if fn == 'VideoEditingActivity.kt':
+            for t in vea_tokens:
                 if t in blob:
                     bad.append(fp + ' :: ' + t)
-            if fp.endswith('.xml') and keypat.search(blob):
-                bad.append(fp + ' :: dead string key')
+
 if bad:
     print('   [FAIL] leftover references found:')
     for b in sorted(set(bad)):
         print('      ' + b)
     sys.exit(1)
-print('   [ok] zero leftover references in app/src/main')
+print('   [ok] zero leftover references (subtitle editing UI fully removed)')
+print('   [ok] rendering/export half intact: models + serializer + viewmodel + TextOverlayView')
 CUTPY
 }
 
@@ -381,28 +374,29 @@ CUTPY
 #  MAIN
 # ---------------------------------------------------------------------------
 echo "=========================================================="
-echo " Cutloss simplification (phase 2) -- start"
-echo " Removes: Voice Over tool + Draw (Handwriting) tool"
+echo " Cutloss simplification (phase 3) -- start"
+echo " Removes: Subtitles tool (SRT import + editing UI)"
+echo " Keeps:   subtitle render/export for old .lcprj projects"
 echo "=========================================================="
 FAILED=0
 step1_delete_files  || FAILED=1
-step2_manifest       || FAILED=1
-step3_main_layout    || FAILED=1
-step4_activity       || FAILED=1
-step5_strings        || FAILED=1
-step6_verify         || FAILED=1
+step2_main_layout   || FAILED=1
+step3_activity      || FAILED=1
+step4_strings       || FAILED=1
+step5_verify        || FAILED=1
 echo "----------------------------------------------------------"
 if [ "$FAILED" -ne 0 ]; then
-    echo " PHASE 2 FAILED -- see the [FAIL] lines above."
+    echo " PHASE 3 FAILED -- see the [FAIL] lines above."
     echo " Nothing was committed; main is untouched."
     echo "----------------------------------------------------------"
     exit 1
 fi
-echo " Phase 2 complete. All steps ok or skipped."
-echo " Result: 2 tools removed, RECORD_AUDIO permission gone,"
-echo " 6 dead files deleted, 8 dead string keys dropped."
-echo " Remaining tools: Text, Overlay, Audio, Crop, Subtitles,"
-echo " Canvas Background (+ trim/speed/filters/etc.)."
+echo " Phase 3 complete. All steps ok or skipped."
+echo " Result: Subtitles tool button gone, SRT import gone,"
+echo " 4 dead files deleted, 6 dead string keys dropped."
+echo " Old projects with subtitle layers still preview+export."
+echo " Remaining tools: Text, Overlay, Audio, Crop, Canvas"
+echo " Background (+ trim/speed/filters/keyframes/etc.)."
 echo " Next: the workflow commits these changes and builds the APK."
 echo "----------------------------------------------------------"
 exit 0
