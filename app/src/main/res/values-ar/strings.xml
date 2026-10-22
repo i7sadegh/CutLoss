@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">فشل في تعيين مجلد التصدير</string>
     <string name="str_video_export_folder">مجلد تصدير الفيديو</string>
     <string name="str_audio_export_folder">مجلد تصدير الصوت</string>
-    <string name="str_snapshot_export_folder">مجلد تصدير اللقطات</string>
     <string name="str_default_music_librecuts">الافتراضي (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">الافتراضي (Pictures/Cutloss)</string>
     <string name="str_app_language">لغة التطبيق</string>
     <string name="str_system_default">افتراضي النظام</string>
     <string name="str_opacity">الشفافية</string>

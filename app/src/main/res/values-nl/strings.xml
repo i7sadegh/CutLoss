@@ -125,9 +125,7 @@
     <string name="toast_failed_to_set_export_folder">Kon exportmap niet instellen</string>
     <string name="str_video_export_folder">Video exportmap</string>
     <string name="str_audio_export_folder">Audio exportmap</string>
-    <string name="str_snapshot_export_folder">Plaatjes exportmap</string>
     <string name="str_default_music_librecuts">Standaard (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Standaard (Pictures/Cutloss)</string>
     <string name="str_app_language">App taal</string>
     <string name="str_system_default">Systeemtaal</string>
     <string name="str_opacity">Doorzichtigheid</string>

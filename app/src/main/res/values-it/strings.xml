@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">Impossibile impostare cartella di esportazione</string>
     <string name="str_video_export_folder">Cartella di Esportazione del Video</string>
     <string name="str_audio_export_folder">Cartella di Esportazione dell\'Audio</string>
-    <string name="str_snapshot_export_folder">Cartella di Esportazione delle Istantanee</string>
     <string name="str_default_music_librecuts">Predefinito (Musica/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Predefinito (Pictures/Cutloss)</string>
     <string name="str_app_language">Lingua dell\'App</string>
     <string name="str_system_default">Predefinita di Sistema</string>
     <string name="str_opacity">Opacità</string>

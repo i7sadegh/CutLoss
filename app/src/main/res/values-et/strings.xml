@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">Ekspordikausta määramine ei õnnestunud</string>
     <string name="str_video_export_folder">Videoriba ekspordikaust</string>
     <string name="str_audio_export_folder">Heliriba ekspordikaust</string>
-    <string name="str_snapshot_export_folder">Kuvatõmmiste ekspordikaust</string>
     <string name="str_default_music_librecuts">Vaikimisi (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Vaikimisi (Pictures/Cutloss)</string>
     <string name="str_app_language">Rakenduse keel</string>
     <string name="str_system_default">Süsteemi vaikeseadistus</string>
     <string name="str_opacity">Läbipaistvus</string>

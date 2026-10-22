@@ -121,7 +121,6 @@
     <string name="toast_failed_to_set_export_folder">Falhou em configurar a pasta de exportação</string>
     <string name="str_video_export_folder">Pasta de exportação de vídeo</string>
     <string name="str_audio_export_folder">Pasta de exportação de áudio</string>
-    <string name="str_snapshot_export_folder">Pasta de exportação de snapshots</string>
     <string name="str_app_language">Idioma do App</string>
     <string name="str_system_default">Padrão do sistema</string>
     <string name="str_opacity">Opacidade</string>
@@ -139,5 +138,4 @@
     <string name="str_haptic_enabled_desc">Habilitado (Vibrações ativas no app)</string>
     <string name="str_haptic_disabled_desc">Desabilitado (Vibrações desligadas no app)</string>
     <string name="str_default_music_librecuts">Padrão (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Padrão (Pictures/Cutloss)</string>
 </resources>

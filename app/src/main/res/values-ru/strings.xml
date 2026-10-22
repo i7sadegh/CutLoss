@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">Не удалось установить папку экспорта</string>
     <string name="str_video_export_folder">Папка экспорта видео</string>
     <string name="str_audio_export_folder">Папка экспорта аудио</string>
-    <string name="str_snapshot_export_folder">Папка экспорта снимков</string>
     <string name="str_default_music_librecuts">По умолчанию (Музыка/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">По умолчанию (Изображения/Cutloss)</string>
     <string name="str_app_language">Язык приложения</string>
     <string name="str_system_default">Как в системе</string>
     <string name="str_opacity">Прозрачность</string>

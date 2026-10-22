@@ -137,9 +137,7 @@
     <string name="toast_failed_to_set_export_folder">设置导出文件夹失败</string>
     <string name="str_video_export_folder">视频导出文件夹</string>
     <string name="str_audio_export_folder">音频导出文件夹</string>
-    <string name="str_snapshot_export_folder">快照导出文件夹</string>
     <string name="str_default_music_librecuts">默认（音乐/Cutloss）</string>
-    <string name="str_default_pictures_librecuts">默认（图片/Cutloss）</string>
     <string name="str_app_language">应用语言</string>
     <string name="str_system_default">系统默认</string>
     <string name="str_opacity">不透明度</string>

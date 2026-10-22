@@ -106,24 +106,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-    private val selectSnapshotFolderLauncher =
-        registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-            if (uri != null) {
-                try {
-                    val takeFlags: Int = Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    contentResolver.takePersistableUriPermission(uri, takeFlags)
-
-                    val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
-                    prefs.edit().putString("export_snapshot_directory_uri", uri.toString()).apply()
-                    updateExportFolderUI(uri, binding.tvCurrentSnapshotExportFolder, R.string.str_default_pictures_librecuts)
-                } catch (e: Exception) {
-                    Log.e("FolderSelectionError", "Error securing permission for URI", e)
-                    showToast(getString(R.string.toast_failed_to_set_export_folder))
-                }
-            }
-        }
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
@@ -172,9 +154,6 @@ class MainActivity : AppCompatActivity() {
         binding.btnChangeAudioExportFolder.setBounceClickListener {
             selectAudioFolderLauncher.launch(null)
         }
-        binding.btnChangeSnapshotExportFolder.setBounceClickListener {
-            selectSnapshotFolderLauncher.launch(null)
-        }
         binding.btnChangeLanguage.setBounceClickListener {
             showLanguageDialog()
         }
@@ -204,13 +183,6 @@ class MainActivity : AppCompatActivity() {
             updateExportFolderUI(Uri.parse(savedAudioUriString), binding.tvCurrentAudioExportFolder, R.string.str_default_music_librecuts)
         } else {
             updateExportFolderUI(null, binding.tvCurrentAudioExportFolder, R.string.str_default_music_librecuts)
-        }
-
-        val savedSnapshotUriString = prefs.getString("export_snapshot_directory_uri", null)
-        if (savedSnapshotUriString != null) {
-            updateExportFolderUI(Uri.parse(savedSnapshotUriString), binding.tvCurrentSnapshotExportFolder, R.string.str_default_pictures_librecuts)
-        } else {
-            updateExportFolderUI(null, binding.tvCurrentSnapshotExportFolder, R.string.str_default_pictures_librecuts)
         }
 
         updateLanguageUI()

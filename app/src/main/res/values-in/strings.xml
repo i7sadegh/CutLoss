@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">Gagal mengatur folder ekspor</string>
     <string name="str_video_export_folder">Folder Ekspor Video</string>
     <string name="str_audio_export_folder">Folder Ekspor Audio</string>
-    <string name="str_snapshot_export_folder">Folder Ekspor Snapshot</string>
     <string name="str_default_music_librecuts">Default (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Default (Pictures/Cutloss)</string>
     <string name="str_app_language">Bahasa Aplikasi</string>
     <string name="str_system_default">Default Sistem</string>
     <string name="str_opacity">Opasitas</string>

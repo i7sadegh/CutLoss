@@ -9,7 +9,7 @@
     <!-- Header: pinned above the scrolling settings (PINNED-EXPORT-HEADER) -->
     <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
         android:orientation="horizontal" android:gravity="center_vertical"
-        android:paddingStart="20dp" android:paddingEnd="20dp" android:paddingTop="20dp">
+        android:paddingStart="20dp" android:paddingEnd="20dp" android:paddingTop="20dp" android:paddingBottom="20dp">
         <TextView android:layout_width="0dp" android:layout_height="wrap_content"
             android:layout_weight="1" android:text="Export Settings"
             android:textColor="@color/textColor" android:textSize="18sp"
@@ -33,7 +33,7 @@
 
         <!-- ======================= Resolution ======================= -->
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
-            android:layout_marginTop="18dp" android:text="Resolution"
+            android:layout_marginTop="0dp" android:text="Resolution"
             android:textColor="@color/iconSecondary" android:textSize="12sp"
             android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
 

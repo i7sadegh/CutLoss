@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">ஏற்றுமதி கோப்புறையை அமைக்க முடியவில்லை</string>
     <string name="str_video_export_folder">வீடியோ ஏற்றுமதி கோப்புறை</string>
     <string name="str_audio_export_folder">ஆடியோ ஏற்றுமதி கோப்புறை</string>
-    <string name="str_snapshot_export_folder">ஸ்னாப்ஷாட் ஏற்றுமதி கோப்புறை</string>
     <string name="str_default_music_librecuts">Default (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Default (Pictures/Cutloss)</string>
     <string name="str_app_language">பயன்பாட்டு மொழி</string>
     <string name="str_system_default">சாதன இயல்புநிலை</string>
     <string name="str_opacity">ஒளிபுகாமை</string>

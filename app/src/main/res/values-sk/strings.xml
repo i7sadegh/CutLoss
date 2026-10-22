@@ -99,9 +99,7 @@
     <string name="toast_video_exported_to_gallery_succ">Video sa úspešne exportovalo do Galérie!</string>
     <string name="toast_failed_to_save_video_to_galler">Nepodarilo sa uložiť video do galérie</string>
     <string name="toast_export_cancelled">Export bol zrušený</string>
-    <string name="str_snapshot_export_folder">Priečinok na export snímok</string>
     <string name="str_default_music_librecuts">Predvolené (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">Predvolené (Pictures/Cutloss)</string>
     <string name="str_app_language">Jazyk aplikácie</string>
     <string name="str_system_default">Predvolené nastavenie systému</string>
     <string name="str_opacity">Priehľadnosť</string>

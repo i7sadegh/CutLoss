@@ -138,9 +138,7 @@
     <string name="toast_failed_to_set_export_folder">निर्यात फ़ोल्डर सेट करने में विफल</string>
     <string name="str_video_export_folder">वीडियो निर्यात फ़ोल्डर</string>
     <string name="str_audio_export_folder">ऑडियो निर्यात फ़ोल्डर</string>
-    <string name="str_snapshot_export_folder">स्नैपशॉट निर्यात फ़ोल्डर</string>
     <string name="str_default_music_librecuts">डिफ़ॉल्ट (Music/Cutloss)</string>
-    <string name="str_default_pictures_librecuts">डिफ़ॉल्ट (Pictures/Cutloss)</string>
     <string name="str_app_language">ऐप की भाषा</string>
     <string name="str_system_default">सिस्टम डिफ़ॉल्ट</string>
     <string name="str_opacity">अपारदर्शिता (Opacity)</string>
