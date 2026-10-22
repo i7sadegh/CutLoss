@@ -26,7 +26,6 @@
     <string name="str_text">Teks</string>
     <string name="str_overlay">Overlay</string>
     <string name="str_audio">Audio</string>
-    <string name="str_voice">Suara</string>
     <string name="str_subtitles">Subtitle</string>
     <string name="str_crop">Pangkas</string>
     <string name="str_none">Tidak Ada</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">Kustom</string>
     <string name="str_trim_video">Pangkas Video</string>
     <string name="str_transitions">Transisi</string>
-    <string name="str_voice_over">Voice Over</string>
-    <string name="str_record_live_commentary_while_t">Rekam komentar langsung saat video diputar.</string>
-    <string name="str_tap_to_start_recording">Ketuk untuk mulai merekam</string>
     <string name="str_new_project">PROYEK BARU</string>
     <string name="str_tap_to_select_media">Ketuk untuk pilih media</string>
     <string name="str_free_open_source_nlimitless_cr">gratis. open-source.\nkreativitas tanpa batas.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Panduan Troubleshooting &amp; Wiki</string>
     <string name="str_if_you_encounter_any_export_is">Jika mengalami masalah ekspor atau error rendering, ketuk di sini untuk membaca panduan wiki troubleshooting dan kode error.</string>
     <string name="str_get_started">Mulai</string>
-    <string name="toast_microphone_permission_required">Izin mikrofon diperlukan untuk voice over</string>
     <string name="toast_snapping_enabled">Snapping diaktifkan</string>
     <string name="toast_snapping_disabled">Snapping dinonaktifkan</string>
     <string name="toast_log_copied_to_clipboard">Log disalin ke clipboard</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Menganalisis ketukan...</string>
     <string name="toast_no_clear_beats_found">Tidak ada ketukan yang jelas ditemukan.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Seret handle pada track video utama timeline untuk memangkas.</string>
-    <string name="toast_failed_to_start_recording">Gagal memulai perekaman</string>
     <string name="toast_subtitles_removed">Subtitle dihapus</string>
     <string name="toast_failed_to_load_overlay_file">Gagal memuat file overlay</string>
     <string name="toast_freeze_frame_added_to_sequence">Frame beku ditambahkan ke urutan</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">Encoder Software (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">Performa ekspor tercepat menggunakan GPU perangkat</string>
     <string name="str_encoder_software_desc">Ekspor kompatibilitas maksimal menggunakan CPU</string>
-    <string name="str_draw">Gambar</string>
-    <string name="str_handwriting">Tulisan Tangan</string>
     <string name="str_brush_size">Ukuran Kuas</string>
     <string name="str_clear">Bersihkan</string>
     <string name="str_haptic_feedback">Umpan Balik Haptik</string>

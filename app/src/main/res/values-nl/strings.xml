@@ -24,7 +24,6 @@
     <string name="str_import_video">Importeer Video</string>
     <string name="str_text">Tekst</string>
     <string name="str_audio">Geluid</string>
-    <string name="str_voice">Stem</string>
     <string name="str_subtitles">Ondertitel</string>
     <string name="str_crop">Bijsnijden</string>
     <string name="str_none">Geen</string>
@@ -68,9 +67,6 @@
     <string name="str_custom">Anders</string>
     <string name="str_trim_video">Video bijsnijden</string>
     <string name="str_transitions">Overgangen</string>
-    <string name="str_voice_over">Voice Over</string>
-    <string name="str_record_live_commentary_while_t">Neem live commentaar op terwijl de video wordt afgespeeld.</string>
-    <string name="str_tap_to_start_recording">Tik om op te nemen</string>
     <string name="str_new_project">NIEUW PROJECT</string>
     <string name="str_tap_to_select_media">Tik om media te selecteren</string>
     <string name="str_free_open_source_nlimitless_cr">gratis. open-source.\ngrenzeloze creativiteit.</string>
@@ -99,12 +95,10 @@
     <string name="str_troubleshooting_amp_wiki_guide">Problemen oplossen en Wiki Gids</string>
     <string name="str_if_you_encounter_any_export_is">Als je exportproblemen of renderfouten hebt, tik hier om onze wikigids voor probleemoplossing en foutcodes te lezen.</string>
     <string name="str_get_started">Aan de slag</string>
-    <string name="toast_microphone_permission_required">Microfoon toestemming nodig voor voice-over</string>
     <string name="toast_snapping_enabled">Snapping ingeschakeld</string>
     <string name="toast_snapping_disabled">Snapping uitgeschakeld</string>
     <string name="toast_log_copied_to_clipboard">Log gekopieerd naar klembord</string>
     <string name="toast_drag_the_handles_on_the_timeli">Sleep de handgrepen op het hoofdvideospoor van de tijdlijn om te snijden.</string>
-    <string name="toast_failed_to_start_recording">Opname kon niet gestart worden</string>
     <string name="toast_subtitles_removed">Ondertitels verwijderd</string>
     <string name="toast_failed_to_load_overlay_file">Overlaybestand kon niet geladen worden</string>
     <string name="toast_failed_to_apply_speed_reset">Kon snelheid niet resetten</string>
@@ -156,8 +150,6 @@
     <string name="str_encoder_software">Software-encoder (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">Snelste exportprestaties met behulp van de GPU</string>
     <string name="str_encoder_software_desc">Maximale export compatibiliteit met behulp van CPU</string>
-    <string name="str_draw">Teken</string>
-    <string name="str_handwriting">Handschrift</string>
     <string name="str_brush_size">Penseelgrootte</string>
     <string name="str_clear">Wissen</string>
     <string name="str_haptic_feedback">Haptische feedback</string>

@@ -23,7 +23,6 @@
     <string name="str_text">Metin</string>
     <string name="str_overlay">Kaplama</string>
     <string name="str_audio">Ses</string>
-    <string name="str_voice">Ses Kaydı</string>
     <string name="str_subtitles">Altyazı</string>
     <string name="str_crop">Kırp</string>
     <string name="str_none">Yok</string>
@@ -75,9 +74,6 @@
     <string name="str_custom">Özel</string>
     <string name="str_trim_video">Videoyu Kes</string>
     <string name="str_transitions">Geçişler</string>
-    <string name="str_voice_over">Seslendirme</string>
-    <string name="str_record_live_commentary_while_t">Video oynarken canlı\nseslendirme kaydedin.</string>
-    <string name="str_tap_to_start_recording">Kaydı başlatmak için dokunun</string>
     <string name="str_free_open_source_nlimitless_cr">ücretsiz. açık kaynak.\n sınırsız yaratıcılık.</string>
     <string name="str_settings">Ayarlar</string>
     <string name="str_general">Genel</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Sorun Giderme ve Wiki Rehberi</string>
     <string name="str_if_you_encounter_any_export_is">Dışa aktarma sorunları veya işleme hatalarıyla karşılaşırsanız, sorun giderme ve hata kodları için wiki rehberimizi okumak üzere buraya dokunun.</string>
     <string name="str_get_started">Başlayalım</string>
-    <string name="toast_microphone_permission_required">Seslendirme için mikrofon izni gerekli</string>
     <string name="toast_snapping_enabled">Yapışma etkin</string>
     <string name="toast_snapping_disabled">Yapışma devre dışı</string>
     <string name="toast_log_copied_to_clipboard">Günlük panoya kopyalandı</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Ritimler analiz ediliyor...</string>
     <string name="toast_no_clear_beats_found">Belirgin ritim bulunamadı.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Kesmek için ana video izindeki tutamaçları sürükleyin.</string>
-    <string name="toast_failed_to_start_recording">Kayıt başlatılamadı</string>
     <string name="toast_subtitles_removed">Altyazılar kaldırıldı</string>
     <string name="toast_failed_to_load_overlay_file">Kaplama dosyası yüklenemedi</string>
     <string name="toast_freeze_frame_added_to_sequence">Kare dondurma sekansa eklendi</string>

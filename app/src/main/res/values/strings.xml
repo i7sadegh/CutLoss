@@ -26,7 +26,6 @@
     <string name="str_text">Text</string>
     <string name="str_overlay">Overlay</string>
     <string name="str_audio">Audio</string>
-    <string name="str_voice">Voice</string>
     <string name="str_subtitles">Subtitles</string>
     <string name="str_crop">Crop</string>
     <string name="str_none">None</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">Custom</string>
     <string name="str_trim_video">Trim Video</string>
     <string name="str_transitions">Transitions</string>
-    <string name="str_voice_over">Voice Over</string>
-    <string name="str_record_live_commentary_while_t">Record live commentary while the video plays.</string>
-    <string name="str_tap_to_start_recording">Tap to start recording</string>
     <string name="str_new_project">NEW PROJECT</string>
     <string name="str_tap_to_select_media">Tap to select media</string>
     <string name="str_free_open_source_nlimitless_cr">free. open-source.\nlimitless creativity.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Troubleshooting &amp; Wiki Guide</string>
     <string name="str_if_you_encounter_any_export_is">If you encounter any export issues or rendering errors, tap here to read our wiki guide for troubleshooting and error codes.</string>
     <string name="str_get_started">Get Started</string>
-    <string name="toast_microphone_permission_required">Microphone permission required for voice over</string>
     <string name="toast_snapping_enabled">Snapping enabled</string>
     <string name="toast_snapping_disabled">Snapping disabled</string>
     <string name="toast_log_copied_to_clipboard">Log copied to clipboard</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Analyzing beats...</string>
     <string name="toast_no_clear_beats_found">No clear beats found.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Drag the handles on the timeline\'s main video track to trim.</string>
-    <string name="toast_failed_to_start_recording">Failed to start recording</string>
     <string name="toast_subtitles_removed">Subtitles removed</string>
     <string name="toast_failed_to_load_overlay_file">Failed to load overlay file</string>
     <string name="toast_freeze_frame_added_to_sequence">Freeze frame added to sequence</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">Software Encoder (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">Fastest export performance using device GPU</string>
     <string name="str_encoder_software_desc">Maximum compatibility export using CPU</string>
-    <string name="str_draw">Draw</string>
-    <string name="str_handwriting">Handwriting</string>
     <string name="str_brush_size">Brush Size</string>
     <string name="str_clear">Clear</string>
     <string name="str_haptic_feedback">Haptic Feedback</string>

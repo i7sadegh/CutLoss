@@ -202,12 +202,6 @@
                 android:layout_height="match_parent"
                 android:visibility="gone" />
 
-            <com.tharunbirla.librecuts.customviews.HandwritingCanvasView
-                android:id="@+id/handwritingCanvasView"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:visibility="gone" />
-
             <TextView
                 android:id="@+id/tvPreviewBadge"
                 android:layout_width="wrap_content"
@@ -680,32 +674,6 @@
                     android:orientation="vertical"
                     android:gravity="center">
                     <ImageButton
-                        android:id="@+id/btnDraw"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:background="@drawable/tool_button_inactive"
-                        android:src="@drawable/ic_brush_24"
-                        android:padding="8dp"
-                        android:scaleType="fitCenter"
-                        app:tint="@color/toolTextInactive" />
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="@string/str_draw"
-                        android:textSize="11sp"
-                        android:fontFamily="sans-serif-medium"
-                        android:textColor="@color/toolTextInactive"/>
-                </LinearLayout>
-
-
-
-                <LinearLayout
-                    android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center">
-                    <ImageButton
                         android:id="@+id/btnAudio"
                         android:layout_width="40dp"
                         android:layout_height="40dp"
@@ -719,30 +687,6 @@
                         android:layout_height="wrap_content"
                         android:layout_marginTop="4dp"
                         android:text="@string/str_audio"
-                        android:textSize="11sp"
-                        android:fontFamily="sans-serif-medium"
-                        android:textColor="@color/toolTextInactive"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center">
-                    <ImageButton
-                        android:id="@+id/btnVoiceOver"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:background="@drawable/tool_button_inactive"
-                        android:src="@drawable/ic_mic_24"
-                        android:padding="8dp"
-                        android:scaleType="fitCenter"
-                        app:tint="@color/toolTextInactive" />
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="@string/str_voice"
                         android:textSize="11sp"
                         android:fontFamily="sans-serif-medium"
                         android:textColor="@color/toolTextInactive"/>
@@ -823,13 +767,6 @@
             </LinearLayout>
         </HorizontalScrollView>
     </LinearLayout>
-
-    <include
-        android:id="@+id/handwritingPanel"
-        layout="@layout/layout_handwriting_panel"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:visibility="gone" />
 
     <include
         android:id="@+id/loadingScreen"

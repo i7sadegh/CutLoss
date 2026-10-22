@@ -26,7 +26,6 @@
     <string name="str_text">Text</string>
     <string name="str_overlay">Překryv</string>
     <string name="str_audio">Zvuk</string>
-    <string name="str_voice">Hlas</string>
     <string name="str_subtitles">Titulky</string>
     <string name="str_crop">Oříznout</string>
     <string name="str_none">Žádný</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">Vlastní</string>
     <string name="str_trim_video">Zkrátit video</string>
     <string name="str_transitions">Přechody</string>
-    <string name="str_voice_over">Hlasový komentář</string>
-    <string name="str_record_live_commentary_while_t">Nahrajte komentář naživo během přehrávání videa.</string>
-    <string name="str_tap_to_start_recording">Klepnutím spustíte nahrávání</string>
     <string name="str_new_project">NOVÝ PROJEKT</string>
     <string name="str_tap_to_select_media">Klepnutím vyberte média</string>
     <string name="str_free_open_source_nlimitless_cr">zdarma. open source.\nneomezená kreativita.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Řešení potíží a průvodce wiki</string>
     <string name="str_if_you_encounter_any_export_is">Pokud narazíte na problémy s exportem nebo chyby vykreslování, klepněte sem a přečtěte si našeho průvodce wiki s řešením potíží a chybovými kódy.</string>
     <string name="str_get_started">Začít</string>
-    <string name="toast_microphone_permission_required">Pro hlasový komentář je potřeba oprávnění k mikrofonu</string>
     <string name="toast_snapping_enabled">Přichytávání zapnuto</string>
     <string name="toast_snapping_disabled">Přichytávání vypnuto</string>
     <string name="toast_log_copied_to_clipboard">Protokol zkopírován do schránky</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Analyzuje se rytmus...</string>
     <string name="toast_no_clear_beats_found">Nebyl nalezen zřetelný rytmus.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Pro zkrácení přetáhněte úchyty na hlavní videostopě časové osy.</string>
-    <string name="toast_failed_to_start_recording">Nepodařilo se spustit nahrávání</string>
     <string name="toast_subtitles_removed">Titulky odebrány</string>
     <string name="toast_failed_to_load_overlay_file">Nepodařilo se načíst soubor překryvu</string>
     <string name="toast_freeze_frame_added_to_sequence">Zmrazený snímek přidán do sekvence</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">Softwarový enkodér (CPU – x264)</string>
     <string name="str_encoder_hardware_desc">Nejrychlejší export pomocí GPU zařízení</string>
     <string name="str_encoder_software_desc">Export s maximální kompatibilitou pomocí CPU</string>
-    <string name="str_draw">Kreslit</string>
-    <string name="str_handwriting">Rukopis</string>
     <string name="str_brush_size">Velikost štětce</string>
     <string name="str_clear">Vymazat</string>
     <string name="str_haptic_feedback">Haptická odezva</string>

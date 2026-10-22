@@ -55,7 +55,6 @@
     <string name="str_brightness_0">Helligkeit: 0</string>
     <string name="str_a_privacy_friendly_open_source">Ein datenschutzfreundlicher Open-Source-Videoeditor für Android.\nExportiere Videos lokal und komplett ohne Wasserzeichen.</string>
     <string name="str_transitions">Übergänge</string>
-    <string name="str_voice">Stimme</string>
     <string name="str_report_a_bug">Melde einen Fehler</string>
     <string name="str_remove">Entfernen</string>
     <string name="str_none">Aus</string>
@@ -98,8 +97,6 @@
     <string name="str_join_us_for_app_updates_and_co">Tritt uns bei für App-Updates und Community-Chat</string>
     <string name="str_support_our_open_source_develo">Unterstütze unsere Open-Source-Entwicklung direkt</string>
     <string name="str_community_amp_support">COMMUNITY &amp; SUPPORT</string>
-    <string name="str_record_live_commentary_while_t">Live-Kommentar aufnehmen, während das Video abspielt.</string>
-    <string name="str_tap_to_start_recording">Tippe um die Aufnahme zu starten</string>
     <string name="str_custom_speed">Eigene Geschwindigkeit</string>
     <string name="str_custom">Eigen</string>
     <string name="str_troubleshooting_amp_wiki_guide">Fehlerbehebung &amp; Wiki-Anleitung</string>
@@ -113,9 +110,7 @@
     <string name="str_16_9">16:9</string>
     <string name="str_9_16">9:16</string>
     <string name="str_1_1">1:1</string>
-    <string name="str_voice_over">Sprachaufnahme</string>
     <string name="str_default_movies_librecuts">Standard (Movies/Cutloss)</string>
-    <string name="toast_microphone_permission_required">Mikrofon-Berechtigung für Sprachaufnahme benötigt</string>
     <string name="toast_snapping_enabled">Einrasten ein</string>
     <string name="toast_snapping_disabled">Einrasten aus</string>
     <string name="toast_log_copied_to_clipboard">Protokoll in die Zwischenablage kopiert</string>
@@ -124,7 +119,6 @@
     <string name="toast_analyzing_beats">Takt wird analysiert...</string>
     <string name="toast_no_clear_beats_found">Kein klares Taktmuster gefunden.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Ziehe die Griffe auf der Zeitleiste des Hauptvideos um zu schneiden.</string>
-    <string name="toast_failed_to_start_recording">Aufnahme konnte nicht gestartet werden</string>
     <string name="toast_failed_to_load_overlay_file">Überlagerungsdatei konnte nicht geladen werden</string>
     <string name="toast_freeze_frame_added_to_sequence">Standbild zur Timeline hinzugefügt</string>
     <string name="toast_failed_to_create_freeze_frame">Standbild konnte nicht erstellt werden</string>
@@ -168,8 +162,6 @@
     <string name="str_encoder_software">Softwareencoder (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">Schnellster Export via GPU</string>
     <string name="str_encoder_software_desc">Maximale Kompaktibilität via CPU</string>
-    <string name="str_draw">Zeichnen</string>
-    <string name="str_handwriting">Handschrift</string>
     <string name="str_brush_size">Pinselgröße</string>
     <string name="str_clear">Leeren</string>
     <string name="str_haptic_feedback">Haptisches Feedback</string>

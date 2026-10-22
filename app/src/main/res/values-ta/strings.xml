@@ -26,7 +26,6 @@
     <string name="str_text">உரை</string>
     <string name="str_overlay">மேலடுக்கு</string>
     <string name="str_audio">ஆடியோ</string>
-    <string name="str_voice">குரல்</string>
     <string name="str_subtitles">துணைத்தலைப்புகள்</string>
     <string name="str_crop">செதுக்கு</string>
     <string name="str_none">எதுவுமில்லை</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">தனிப்பயன்</string>
     <string name="str_trim_video">வீடியோவை நறுக்கு</string>
     <string name="str_transitions">நிலைமாற்றங்கள்</string>
-    <string name="str_voice_over">பின்னணிக் குரல்</string>
-    <string name="str_record_live_commentary_while_t">வீடியோ இயங்கும் போது நேரடி வர்ணனையைப் பதிவு செய்யவும்.</string>
-    <string name="str_tap_to_start_recording">பதிவைத் தொடங்க தட்டவும்</string>
     <string name="str_new_project">புதிய திட்டம்</string>
     <string name="str_tap_to_select_media">மீடியாவைத் தேர்ந்தெடுக்க தட்டவும்</string>
     <string name="str_free_open_source_nlimitless_cr">இலவசம். திறந்த மூலம்.\nஎல்லையற்ற படைப்பாற்றல்.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">சரிசெய்தல் &amp; விக்கி வழிகாட்டி</string>
     <string name="str_if_you_encounter_any_export_is">ஏற்றுமதி சிக்கல்கள் அல்லது ரெண்டரிங் பிழைகள் ஏதேனும் ஏற்பட்டால், பிழைக் குறியீடுகள் மற்றும் சரிசெய்தலுக்கான எங்கள் விக்கி வழிகாட்டியைப் படிக்க இங்கே தட்டவும்.</string>
     <string name="str_get_started">தொடங்குங்கள்</string>
-    <string name="toast_microphone_permission_required">பின்னணிக் குரல் பதிவு செய்ய மைக்ரோஃபோன் அனுமதி தேவை</string>
     <string name="toast_snapping_enabled">ஸ்னாப்பிங் இயக்கப்பட்டது</string>
     <string name="toast_snapping_disabled">ஸ்னாப்பிங் முடக்கப்பட்டது</string>
     <string name="toast_log_copied_to_clipboard">பதிவு கிளிப்போர்டுக்கு நகலெடுக்கப்பட்டது</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">துடிப்புகள் பகுப்பாய்வு செய்யப்படுகின்றன...</string>
     <string name="toast_no_clear_beats_found">தெளிவான துடிப்புகள் எதுவும் காணப்படவில்லை.</string>
     <string name="toast_drag_the_handles_on_the_timeli">நறுக்குவதற்கு காலவரிசையின் முதன்மை வீடியோ டிராக்கில் உள்ள கைப்பிடிகளை இழுக்கவும்.</string>
-    <string name="toast_failed_to_start_recording">பதிவைத் தொடங்க முடியவில்லை</string>
     <string name="toast_subtitles_removed">துணைத்தலைப்புகள் நீக்கப்பட்டன</string>
     <string name="toast_failed_to_load_overlay_file">மேலடுக்குக் கோப்பை ஏற்ற முடியவில்லை</string>
     <string name="toast_freeze_frame_added_to_sequence">வரிசையில் நிலையான பிரேம் சேர்க்கப்பட்டது</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">மென்பொருள் என்கோடர் (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">சாதனத்தின் GPU-ஐப் பயன்படுத்தி அதிவேக ஏற்றுமதி செயல்திறன்</string>
     <string name="str_encoder_software_desc">CPU-ஐப் பயன்படுத்தி அதிகபட்ச இணக்கத்தன்மை கொண்ட ஏற்றுமதி</string>
-    <string name="str_draw">வரைதல்</string>
-    <string name="str_handwriting">கையெழுத்து</string>
     <string name="str_brush_size">தூரிகை அளவு</string>
     <string name="str_clear">அழி</string>
     <string name="str_haptic_feedback">ஹாப்டிக் பின்னூட்டம்</string>

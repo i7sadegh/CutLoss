@@ -27,7 +27,6 @@
     <string name="str_text">Tekst</string>
     <string name="str_overlay">Ülekate</string>
     <string name="str_audio">Heliriba</string>
-    <string name="str_voice">Hääl</string>
     <string name="str_subtitles">Subtiitrid</string>
     <string name="str_crop">Kadreeri</string>
     <string name="str_none">Puudub</string>
@@ -73,9 +72,6 @@
     <string name="str_1_1">1:1</string>
     <string name="str_custom">Kohandatud</string>
     <string name="str_transitions">Siirded</string>
-    <string name="str_voice_over">Pealeloetav tekst</string>
-    <string name="str_record_live_commentary_while_t">Salvesta otsekommentaar video esitamise ajal.</string>
-    <string name="str_tap_to_start_recording">Salvestamise alustamiseks puuduta</string>
     <string name="str_new_project">UUS PROJEKT</string>
     <string name="str_tap_to_select_media">Meediumi valimiseks klõpsa</string>
     <string name="str_free_open_source_nlimitless_cr">tasuta. avatud lähtekoodiga.\npiiramatu loovus.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Veaotsing ja juhend vikis</string>
     <string name="str_if_you_encounter_any_export_is">Kui sul tekib probleeme eksportimisel või renderdamisvigu, klõpsa siia, et lugeda meie juhendit vikis veaotsingu ja veakoodide kohta.</string>
     <string name="str_get_started">Alusta siit</string>
-    <string name="toast_microphone_permission_required">Hääle salvestuseks on vajalik mikrofoni kasutamise luba</string>
     <string name="toast_snapping_enabled">Kinnitumine sisse lülitatud</string>
     <string name="toast_snapping_disabled">Kinnitumine välja lülitatud</string>
     <string name="toast_log_copied_to_clipboard">Logi on kopeeritud lõikelauale</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Analüüsin rütmisammu...</string>
     <string name="toast_no_clear_beats_found">Selgeid rütme ei leitud.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Kärpimiseks lohista ajatelje põhivideoraja pidemeid.</string>
-    <string name="toast_failed_to_start_recording">Salvestamise alustamine ei õnnestunud</string>
     <string name="toast_subtitles_removed">Subtiitrid on eemaldatud</string>
     <string name="toast_failed_to_load_overlay_file">Ülekattefaili laadimine ei õnnestunud</string>
     <string name="toast_freeze_frame_added_to_sequence">Stoppkaader on lisatud järjestusesse</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">Tarkvaraline kodeerija (CPU - x264)</string>
     <string name="str_brush_size">Pintsli suurus</string>
     <string name="str_clear">Tühjenda</string>
-    <string name="str_handwriting">Käekiri</string>
-    <string name="str_draw">Joonista</string>
     <string name="str_encoder_software_desc">Põhiprotsessoriga loodud parima ühilduvusega väljund</string>
     <string name="str_encoder_hardware_desc">Graafikaprotsessoriga kiirelt loodud väljund</string>
     <string name="str_haptic_feedback">Haptiline tagasiside</string>

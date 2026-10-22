@@ -26,7 +26,6 @@
     <string name="str_text">टेक्स्ट</string>
     <string name="str_overlay">ओवरले</string>
     <string name="str_audio">ऑडियो</string>
-    <string name="str_voice">आवाज़</string>
     <string name="str_subtitles">सबटाइटल</string>
     <string name="str_crop">क्रॉप</string>
     <string name="str_none">कोई नहीं</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">कस्टम</string>
     <string name="str_trim_video">वीडियो ट्रिम करें</string>
     <string name="str_transitions">ट्रांज़िशन</string>
-    <string name="str_voice_over">वॉयस ओवर</string>
-    <string name="str_record_live_commentary_while_t">वीडियो चलने के दौरान लाइव कमेंट्री रिकॉर्ड करें।</string>
-    <string name="str_tap_to_start_recording">रिकॉर्डिंग शुरू करने के लिए टैप करें</string>
     <string name="str_new_project">नया प्रोजेक्ट</string>
     <string name="str_tap_to_select_media">मीडिया चुनने के लिए टैप करें</string>
     <string name="str_free_open_source_nlimitless_cr">मुफ़्त। ओपन-सोर्स।\nअसीमित रचनात्मकता।</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">समस्या निवारण और विकी गाइड</string>
     <string name="str_if_you_encounter_any_export_is">यदि आपको कोई निर्यात समस्या या रेंडरिंग त्रुटि आती है, तो समस्या निवारण और त्रुटि कोड के लिए हमारी विकी गाइड पढ़ने के लिए यहाँ टैप करें।</string>
     <string name="str_get_started">शुरू करें</string>
-    <string name="toast_microphone_permission_required">वॉयस ओवर के लिए माइक्रोफ़ोन अनुमति आवश्यक है</string>
     <string name="toast_snapping_enabled">स्नैपिंग सक्षम की गई</string>
     <string name="toast_snapping_disabled">स्नैपिंग अक्षम की गई</string>
     <string name="toast_log_copied_to_clipboard">लॉग क्लिपबोर्ड पर कॉपी किया गया</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">बीट्स का विश्लेषण किया जा रहा है...</string>
     <string name="toast_no_clear_beats_found">कोई स्पष्ट बीट नहीं मिला।</string>
     <string name="toast_drag_the_handles_on_the_timeli">ट्रिम करने के लिए टाइमलाइन के मुख्य वीडियो ट्रैक पर हैंडल खींचें।</string>
-    <string name="toast_failed_to_start_recording">रिकॉर्डिंग शुरू करने में विफल</string>
     <string name="toast_subtitles_removed">सबटाइटल हटा दिए गए</string>
     <string name="toast_failed_to_load_overlay_file">ओवरले फ़ाइल लोड करने में विफल</string>
     <string name="toast_freeze_frame_added_to_sequence">फ़्रीज़ फ़्रेम अनुक्रम में जोड़ा गया</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">सॉफ़्टवेयर एन्कोडर (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">डिवाइस GPU का उपयोग करके सबसे तेज़ निर्यात प्रदर्शन</string>
     <string name="str_encoder_software_desc">CPU का उपयोग करके अधिकतम अनुकूलता निर्यात</string>
-    <string name="str_draw">ड्रा करें</string>
-    <string name="str_handwriting">हस्तलेखन</string>
     <string name="str_brush_size">ब्रश का आकार</string>
     <string name="str_clear">साफ़ करें</string>
     <string name="str_haptic_feedback">हैप्टिक फ़ीडबैक</string>

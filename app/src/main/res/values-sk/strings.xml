@@ -26,7 +26,6 @@
     <string name="str_text">Text</string>
     <string name="str_overlay">Vrstva</string>
     <string name="str_audio">Zvuk</string>
-    <string name="str_voice">Hlas</string>
     <string name="str_subtitles">Titulky</string>
     <string name="str_1x">1x</string>
     <string name="str_1_5x">1.5x</string>
@@ -45,9 +44,6 @@
     <string name="str_custom">Vlastné</string>
     <string name="str_trim_video">Strih videa</string>
     <string name="str_transitions">Prechody</string>
-    <string name="str_voice_over">Hlasový komentár</string>
-    <string name="str_record_live_commentary_while_t">Nahrať živý komentár počas prehrávania videa.</string>
-    <string name="str_tap_to_start_recording">Kliknutím spustíte nahrávanie</string>
     <string name="str_new_project">NOVÝ PROJEKT</string>
     <string name="str_tap_to_select_media">Kliknutím vyberte multimediálny súbor</string>
     <string name="str_free_open_source_nlimitless_cr">bezplatný s otvoreným zdrojovým kódom.\nneobmedzená kreativita.</string>
@@ -79,7 +75,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Riešenie problémov a návod na Wiki</string>
     <string name="str_if_you_encounter_any_export_is">Ak narazíte na akékoľvek problémy s exportom alebo chyby pri vykresľovaní, kliknite sem a prečítajte si náš návod na wiki, kde nájdete informácie o riešení problémov a chybových kódoch.</string>
     <string name="str_get_started">Začať</string>
-    <string name="toast_microphone_permission_required">Na nahrávanie hlasu je potrebné povolenie na používanie mikrofónu</string>
     <string name="toast_snapping_enabled">Prichytávanie zapnuté</string>
     <string name="toast_snapping_disabled">Prichytávanie vypnuté</string>
     <string name="toast_log_copied_to_clipboard">Protokol bol skopírovaný do schránky</string>
@@ -87,7 +82,6 @@
     <string name="toast_analyzing_beats">Analyzujem rytmický takt....</string>
     <string name="toast_no_clear_beats_found">Neboli nájdené žiadne jasné rytmy.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Na skrátenie videa posuňte úchytky na hlavnej časovej osi.</string>
-    <string name="toast_failed_to_start_recording">Nepodarilo sa spustiť nahrávanie</string>
     <string name="toast_subtitles_removed">Titulky boli odstránené</string>
     <string name="toast_failed_to_load_overlay_file">Nepodarilo sa načítať súbor vrstvy</string>
     <string name="toast_freeze_frame_added_to_sequence">Do sekvencie bol pridaný statický snímok</string>
@@ -127,8 +121,6 @@
     <string name="str_encoder_software">Softvérový enkodér (CPU – x264)</string>
     <string name="str_encoder_hardware_desc">Najrýchlejší výkon pri exportovaní s využitím grafického procesora (GPU)</string>
     <string name="str_encoder_software_desc">Maximálne kompatibilita pri exportovaní s využitím procesora (CPU)</string>
-    <string name="str_draw">Kresba</string>
-    <string name="str_handwriting">Rukopis</string>
     <string name="str_brush_size">Veľkosť štetca</string>
     <string name="str_clear">Vyčistiť</string>
     <string name="str_crop">Orezať</string>

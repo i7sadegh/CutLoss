@@ -26,7 +26,6 @@
     <string name="str_text">Текст</string>
     <string name="str_overlay">Оверлей</string>
     <string name="str_audio">Звук</string>
-    <string name="str_voice">Голос</string>
     <string name="str_subtitles">Субтитры</string>
     <string name="str_crop">Изменить размер</string>
     <string name="str_none">Ничего</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">Особое</string>
     <string name="str_trim_video">Обрезать видео</string>
     <string name="str_transitions">Переходы</string>
-    <string name="str_voice_over">Наложение озвучки</string>
-    <string name="str_record_live_commentary_while_t">Запишите живые комментарии пока проигрывается видео.</string>
-    <string name="str_tap_to_start_recording">Коснитесь для начала записи</string>
     <string name="str_new_project">НОВЫЙ ПРОЕКТ</string>
     <string name="str_tap_to_select_media">Коснитесь чтобы выбрать медиа</string>
     <string name="str_free_open_source_nlimitless_cr">бесплатно, открытый исходный код, \nбезграничное творчество.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">Решение неполадок и руководства</string>
     <string name="str_if_you_encounter_any_export_is">Если вы столкнулись с ошибками экспорта или рендера, коснитесь здесь чтобы прочитать наше руководство по неполадкам и кодам ошибок.</string>
     <string name="str_get_started">Приступить</string>
-    <string name="toast_microphone_permission_required">Для озвучки требуется доступ к микрофону</string>
     <string name="toast_snapping_enabled">Зацеп включён</string>
     <string name="toast_snapping_disabled">Зацеп выключен</string>
     <string name="toast_log_copied_to_clipboard">Логи скопированы в буфер обмена</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">Анализируем ритм...</string>
     <string name="toast_no_clear_beats_found">Не обнаружен четкий ритм.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Перетащите ползунки на временной линии основной видеодорожки чтобы обрезать её.</string>
-    <string name="toast_failed_to_start_recording">Не удалось начать запись</string>
     <string name="toast_subtitles_removed">Субтитры убраны</string>
     <string name="toast_failed_to_load_overlay_file">Не удалось загрузить оверлей</string>
     <string name="toast_freeze_frame_added_to_sequence">Стоп-кадр добавлен в очередь</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">Программный кодировщик (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">Быстрый экспорт с помощью видеочипа устройства</string>
     <string name="str_encoder_software_desc">Максимальная совместимость экспорта, используя процессор</string>
-    <string name="str_draw">Рисовать</string>
-    <string name="str_handwriting">Рукопись</string>
     <string name="str_brush_size">Размер кисти</string>
     <string name="str_clear">Очистить</string>
     <string name="str_haptic_feedback">Виброотклик</string>

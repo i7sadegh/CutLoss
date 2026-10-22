@@ -26,7 +26,6 @@
     <string name="str_text">النص</string>
     <string name="str_overlay">الطبقة</string>
     <string name="str_audio">الصوت</string>
-    <string name="str_voice">صوتي</string>
     <string name="str_subtitles">الترجمة</string>
     <string name="str_crop">الاقتصاص</string>
     <string name="str_none">لا شيء</string>
@@ -73,9 +72,6 @@
     <string name="str_custom">مخصص</string>
     <string name="str_trim_video">قص الفيديو</string>
     <string name="str_transitions">التحولات</string>
-    <string name="str_voice_over">التعليق الصوتي</string>
-    <string name="str_record_live_commentary_while_t">قم بتسجيل تعليق مباشر أثناء تشغيل الفيديو.</string>
-    <string name="str_tap_to_start_recording">انقر لبدء التسجيل</string>
     <string name="str_new_project">مشروع جديد</string>
     <string name="str_tap_to_select_media">انقر لتحديد الوسائط</string>
     <string name="str_free_open_source_nlimitless_cr">مجاني، مفتوح المصدر.\n إبداع بلا حدود.</string>
@@ -107,7 +103,6 @@
     <string name="str_troubleshooting_amp_wiki_guide">استكشاف الأخطاء وإصلاحها ودليل ويكي</string>
     <string name="str_if_you_encounter_any_export_is">إذا واجهت أي مشاكل في التصدير أو أخطاء في العرض، فانقر هنا لقراءة دليل ويكي الخاص بنا لحل المشكلات ورموز الأخطاء.</string>
     <string name="str_get_started">ابدأ الآن</string>
-    <string name="toast_microphone_permission_required">إذن الميكروفون مطلوب للتعليق الصوتي</string>
     <string name="toast_snapping_enabled">تم تفعيل الالتقاط</string>
     <string name="toast_snapping_disabled">تم تعطيل الالتقاط</string>
     <string name="toast_log_copied_to_clipboard">تم نسخ السجل إلى الحافظة</string>
@@ -115,7 +110,6 @@
     <string name="toast_analyzing_beats">جارٍ تحليل الإيقاعات...</string>
     <string name="toast_no_clear_beats_found">لم يتم العثور على إيقاعات واضحة.</string>
     <string name="toast_drag_the_handles_on_the_timeli">اسحب المقابض الموجودة على مسار الفيديو الرئيسي في المخطط الزمني لقص الفيديو.</string>
-    <string name="toast_failed_to_start_recording">فشل في بدء التسجيل</string>
     <string name="toast_subtitles_removed">تمت إزالة الترجمة</string>
     <string name="toast_failed_to_load_overlay_file">فشل في تحميل ملف التراكب</string>
     <string name="toast_freeze_frame_added_to_sequence">تمت إضافة إطار ثابت إلى التسلسل</string>
@@ -169,8 +163,6 @@
     <string name="str_encoder_software">برنامج التشفير (CPU - x264)</string>
     <string name="str_encoder_hardware_desc">أسرع أداء للتصدير باستخدام وحدة معالجة الرسومات (GPU) للجهاز</string>
     <string name="str_encoder_software_desc">تصدير متوافق بأقصى قدر باستخدام وحدة المعالجة المركزية</string>
-    <string name="str_draw">رسم</string>
-    <string name="str_handwriting">الكتابة اليدوية</string>
     <string name="str_brush_size">حجم الفرشاة</string>
     <string name="str_clear">مسح</string>
     <string name="str_haptic_feedback">ردود الفعل اللمسية</string>
