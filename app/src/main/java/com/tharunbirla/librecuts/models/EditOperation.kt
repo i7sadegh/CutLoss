@@ -366,23 +366,6 @@ sealed class EditOperation : Serializable {
         val maskConfig: MaskConfig = MaskConfig()
     ) : EditOperation()
 
-    data class AddSubtitles(
-        val subtitlesUri: Uri,
-        val srtContent: String,
-        val fileName: String,
-        val cues: List<SubtitleCue>,
-        val color: String = "#FFFFFF",
-        val backgroundColor: String = "none",
-        val fontSize: Int = 22,
-        val position: TextPosition = TextPosition.BOTTOM_CENTER,
-        val relativeX: Float? = null,
-        val relativeY: Float? = null,
-        val fontPath: String? = null,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation() {
-        fun hasCustomPosition(): Boolean = relativeX != null && relativeY != null
-    }
-
     /**
      * Adjust operation: Adjusts video properties for a specific clip index.
      * All properties range from -100 to 100, default is 0.
@@ -426,13 +409,6 @@ sealed class EditOperation : Serializable {
         enum class BackgroundType { COLOR, IMAGE, BLUR }
     }
 }
-
-data class SubtitleCue(
-    val startTimeMs: Long,
-    val endTimeMs: Long,
-    val text: String
-) : java.io.Serializable
-
 
 /**
  * Enum for text positioning options in video overlays.
@@ -497,7 +473,6 @@ val EditOperation.id: String
         is EditOperation.ColorFilter -> id
         is EditOperation.AddBackgroundAudio -> id
         is EditOperation.AddImageOverlay -> id
-        is EditOperation.AddSubtitles -> id
         is EditOperation.Adjust -> id
         is EditOperation.CanvasBackground -> id
     }

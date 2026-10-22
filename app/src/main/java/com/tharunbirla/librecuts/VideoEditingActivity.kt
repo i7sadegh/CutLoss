@@ -2133,12 +2133,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         overlay.setImageOperations(overlayOps)
                     }
 
-                    textOverlayView?.let { overlay ->
-                        val subOp = project.operations.filterIsInstance<EditOperation.AddSubtitles>().firstOrNull()
-                        overlay.subtitleOperation = subOp
-                        overlay.setSubtitleCues(subOp?.cues ?: emptyList())
-                    }
-
                     val cropOps = project.operations.filterIsInstance<EditOperation.Crop>()
                     if (cropOps.isNotEmpty()) {
                         applyCropPreview(cropOps.last().aspectRatio)
@@ -2656,6 +2650,19 @@ class VideoEditingActivity : AppCompatActivity() {
         if (newOp != null && newOpId != null) {
             viewModel.addOperation(newOp)
             viewModel.selectOperation(newOpId)
+        }
+    }
+
+    private fun pickBackgroundImage() {
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            type = "image/*"
+            addCategory(Intent.CATEGORY_OPENABLE)
+            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp"))
+        }
+        try {
+            startActivityForResult(intent, PICK_BACKGROUND_IMAGE_REQUEST)
+        } catch (e: Exception) {
+            Toast.makeText(this, "No app found to handle image selection", Toast.LENGTH_SHORT).show()
         }
     }
 
