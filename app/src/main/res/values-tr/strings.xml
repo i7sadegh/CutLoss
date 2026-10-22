@@ -23,7 +23,6 @@
     <string name="str_text">Metin</string>
     <string name="str_overlay">Kaplama</string>
     <string name="str_audio">Ses</string>
-    <string name="str_subtitles">Altyazı</string>
     <string name="str_crop">Kırp</string>
     <string name="str_none">Yok</string>
     <string name="trim">Kes</string>
@@ -43,12 +42,9 @@
     <string name="str_keyboard">Klavye</string>
     <string name="str_color">Renk</string>
     <string name="str_duplicate">Kopyala</string>
-    <string name="str_upload_subtitle_file">Altyazı Dosyası Yükle</string>
     <string name="done">Tamamlandı</string>
     <string name="str_downloads_librecuts">Downloads/Cutloss</string>
     <string name="str_adjust">Ayarla</string>
-    <string name="str_supports_standard_srt_formatte">Standart SRT biçimli dosyaları destekler</string>
-    <string name="str_subtitles_srt">subtitles.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Kaldır</string>
     <string name="str_save">Kaydet</string>
@@ -110,7 +106,6 @@
     <string name="toast_analyzing_beats">Ritimler analiz ediliyor...</string>
     <string name="toast_no_clear_beats_found">Belirgin ritim bulunamadı.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Kesmek için ana video izindeki tutamaçları sürükleyin.</string>
-    <string name="toast_subtitles_removed">Altyazılar kaldırıldı</string>
     <string name="toast_failed_to_load_overlay_file">Kaplama dosyası yüklenemedi</string>
     <string name="toast_freeze_frame_added_to_sequence">Kare dondurma sekansa eklendi</string>
     <string name="toast_failed_to_create_freeze_frame">Kare dondurma oluşturulamadı</string>

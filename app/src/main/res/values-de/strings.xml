@@ -35,7 +35,6 @@
     <string name="str_ducking">Absenkung</string>
     <string name="str_extract">Extrahieren</string>
     <string name="str_new_project">NEUES PROJEKT</string>
-    <string name="str_subtitles">Untertitel</string>
     <string name="str_apply_to_all">Für alle anwenden</string>
     <string name="str_beats">Takte</string>
     <string name="str_crop">Format</string>
@@ -44,7 +43,6 @@
     <string name="str_settings">Einstellungen</string>
     <string name="str_export_folder">Exportverzeichnis</string>
     <string name="str_color_filters">Farbfilter</string>
-    <string name="toast_subtitles_removed">Untertitel entfernt</string>
     <string name="toast_audio_extracted_to_new_layer">Audio in neue Spur extrahiert</string>
     <string name="toast_audio_track_added">Audiospur hinzugefügt</string>
     <string name="toast_export_cancelled">Export abgebrochen</string>
@@ -72,8 +70,6 @@
     <string name="str_filters">Filter</string>
     <string name="str_please_don_t_close_the_app">Bitte App nicht schließen</string>
     <string name="str_00_00_00_00_00_00">00:00 - 00:00 (00:00)</string>
-    <string name="str_upload_subtitle_file">Untertiteldatei laden</string>
-    <string name="str_supports_standard_srt_formatte">Unterstützt Standard-SRT-Dateien</string>
     <string name="str_fade">Blenden</string>
     <string name="str_fade_in">Einblenden</string>
     <string name="str_0_0s">0.0s</string>
@@ -130,7 +126,6 @@
     <string name="toast_seeker_is_not_over_the_selecte">Sucher ist nicht über dem ausgewählten Clip.</string>
     <string name="toast_failed_to_extract_audio">Audiospur konnte nicht extrahiert werden</string>
     <string name="toast_failed_to_load_selected_video">Ausgewähltes Video konnte nicht geladen werden</string>
-    <string name="toast_failed_to_parse_subtitle_file">Untertitelverarbeitung fehlgeschlagen. Bitte gültige SRT-Datei wählen.</string>
     <string name="toast_export_location_updated_succes">Export-Verzeichnis erfolgreich gesetzt!</string>
     <string name="toast_failed_to_select_folder">Verzeichnis konnte nicht ausgewählt werden</string>
     <string name="toast_video_exported_to_gallery_succ">Video erfolgreich exportiert!</string>
@@ -139,7 +134,6 @@
     <string name="toast_export_quality_set_to_medium">Mittlere Exportqualität gewählt</string>
     <string name="toast_export_quality_set_to_low">Niedrige Exportqualität gewählt</string>
     <string name="toast_log_copied">Protokoll kopiert</string>
-    <string name="str_subtitles_srt">Untertitel (.srt)</string>
     <string name="str_v1_0_beta4">v1.0-beta5</string>
     <string name="str_version_1_0">Version 1.0</string>
     <string name="str_video_export_folder">Video Exportverzeichnis</string>

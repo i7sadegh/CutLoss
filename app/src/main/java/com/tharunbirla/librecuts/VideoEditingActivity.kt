@@ -272,31 +272,6 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
-    private fun setupSubtitleFontSelector(subtitlesToolbar: View?) {
-        val toolbar = subtitlesToolbar ?: return
-        val btnSelectSubtitleFont = toolbar.findViewById<View>(R.id.btnSelectSubtitleFont) ?: return
-        val tvSelectedSubtitleFontName = toolbar.findViewById<TextView>(R.id.tvSelectedSubtitleFontName)
-
-        val allFonts = com.tharunbirla.librecuts.utils.FontManager.getAllFonts(this, fontFilePath)
-        val project = viewModel.project.value
-        val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-        val currentPath = subOp?.fontPath ?: fontFilePath
-        val activeFont = allFonts.find { it.path == currentPath } ?: allFonts.firstOrNull()
-        if (activeFont != null && tvSelectedSubtitleFontName != null) {
-            tvSelectedSubtitleFontName.text = activeFont.name
-        }
-
-        btnSelectSubtitleFont.setBounceClickListener {
-            showFontManagerBottomSheet { selectedFont ->
-                tvSelectedSubtitleFontName?.text = selectedFont.name
-                val currentSubOp = viewModel.project.value?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-                if (currentSubOp != null) {
-                    updateSubtitleOp(currentSubOp.copy(fontPath = selectedFont.path))
-                }
-            }
-        }
-    }
-
     private fun showFontManagerBottomSheet(onFontSelected: ((com.tharunbirla.librecuts.utils.FontItem) -> Unit)? = null) {
         val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
         val view = layoutInflater.inflate(R.layout.dialog_font_manager, null)
@@ -329,7 +304,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         onFontSelected?.invoke(fontItem)
                         draggableTextOverlay?.setFontPath(fontItem.path)
                         textEditingToolbar?.findViewById<View>(R.id.formatSettingsContainer)?.let { setupTextFontSelector(it) }
-                        setupSubtitleFontSelector(subtitlesEditingToolbar)
                         bottomSheet.dismiss()
                     },
                     onDelete = { fontItem ->
@@ -341,7 +315,6 @@ class VideoEditingActivity : AppCompatActivity() {
                                     Toast.makeText(this, "Font deleted", Toast.LENGTH_SHORT).show()
                                     refreshFontList()
                                     textEditingToolbar?.findViewById<View>(R.id.formatSettingsContainer)?.let { setupTextFontSelector(it) }
-                                    setupSubtitleFontSelector(subtitlesEditingToolbar)
                                 } else {
                                     Toast.makeText(this, "Failed to delete font", Toast.LENGTH_SHORT).show()
                                 }
@@ -443,8 +416,6 @@ class VideoEditingActivity : AppCompatActivity() {
     private var videoMaskOverlayView: com.tharunbirla.librecuts.customviews.VideoMaskOverlayView? = null
     private var mainVideoMaskContainer: com.tharunbirla.librecuts.customviews.MaskedFrameLayout? = null
     private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null
-    private var subtitlesEditingToolbar: View? = null
-    private var isSubtitlesEditingActive = false
 
     private var keyframeEditingToolbar: View? = null
     private var isKeyframeEditingMode = false
@@ -498,7 +469,6 @@ class VideoEditingActivity : AppCompatActivity() {
             if (importedFont != null) {
                 Toast.makeText(this, "Font '${importedFont.name}' imported", Toast.LENGTH_SHORT).show()
                 textEditingToolbar?.findViewById<View>(R.id.formatSettingsContainer)?.let { setupTextFontSelector(it) }
-                setupSubtitleFontSelector(subtitlesEditingToolbar)
                 activeFontSelectionCallback?.invoke(importedFont)
             } else {
                 Toast.makeText(this, "Failed to import font file. Must be a valid .ttf or .otf", Toast.LENGTH_LONG).show()
@@ -862,15 +832,7 @@ class VideoEditingActivity : AppCompatActivity() {
         }
 
         textOverlayView = try {
-            findViewById<com.tharunbirla.librecuts.customviews.TextOverlayView>(R.id.textOverlayView)?.also { overlay ->
-                overlay.onSubtitlePositionChanged = { relX, relY ->
-                    val project = viewModel.project.value
-                    val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-                    if (subOp != null) {
-                        updateSubtitleOp(subOp.copy(relativeX = relX, relativeY = relY))
-                    }
-                }
-            }
+            findViewById<com.tharunbirla.librecuts.customviews.TextOverlayView>(R.id.textOverlayView)
         } catch (e: Exception) {
             Log.w(TAG, "TextOverlayView not found in layout: ${e.message}")
             null
@@ -1861,47 +1823,6 @@ class VideoEditingActivity : AppCompatActivity() {
             null
         }
 
-        subtitlesEditingToolbar = try {
-            findViewById<View>(R.id.subtitlesEditingToolbar)?.also { toolbar ->
-                toolbar.findViewById<ImageButton>(R.id.btnCloseSubtitlesSheet)?.setBounceClickListener {
-                    exitSubtitlesEditingMode()
-                }
-                toolbar.findViewById<Button>(R.id.btnUploadSrt)?.setBounceClickListener {
-                    pickSrtFile()
-                }
-                toolbar.findViewById<View>(R.id.btnChangeSrt)?.setBounceClickListener {
-                    pickSrtFile()
-                }
-                toolbar.findViewById<Button>(R.id.btnDeleteSrt)?.setBounceClickListener {
-                    MaterialAlertDialogBuilder(this@VideoEditingActivity)
-                        .setTitle("Delete Subtitles")
-                        .setMessage("Are you sure you want to remove the subtitles track?")
-                        .setPositiveButton("Delete") { _, _ ->
-                            removeSubtitles()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
-                }
-                toolbar.findViewById<Button>(R.id.btnSaveSubtitles)?.setBounceClickListener {
-                    exitSubtitlesEditingMode()
-                }
-                toolbar.findViewById<Slider>(R.id.subtitleFontSizeSlider)?.addOnChangeListener { _, value, fromUser ->
-                    if (fromUser) {
-                        val project = viewModel.project.value
-                        val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-                        if (subOp != null) {
-                            val newSize = value.toInt()
-                            updateSubtitleOp(subOp.copy(fontSize = newSize))
-                            toolbar.findViewById<TextView>(R.id.tvSubtitleFontSizeValue)?.text = "$newSize"
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Subtitles editing toolbar not found: ${e.message}")
-            null
-        }
-
         backgroundEditingToolbar = try {
             findViewById<View>(R.id.backgroundEditingToolbar)?.also { toolbar ->
                 toolbar.findViewById<View>(R.id.btnBackFromBackground)?.setBounceClickListener {
@@ -1999,11 +1920,6 @@ class VideoEditingActivity : AppCompatActivity() {
             cropAction()
         }
 
-        findViewById<ImageButton>(R.id.btnSubtitles).setBounceClickListener {
-            setActiveToolButton(R.id.btnSubtitles)
-            subtitlesAction()
-        }
-
         findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {
             setActiveToolButton(R.id.btnCanvasBackground)
             canvasBackgroundAction()
@@ -2080,7 +1996,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     private fun setActiveToolButton(activeId: Int) {
         if (isShowingPreview) dismissPreview()
-        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnSubtitles, R.id.btnCanvasBackground)
+        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnCanvasBackground)
         for (id in toolIds) {
             val btn = findViewById<ImageButton>(id) ?: continue
             btn.setBackgroundResource(if (id == activeId) R.drawable.tool_button_active else R.drawable.tool_button_inactive)
@@ -2221,10 +2137,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         val subOp = project.operations.filterIsInstance<EditOperation.AddSubtitles>().firstOrNull()
                         overlay.subtitleOperation = subOp
                         overlay.setSubtitleCues(subOp?.cues ?: emptyList())
-                    }
-
-                    if (isSubtitlesEditingActive) {
-                        updateSubtitlesUi()
                     }
 
                     val cropOps = project.operations.filterIsInstance<EditOperation.Crop>()
@@ -2654,15 +2566,11 @@ class VideoEditingActivity : AppCompatActivity() {
             draggableImageOverlay?.commitImage()
             isImageEditingActive = false
         }
-        if (isSubtitlesEditingActive) {
-            isSubtitlesEditingActive = false
-        }
         textEditingToolbar?.visibility = View.GONE
         imageEditingToolbar?.visibility = View.GONE
         videoEditingToolbar?.visibility = View.GONE
         audioEditingToolbar?.visibility = View.GONE
         cropEditingToolbar?.visibility = View.GONE
-        subtitlesEditingToolbar?.visibility = View.GONE
         backgroundEditingToolbar?.visibility = View.GONE
     }
 
@@ -2749,119 +2657,6 @@ class VideoEditingActivity : AppCompatActivity() {
             viewModel.addOperation(newOp)
             viewModel.selectOperation(newOpId)
         }
-    }
-
-    private fun subtitlesAction() {
-        enterSubtitlesEditingMode()
-    }
-
-    private fun enterSubtitlesEditingMode() {
-        closeActiveEditingModes()
-        selectedVideoIndex = null
-        isSubtitlesEditingActive = true
-        textOverlayView?.isSubtitlesEditingActive = true
-        val project = viewModel.project.value
-        val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-        textOverlayView?.subtitleOperation = subOp
-        subtitlesEditingToolbar?.visibility = View.VISIBLE
-        updateSubtitlesUi()
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
-        findViewById<View>(R.id.timelineContainer)?.visibility = View.GONE
-        findViewById<View>(R.id.timelineDivider)?.visibility = View.GONE
-        if (::player.isInitialized && player.isPlaying) {
-            player.pause()
-        }
-    }
-
-    private fun exitSubtitlesEditingMode() {
-        isSubtitlesEditingActive = false
-        textOverlayView?.isSubtitlesEditingActive = false
-        val subOp = viewModel.project.value?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-        textOverlayView?.subtitleOperation = subOp
-        subtitlesEditingToolbar?.visibility = View.GONE
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.VISIBLE
-        findViewById<View>(R.id.timelineContainer)?.visibility = View.VISIBLE
-        findViewById<View>(R.id.timelineDivider)?.visibility = View.VISIBLE
-        setActiveToolButton(0)
-    }
-
-    private fun updateSubtitlesUi() {
-        val toolbar = subtitlesEditingToolbar ?: return
-        val project = viewModel.project.value
-        val subOp = project?.operations?.find { it is EditOperation.AddSubtitles } as? EditOperation.AddSubtitles
-        val layoutNo = toolbar.findViewById<View>(R.id.layoutNoSubtitles)
-        val layoutHas = toolbar.findViewById<View>(R.id.layoutHasSubtitles)
-        val tvFileName = toolbar.findViewById<TextView>(R.id.tvSubtitleFileName)
-
-        if (subOp != null) {
-            layoutNo?.visibility = View.GONE
-            layoutHas?.visibility = View.VISIBLE
-            tvFileName?.text = subOp.fileName
-
-            val slider = toolbar.findViewById<Slider>(R.id.subtitleFontSizeSlider)
-            val tvValue = toolbar.findViewById<TextView>(R.id.tvSubtitleFontSizeValue)
-            slider?.value = subOp.fontSize.toFloat().coerceIn(10f, 80f)
-            tvValue?.text = "${subOp.fontSize}"
-
-            setupSubtitleFontSelector(toolbar)
-        } else {
-            layoutNo?.visibility = View.VISIBLE
-            layoutHas?.visibility = View.GONE
-        }
-    }
-
-    private fun updateSubtitleOp(newOp: EditOperation.AddSubtitles) {
-        viewModel.updateOperation(newOp)
-        textOverlayView?.subtitleOperation = newOp
-    }
-
-    private fun pickSrtFile() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "*/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-        }
-        try {
-            startActivityForResult(Intent.createChooser(intent, "Select SRT Subtitle File"), PICK_SRT_REQUEST)
-        } catch (e: android.content.ActivityNotFoundException) {
-            try {
-                startActivityForResult(intent, PICK_SRT_REQUEST)
-            } catch (e2: android.content.ActivityNotFoundException) {
-                Toast.makeText(this, "No app found to handle this action", Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun pickBackgroundImage() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "image/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp"))
-        }
-        try {
-            startActivityForResult(intent, PICK_BACKGROUND_IMAGE_REQUEST)
-        } catch (e: Exception) {
-            Toast.makeText(this, "No app found to handle image selection", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun removeSubtitles() {
-        val project = viewModel.project.value ?: return
-        val subOp = project.operations.filterIsInstance<EditOperation.AddSubtitles>().firstOrNull() ?: return
-        viewModel.deleteOperation(subOp.id)
-        textOverlayView?.subtitleOperation = null
-        textOverlayView?.setSubtitleCues(emptyList())
-        textOverlayView?.isSubtitlesEditingActive = false
-        
-        // Immediately update toolbar UI to reflect empty state
-        val toolbar = subtitlesEditingToolbar
-        if (toolbar != null) {
-            val layoutNo = toolbar.findViewById<View>(R.id.layoutNoSubtitles)
-            val layoutHas = toolbar.findViewById<View>(R.id.layoutHasSubtitles)
-            layoutNo?.visibility = View.VISIBLE
-            layoutHas?.visibility = View.GONE
-        }
-        
-        Toast.makeText(this, R.string.toast_subtitles_removed, Toast.LENGTH_SHORT).show()
     }
 
     private fun mediaOverlayAction() {
@@ -4231,72 +4026,6 @@ class VideoEditingActivity : AppCompatActivity() {
         } else if (requestCode == PICK_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {
             data?.data?.let { imageUri ->
                 showImageOverlayConfig(imageUri)
-            }
-        } else if (requestCode == PICK_SRT_REQUEST && resultCode == Activity.RESULT_OK) {
-            data?.data?.let { srtUri ->
-                lifecycleScope.launch {
-                    val tempFile = withContext(Dispatchers.IO) { copyContentUriToTempFile(srtUri, "subtitles", ".srt") }
-                    if (tempFile != null) {
-                        val tempUri = Uri.fromFile(tempFile)
-                        val content = withContext(Dispatchers.IO) {
-                            try {
-                                val bytes = tempFile.readBytes()
-                                if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) {
-                                    String(bytes, 2, bytes.size - 2, kotlin.text.Charsets.UTF_16LE)
-                                } else if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) {
-                                    String(bytes, 2, bytes.size - 2, kotlin.text.Charsets.UTF_16BE)
-                                } else if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) {
-                                    String(bytes, 3, bytes.size - 3, kotlin.text.Charsets.UTF_8)
-                                } else {
-                                    String(bytes, kotlin.text.Charsets.UTF_8)
-                                }
-                            } catch (e: Exception) {
-                                ""
-                            }
-                        }
-                        val cues = withContext(Dispatchers.IO) {
-                            try {
-                                com.tharunbirla.librecuts.utils.SubtitleParser.parse(content)
-                            } catch (e: Exception) {
-                                emptyList()
-                            }
-                        }
-                        if (cues.isNotEmpty()) {
-                            // First remove any existing subtitles operations so we only have one subtitles track
-                            val project = viewModel.project.value
-                            project?.operations?.filterIsInstance<EditOperation.AddSubtitles>()?.forEach { op ->
-                                viewModel.deleteOperation(op.id)
-                            }
-                            
-                            val name = try {
-                                var displayName = "subtitles.srt"
-                                contentResolver.query(srtUri, null, null, null, null)?.use { cursor ->
-                                    val nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                                    if (nameIndex != -1 && cursor.moveToFirst()) {
-                                        displayName = cursor.getString(nameIndex)
-                                    }
-                                }
-                                displayName
-                            } catch (e: Exception) {
-                                "subtitles.srt"
-                            }
-
-                            viewModel.addOperation(
-                                EditOperation.AddSubtitles(
-                                    subtitlesUri = tempUri,
-                                    srtContent = content,
-                                    fileName = name,
-                                    cues = cues
-                                )
-                            )
-                            Toast.makeText(this@VideoEditingActivity, "Subtitles added: ${cues.size} captions", Toast.LENGTH_SHORT).show()
-                            updateSubtitlesUi()
-                            textOverlayView?.setSubtitleCues(cues)
-                        } else {
-                            Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_parse_subtitle_file, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                }
             }
         } else if (requestCode == PICK_DIRECTORY_REQUEST && resultCode == Activity.RESULT_OK) {
             data?.data?.let { treeUri ->
@@ -8834,7 +8563,6 @@ class VideoEditingActivity : AppCompatActivity() {
         private const val PICK_VIDEO_REQUEST = 1
         private const val PICK_AUDIO_REQUEST = 2
         private const val PICK_IMAGE_REQUEST = 3
-        private const val PICK_SRT_REQUEST = 4
         private const val PICK_DIRECTORY_REQUEST = 5
         private const val PICK_BACKGROUND_IMAGE_REQUEST = 6
     }

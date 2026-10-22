@@ -26,7 +26,6 @@
     <string name="str_text">टेक्स्ट</string>
     <string name="str_overlay">ओवरले</string>
     <string name="str_audio">ऑडियो</string>
-    <string name="str_subtitles">सबटाइटल</string>
     <string name="str_crop">क्रॉप</string>
     <string name="str_none">कोई नहीं</string>
     <string name="str_adjust">समायोजित करें</string>
@@ -47,9 +46,6 @@
     <string name="str_keyboard">कीबोर्ड</string>
     <string name="str_color">रंग</string>
     <string name="str_duplicate">डुप्लिकेट करें</string>
-    <string name="str_upload_subtitle_file">सबटाइटल फ़ाइल अपलोड करें</string>
-    <string name="str_supports_standard_srt_formatte">मानक SRT प्रारूप फ़ाइलों का समर्थन करता है</string>
-    <string name="str_subtitles_srt">subtitles.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">हटाएं</string>
     <string name="str_save">सहेजें</string>
@@ -110,7 +106,6 @@
     <string name="toast_analyzing_beats">बीट्स का विश्लेषण किया जा रहा है...</string>
     <string name="toast_no_clear_beats_found">कोई स्पष्ट बीट नहीं मिला।</string>
     <string name="toast_drag_the_handles_on_the_timeli">ट्रिम करने के लिए टाइमलाइन के मुख्य वीडियो ट्रैक पर हैंडल खींचें।</string>
-    <string name="toast_subtitles_removed">सबटाइटल हटा दिए गए</string>
     <string name="toast_failed_to_load_overlay_file">ओवरले फ़ाइल लोड करने में विफल</string>
     <string name="toast_freeze_frame_added_to_sequence">फ़्रीज़ फ़्रेम अनुक्रम में जोड़ा गया</string>
     <string name="toast_failed_to_create_freeze_frame">फ़्रीज़ फ़्रेम बनाने में विफल</string>
@@ -124,7 +119,6 @@
     <string name="toast_failed_to_extract_audio">ऑडियो निकालने में विफल</string>
     <string name="toast_failed_to_load_selected_video">चयनित वीडियो लोड करने में विफल</string>
     <string name="toast_audio_track_added">ऑडियो ट्रैक जोड़ा गया</string>
-    <string name="toast_failed_to_parse_subtitle_file">सबटाइटल फ़ाइल पार्स करने में विफल। कृपया सुनिश्चित करें कि यह एक वैध SRT फ़ाइल है।</string>
     <string name="toast_export_location_updated_succes">निर्यात स्थान सफलतापूर्वक अपडेट किया गया!</string>
     <string name="toast_failed_to_select_folder">फ़ोल्डर चुनने में विफल</string>
     <string name="toast_video_exported_to_gallery_succ">वीडियो सफलतापूर्वक गैलरी में निर्यात किया गया!</string>

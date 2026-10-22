@@ -26,7 +26,6 @@
     <string name="str_text">உரை</string>
     <string name="str_overlay">மேலடுக்கு</string>
     <string name="str_audio">ஆடியோ</string>
-    <string name="str_subtitles">துணைத்தலைப்புகள்</string>
     <string name="str_crop">செதுக்கு</string>
     <string name="str_none">எதுவுமில்லை</string>
     <string name="str_adjust">சரிசெய்</string>
@@ -47,9 +46,6 @@
     <string name="str_keyboard">விசைப்பலகை</string>
     <string name="str_color">வண்ணம்</string>
     <string name="str_duplicate">நகலெடு</string>
-    <string name="str_upload_subtitle_file">துணைத்தலைப்புக் கோப்பைப் பதிவேற்று</string>
-    <string name="str_supports_standard_srt_formatte">நிலையான SRT வடிவக் கோப்புகளை ஆதரிக்கிறது</string>
-    <string name="str_subtitles_srt">subtitles.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">அகற்று</string>
     <string name="str_save">சேமி</string>
@@ -110,7 +106,6 @@
     <string name="toast_analyzing_beats">துடிப்புகள் பகுப்பாய்வு செய்யப்படுகின்றன...</string>
     <string name="toast_no_clear_beats_found">தெளிவான துடிப்புகள் எதுவும் காணப்படவில்லை.</string>
     <string name="toast_drag_the_handles_on_the_timeli">நறுக்குவதற்கு காலவரிசையின் முதன்மை வீடியோ டிராக்கில் உள்ள கைப்பிடிகளை இழுக்கவும்.</string>
-    <string name="toast_subtitles_removed">துணைத்தலைப்புகள் நீக்கப்பட்டன</string>
     <string name="toast_failed_to_load_overlay_file">மேலடுக்குக் கோப்பை ஏற்ற முடியவில்லை</string>
     <string name="toast_freeze_frame_added_to_sequence">வரிசையில் நிலையான பிரேம் சேர்க்கப்பட்டது</string>
     <string name="toast_failed_to_create_freeze_frame">நிலையான பிரேமை உருவாக்க முடியவில்லை</string>
@@ -124,7 +119,6 @@
     <string name="toast_failed_to_extract_audio">ஆடியோவைப் பிரித்தெடுக்க முடியவில்லை</string>
     <string name="toast_failed_to_load_selected_video">தேர்ந்தெடுக்கப்பட்ட வீடியோவை(களை) ஏற்ற முடியவில்லை</string>
     <string name="toast_audio_track_added">ஆடியோ ட்ராக் சேர்க்கப்பட்டது</string>
-    <string name="toast_failed_to_parse_subtitle_file">துணைத்தலைப்புக் கோப்பைப் பாகுபடுத்த முடியவில்லை. அது செல்லுபடியாகும் SRT கோப்பு என்பதை உறுதிப்படுத்தவும்.</string>
     <string name="toast_export_location_updated_succes">ஏற்றுமதி இருப்பிடம் வெற்றிகரமாகப் புதுப்பிக்கப்பட்டது!</string>
     <string name="toast_failed_to_select_folder">கோப்புறையைத் தேர்ந்தெடுக்க முடியவில்லை</string>
     <string name="toast_video_exported_to_gallery_succ">வீடியோ கேலரிக்கு வெற்றிகரமாக ஏற்றுமதி செய்யப்பட்டது!</string>

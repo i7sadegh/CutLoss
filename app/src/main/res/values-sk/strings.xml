@@ -26,7 +26,6 @@
     <string name="str_text">Text</string>
     <string name="str_overlay">Vrstva</string>
     <string name="str_audio">Zvuk</string>
-    <string name="str_subtitles">Titulky</string>
     <string name="str_1x">1x</string>
     <string name="str_1_5x">1.5x</string>
     <string name="str_2x">2x</string>
@@ -82,7 +81,6 @@
     <string name="toast_analyzing_beats">Analyzujem rytmický takt....</string>
     <string name="toast_no_clear_beats_found">Neboli nájdené žiadne jasné rytmy.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Na skrátenie videa posuňte úchytky na hlavnej časovej osi.</string>
-    <string name="toast_subtitles_removed">Titulky boli odstránené</string>
     <string name="toast_failed_to_load_overlay_file">Nepodarilo sa načítať súbor vrstvy</string>
     <string name="toast_freeze_frame_added_to_sequence">Do sekvencie bol pridaný statický snímok</string>
     <string name="toast_failed_to_create_freeze_frame">Nepodarilo sa vytvoriť statický snímok</string>
@@ -96,7 +94,6 @@
     <string name="toast_failed_to_extract_audio">Nepodarilo sa extrahovať zvuk</string>
     <string name="toast_failed_to_load_selected_video">Vybrané videá sa nepodarilo načítať</string>
     <string name="toast_audio_track_added">Pridaná zvuková stopa</string>
-    <string name="toast_failed_to_parse_subtitle_file">Nepodarilo sa analyzovať súbor s titulkami. Uistite sa, že ide o platný súbor SRT.</string>
     <string name="toast_export_location_updated_succes">Umiestnenie exportu bolo úspešne aktualizované!</string>
     <string name="toast_failed_to_select_folder">Nepodarilo sa vybrať priečinok</string>
     <string name="toast_video_exported_to_gallery_succ">Video sa úspešne exportovalo do Galérie!</string>
@@ -143,9 +140,6 @@
     <string name="str_keyboard">Klávesnica</string>
     <string name="str_color">Farba</string>
     <string name="str_duplicate">Duplikovať</string>
-    <string name="str_upload_subtitle_file">Nahrať súbor s titulkami</string>
-    <string name="str_supports_standard_srt_formatte">Podporuje súbory vo formáte SRT</string>
-    <string name="str_subtitles_srt">titulky.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Odstrániť</string>
     <string name="str_save">Uložiť</string>

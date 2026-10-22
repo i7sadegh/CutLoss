@@ -8,7 +8,6 @@
     <string name="str_0_00_0_00">0:00 / 0:00</string>
     <string name="str_text">Κείμενο</string>
     <string name="str_audio">Ήχος</string>
-    <string name="str_subtitles">Υπότιτλοι</string>
     <string name="str_adjust">Προσαρμογή</string>
     <string name="str_filters">Φίλτρα</string>
     <string name="str_speed">Ταχύτητα</string>
@@ -20,7 +19,6 @@
     <string name="str_keyboard">Πληκτρολόγιο</string>
     <string name="str_color">Χρώμα</string>
     <string name="str_duplicate">Διπλότυπο</string>
-    <string name="str_subtitles_srt">υπότιτλοι.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Αφαίρεση</string>
     <string name="str_save">Αποθήκευση</string>
@@ -41,5 +39,4 @@
     <string name="str_star_on_github">Αστέρι στο GitHub</string>
     <string name="str_0_0s">0.0s</string>
     <string name="str_version_1_0">Έκδοση 1.0</string>
-    <string name="toast_subtitles_removed">Οι υπότιτλοι αφαιρέθηκαν</string>
 </resources>

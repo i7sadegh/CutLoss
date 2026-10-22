@@ -26,7 +26,6 @@
     <string name="str_text">Testo</string>
     <string name="str_overlay">Sovrapposizione</string>
     <string name="str_audio">Audio</string>
-    <string name="str_subtitles">Sottotitoli</string>
     <string name="str_crop">Ritaglia</string>
     <string name="str_none">Nessuno</string>
     <string name="str_adjust">Regola</string>
@@ -47,9 +46,6 @@
     <string name="str_keyboard">Tastiera</string>
     <string name="str_color">Colore</string>
     <string name="str_duplicate">Duplica</string>
-    <string name="str_upload_subtitle_file">Carica File Sottotitoli</string>
-    <string name="str_supports_standard_srt_formatte">Supporta file formattati in SRT standard</string>
-    <string name="str_subtitles_srt">subtitles.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Rimuovi</string>
     <string name="str_save">Salva</string>
@@ -110,7 +106,6 @@
     <string name="toast_analyzing_beats">Analizzo ritmo...</string>
     <string name="toast_no_clear_beats_found">Nessun chiaro ritmo trovato.</string>
     <string name="toast_drag_the_handles_on_the_timeli">Sposta le maniglie sulla traccia video principale della timeline per tagliare.</string>
-    <string name="toast_subtitles_removed">Sottotitoli rimossi</string>
     <string name="toast_failed_to_load_overlay_file">Impossibile caricare file sovrapposizione</string>
     <string name="toast_freeze_frame_added_to_sequence">Fotogramma congelato aggiunto alla sequenza</string>
     <string name="toast_failed_to_create_freeze_frame">Impossibile creare fotogramma congelato</string>
@@ -124,7 +119,6 @@
     <string name="toast_failed_to_extract_audio">Impossibile estrarre audio</string>
     <string name="toast_failed_to_load_selected_video">Impossibile caricare video selezionato/i</string>
     <string name="toast_audio_track_added">Traccia audio aggiunta</string>
-    <string name="toast_failed_to_parse_subtitle_file">Impossibile decodificare file sottotitoli. Per favore, assicurarsi che sia un file SRT valido.</string>
     <string name="toast_export_location_updated_succes">Percorso di esportazione aggiornato correttamente!</string>
     <string name="toast_failed_to_select_folder">Impossibile selezionare cartella</string>
     <string name="toast_video_exported_to_gallery_succ">Video esportato in Galleria con successo!</string>

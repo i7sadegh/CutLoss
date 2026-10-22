@@ -25,7 +25,6 @@
     <string name="str_text">文本</string>
     <string name="str_overlay">叠加层</string>
     <string name="str_audio">音频</string>
-    <string name="str_subtitles">字幕</string>
     <string name="str_crop">裁剪</string>
     <string name="str_none">无</string>
     <string name="str_adjust">调整</string>
@@ -46,9 +45,6 @@
     <string name="str_keyboard">键盘</string>
     <string name="str_color">颜色</string>
     <string name="str_duplicate">复制副本</string>
-    <string name="str_upload_subtitle_file">上传字幕文件</string>
-    <string name="str_supports_standard_srt_formatte">支持标准 SRT 格式文件</string>
-    <string name="str_subtitles_srt">字幕.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">移除</string>
     <string name="str_save">保存</string>
@@ -109,7 +105,6 @@
     <string name="toast_analyzing_beats">正在分析节拍...</string>
     <string name="toast_no_clear_beats_found">未找到明显的节拍。</string>
     <string name="toast_drag_the_handles_on_the_timeli">拖动时间线主视频轨道上的控制柄进行修剪。</string>
-    <string name="toast_subtitles_removed">字幕已移除</string>
     <string name="toast_failed_to_load_overlay_file">加载叠加层文件失败</string>
     <string name="toast_freeze_frame_added_to_sequence">已将定格帧添加到序列中</string>
     <string name="toast_failed_to_create_freeze_frame">创建定格帧失败</string>
@@ -123,7 +118,6 @@
     <string name="toast_failed_to_extract_audio">提取音频失败</string>
     <string name="toast_failed_to_load_selected_video">加载所选视频失败</string>
     <string name="toast_audio_track_added">已添加音频轨道</string>
-    <string name="toast_failed_to_parse_subtitle_file">解析字幕文件失败。请确保它是有效的 SRT 文件。</string>
     <string name="toast_export_location_updated_succes">导出位置已成功更新！</string>
     <string name="toast_failed_to_select_folder">选择文件夹失败</string>
     <string name="toast_video_exported_to_gallery_succ">视频已成功导出到图库！</string>

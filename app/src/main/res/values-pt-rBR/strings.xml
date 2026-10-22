@@ -26,7 +26,6 @@
     <string name="str_text">Texto</string>
     <string name="str_overlay">Sobreposição</string>
     <string name="str_audio">Áudio</string>
-    <string name="str_subtitles">Legendas</string>
     <string name="str_crop">Recortar</string>
     <string name="str_none">Nenhum</string>
     <string name="str_adjust">Ajustar</string>
@@ -47,9 +46,6 @@
     <string name="str_keyboard">Teclado</string>
     <string name="str_color">Cor</string>
     <string name="str_duplicate">Duplicar</string>
-    <string name="str_upload_subtitle_file">Upload de arquivo de legenda</string>
-    <string name="str_supports_standard_srt_formatte">Suporta arquivos comuns formatados em STR</string>
-    <string name="str_subtitles_srt">legendas.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Remover</string>
     <string name="str_save">Salvar</string>
@@ -100,14 +96,12 @@
     <string name="str_if_you_encounter_any_export_is">Se você encontrar qualquer problema de exportação ou erros de renderização, clique aqui para ler nosso guia na wiki para solução de problemas e códigos de erro.</string>
     <string name="str_get_started">Comece</string>
     <string name="toast_log_copied_to_clipboard">Log copiado para a área de transferência</string>
-    <string name="toast_subtitles_removed">Legendas removidas</string>
     <string name="toast_failed_to_load_overlay_file">Falhou em carregar o arquivo de overlay</string>
     <string name="toast_failed_to_apply_speed">Falhou em aplicar a velocidade</string>
     <string name="toast_audio_extracted_to_new_layer">Áudio extraido para uma nova camada</string>
     <string name="toast_failed_to_extract_audio">Falhou em extrair o áudio</string>
     <string name="toast_failed_to_load_selected_video">Falhou em carregar o(s) vídeo(s) selecionado(s)</string>
     <string name="toast_audio_track_added">Trilha de áudio adicionada</string>
-    <string name="toast_failed_to_parse_subtitle_file">Falhou em processar o arquivo de legenda. Por favor verifique se é um arquivo SRT válido.</string>
     <string name="toast_export_location_updated_succes">Localização de exportação atualizada com sucesso!</string>
     <string name="toast_failed_to_select_folder">Falhou em selecionar a pasta</string>
     <string name="toast_video_exported_to_gallery_succ">Vídeo exportado para a galeria com sucesso!</string>

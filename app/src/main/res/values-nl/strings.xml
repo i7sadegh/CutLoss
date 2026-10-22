@@ -24,7 +24,6 @@
     <string name="str_import_video">Importeer Video</string>
     <string name="str_text">Tekst</string>
     <string name="str_audio">Geluid</string>
-    <string name="str_subtitles">Ondertitel</string>
     <string name="str_crop">Bijsnijden</string>
     <string name="str_none">Geen</string>
     <string name="str_adjust">Aanpassen</string>
@@ -44,9 +43,6 @@
     <string name="str_keyboard">Toetsenbord</string>
     <string name="str_color">Kleur</string>
     <string name="str_duplicate">Dupliceren</string>
-    <string name="str_upload_subtitle_file">Upload ondertitel bestand</string>
-    <string name="str_supports_standard_srt_formatte">Ondersteund standaard SRT geformeerde bestanden</string>
-    <string name="str_subtitles_srt">ondertitels.srt</string>
     <string name="str_22">22</string>
     <string name="str_remove">Verwijderen</string>
     <string name="str_save">Opslaan</string>
@@ -99,7 +95,6 @@
     <string name="toast_snapping_disabled">Snapping uitgeschakeld</string>
     <string name="toast_log_copied_to_clipboard">Log gekopieerd naar klembord</string>
     <string name="toast_drag_the_handles_on_the_timeli">Sleep de handgrepen op het hoofdvideospoor van de tijdlijn om te snijden.</string>
-    <string name="toast_subtitles_removed">Ondertitels verwijderd</string>
     <string name="toast_failed_to_load_overlay_file">Overlaybestand kon niet geladen worden</string>
     <string name="toast_failed_to_apply_speed_reset">Kon snelheid niet resetten</string>
     <string name="toast_failed_to_reverse_speed_proxy">Snelheidsproxy kon niet omgedraaid worden</string>
@@ -111,7 +106,6 @@
     <string name="toast_failed_to_extract_audio">Kon geluid niet extraheren</string>
     <string name="toast_failed_to_load_selected_video">Kon geselecteerde video(s) niet laden</string>
     <string name="toast_audio_track_added">Geluidsband toegevoegd</string>
-    <string name="toast_failed_to_parse_subtitle_file">Kon ondertitel bestand niet laden. Controleer A.U.B. of het een valide SRT bestand is.</string>
     <string name="toast_export_location_updated_succes">Exportlocatie bijgewerkt!</string>
     <string name="toast_failed_to_select_folder">Kan map niet selecteren</string>
     <string name="toast_video_exported_to_gallery_succ">Video export naar galerij gelukt!</string>
