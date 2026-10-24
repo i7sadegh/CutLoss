@@ -380,47 +380,6 @@ class VideoEditingViewModel : ViewModel() {
         return "drawtext=${fontPart}text='$escapedText':fontcolor='${formatColorForFFmpeg(op.color)}':fontsize=${op.fontSize}:$positionPart$enablePart$alphaPart$borderPart$alignPart$lineSpacingPart"
     }
 
-    private fun buildFFmpegMaskAlphaExpr(
-        mc: EditOperation.MaskConfig,
-        cx: String,
-        cy: String,
-        mw: String,
-        mh: String,
-        cosA: String,
-        sinA: String,
-        startTimeMs: Long = 0L,
-        timeVar: String = "T"
-    ): String {
-        val dx = "(X - ($cx))"
-        val dy = "(Y - ($cy))"
-        val rx = "($dx * $cosA + $dy * $sinA)"
-        val ry = "(-$dx * $sinA + $dy * $cosA)"
-
-        val featherExpr = if (mc.featherKeyframes.isNotEmpty()) {
-            buildFFmpegInterpolationExpr(mc.featherKeyframes, false, mc.feather, startTimeMs, timeVar)
-        } else {
-            mc.feather.toString()
-        }
-        val fPx = "(max(0.1\\, ($featherExpr)*0.5))"
-
-        val shapeExpr = when (mc.shape) {
-            EditOperation.MaskShape.RECTANGLE ->
-                "clip(255 * ($mw/2 + $fPx - abs($rx)) / (2 * $fPx)\\, 0\\, 255) * clip(255 * ($mh/2 + $fPx - abs($ry)) / (2 * $fPx)\\, 0\\, 255) / 255"
-            EditOperation.MaskShape.ELLIPSE ->
-                "clip(255 * (1 + ($fPx/($mw/2)) - sqrt(pow($rx/($mw/2)\\, 2) + pow($ry/($mh/2)\\, 2))) / (2 * ($fPx/($mw/2)))\\, 0\\, 255)"
-            EditOperation.MaskShape.SPLIT ->
-                "clip(255 * ($ry + $fPx) / (2 * $fPx)\\, 0\\, 255)"
-            EditOperation.MaskShape.SHUTTER ->
-                "clip(255 * ($mh/2 + $fPx - abs($ry)) / (2 * $fPx)\\, 0\\, 255)"
-            EditOperation.MaskShape.HEART ->
-                "clip(255 * (1 + ($fPx/($mw/2)) - sqrt(pow($rx/($mw/2)\\, 2) + pow(($ry + abs($rx)*0.5)/($mh/2)\\, 2))) / (2 * ($fPx/($mw/2)))\\, 0\\, 255)"
-            EditOperation.MaskShape.STAR ->
-                "clip(255 * (1 + ($fPx/($mw/2)) - (pow(abs($rx)/($mw/2)\\, 0.7) + pow(abs($ry)/($mh/2)\\, 0.7))) / (2 * ($fPx/($mw/2)))\\, 0\\, 255)"
-            else -> "255"
-        }
-
-        return if (mc.isInverted) "(255 - ($shapeExpr))" else "($shapeExpr)"
-    }
 
     private fun buildFFmpegInterpolationExpr(
         keyframes: List<EditOperation.KeyframePoint>,
@@ -495,66 +454,7 @@ class VideoEditingViewModel : ViewModel() {
         }
     }
 
-    private fun getFFmpegFilterForAdjust(op: EditOperation.Adjust): String? {
-        val filters = mutableListOf<String>()
 
-        // 1. eq filter (brightness, contrast, saturation)
-        if (op.brightness != 0 || op.contrast != 0 || op.saturation != 0) {
-            val b = op.brightness / 100.0
-            val c = 1.0 + (op.contrast / 100.0)
-            val s = 1.0 + (op.saturation / 100.0)
-            filters.add("eq=brightness=$b:contrast=$c:saturation=$s")
-        }
-
-        // 2. exposure
-        if (op.exposure != 0) {
-            val ev = (op.exposure / 100.0) * 3.0
-            filters.add("exposure=exposure=$ev")
-        }
-
-        // 3. warmth (colorbalance)
-        if (op.warmth != 0) {
-            val w = (op.warmth / 100.0) * 0.3
-            filters.add("colorbalance=rs=$w:rm=$w:rh=$w:bs=${-w}:bm=${-w}:bh=${-w}")
-        }
-
-        // 4. shadows & highlights (emulated via standard FFmpeg 'curves' filter)
-        if (op.shadow != 0 || op.highlights != 0) {
-            val yShadow = (0.25 + (op.shadow / 100.0) * 0.15).coerceIn(0.01, 0.99)
-            val yHighlight = (0.75 + (op.highlights / 100.0) * 0.15).coerceIn(0.01, 0.99)
-            val sStr = String.format(java.util.Locale.US, "%.3f", yShadow)
-            val hStr = String.format(java.util.Locale.US, "%.3f", yHighlight)
-            filters.add("curves=m='0/0 0.25/$sStr 0.75/$hStr 1/1'")
-        }
-
-        // 5. sharpen (unsharp)
-        if (op.sharpen != 0) {
-            val amt = (op.sharpen / 100.0) * 1.5
-            filters.add("unsharp=luma_amount=$amt")
-        }
-
-        // 6. vignette
-        if (op.vignette != 0) {
-            val angle = 1.5 - (op.vignette / 100.0) * 0.9
-            filters.add("vignette=angle=$angle")
-        }
-
-        return if (filters.isNotEmpty()) filters.joinToString(",") else null
-    }
-
-    private fun getFFmpegFilterForName(name: String): String? {
-        return when (name.lowercase()) {
-            "vintage" -> "curves=preset=vintage"
-            "warm" -> "colorchannelmixer=1.1:0:0:0:0:1.0:0:0:0:0:0.9"
-            "cool" -> "colorchannelmixer=0.9:0:0:0:0:1.0:0:0:0:0:1.1"
-            "contrast" -> "curves=preset=strong_contrast"
-            "monochrome" -> "hue=s=0"
-            "vignette" -> "vignette"
-            "negative" -> "curves=preset=negative"
-            "crossprocess" -> "curves=preset=cross_process"
-            else -> null
-        }
-    }
 
     /**
      * Build the video portion of a filter_complex graph from non-merge, non-audio operations.
@@ -671,8 +571,7 @@ class VideoEditingViewModel : ViewModel() {
                         } else {
                             val rgbaImgLabel = "[rgba_img_$stageIndex]"
                             val mirrorStr = if (op.isMirrored) ",hflip" else ""
-                            val hasMaskKeyframes = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()
-                            if (op.opacityKeyframes.isNotEmpty() || hasMaskKeyframes) {
+                            if (op.opacityKeyframes.isNotEmpty()) {
                                 // Static image: convert to video stream so geq's T variable advances
                                 stages.add("[$imageInputIndex:v]format=rgba$mirrorStr,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel")
                             } else {
@@ -702,39 +601,13 @@ class VideoEditingViewModel : ViewModel() {
                             currentOverlayLabel = opacityLabel
                         }
 
-                        if (op.maskConfig.shape != EditOperation.MaskShape.NONE) {
-                            val maskLabel = "[mask_$stageIndex]"
-                            val mc = op.maskConfig
-                            val cx = if (mc.positionKeyframes.isNotEmpty()) "(W*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, false, mc.relativeX, overlayStartMs, "T") + "))" else "W*${mc.relativeX}"
-                            val cy = if (mc.positionKeyframes.isNotEmpty()) "(H*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, true, mc.relativeY, overlayStartMs, "T") + "))" else "H*${mc.relativeY}"
-                            val sizeExpr = if (mc.sizeKeyframes.isNotEmpty()) buildFFmpegInterpolationExpr(mc.sizeKeyframes, false, ((mc.relativeWidth + mc.relativeHeight) / 2f * 200f), overlayStartMs, "T") else null
-                            val mw = if (sizeExpr != null) "(W*(($sizeExpr)/200))" else "W*${mc.relativeWidth}"
-                            val mh = if (sizeExpr != null) "(H*(($sizeExpr)/200))" else "H*${mc.relativeHeight}"
-                            val cosA: String
-                            val sinA: String
-                            if (mc.rotationKeyframes.isNotEmpty()) {
-                                val rotExpr = buildFFmpegInterpolationExpr(mc.rotationKeyframes, false, mc.rotationAngle, overlayStartMs, "T")
-                                val rad = "(($rotExpr)*PI/180)"
-                                cosA = "cos($rad)"
-                                sinA = "sin($rad)"
-                            } else {
-                                val rad = Math.toRadians(mc.rotationAngle.toDouble())
-                                cosA = Math.cos(rad).toString()
-                                sinA = Math.sin(rad).toString()
-                            }
-                            
-                            val finalAlphaExpr = buildFFmpegMaskAlphaExpr(mc, cx, cy, mw, mh, cosA, sinA, overlayStartMs, "T")
-                            
-                            stages.add("${currentOverlayLabel}format=rgba,geq=r='r(X,Y)*($finalAlphaExpr/255)':g='g(X,Y)*($finalAlphaExpr/255)':b='b(X,Y)*($finalAlphaExpr/255)':a='alpha(X,Y)*($finalAlphaExpr/255)'${maskLabel}")
-                            currentOverlayLabel = maskLabel
-                        }
+
 
                         // Rotate image/video overlay (c=none preserves transparent background, ow/oh prevent cropping)
                         stages.add("${currentOverlayLabel}rotate=$radians:c=none:ow='rotw($radians)':oh='roth($radians)'${rotatedImgLabel}")
                         // Overlay image/video on the reference video
                         val enablePart = buildEnableExpr(op.startTimeMs, op.endTimeMs)
-                        val hasMaskKfs = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()
-                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && (op.opacityKeyframes.isNotEmpty() || hasMaskKfs))) ":shortest=1" else ""
+                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && op.opacityKeyframes.isNotEmpty())) ":shortest=1" else ""
                         
                         val overlayX = if (op.positionKeyframes.isNotEmpty()) {
                             val xExpr = buildFFmpegInterpolationExpr(op.positionKeyframes, useValueY = false, defaultValue = op.relativeX, startTimeMs = op.startTimeMs ?: 0L)
@@ -876,9 +749,8 @@ class VideoEditingViewModel : ViewModel() {
 
         // 1. Source Video Input (Index 0)
         var outputDuration: Double? = null
-        val reverseOp = operations.filterIsInstance<EditOperation.ReverseMain>().lastOrNull()
         val speedOp = operations.filterIsInstance<EditOperation.SpeedMain>().lastOrNull()
-        val finalProxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri
+        val finalProxyUri = speedOp?.proxyUri
         
         if (finalProxyUri != null) {
             val proxyPath = resolveUriToPath(finalProxyUri) ?: finalProxyUri.toString()
@@ -1092,56 +964,13 @@ class VideoEditingViewModel : ViewModel() {
 
 
             for (i in 0 until inputCount) {
-                val colorFilterOp = operations.filterIsInstance<EditOperation.ColorFilter>().find { it.index == i }
-                val lutFilterExpr = colorFilterOp?.let { getFFmpegFilterForName(it.filterName) }
-                val adjustOp = operations.filterIsInstance<EditOperation.Adjust>().find { it.index == i }
-                val adjustFilterExpr = adjustOp?.let { getFFmpegFilterForAdjust(it) }
 
-                val isMirrored = if (i == 0) {
-                    operations.any { it is EditOperation.MirrorMain && it.isMirrored }
-                } else {
-                    mergeOp?.items?.getOrNull(i - 1)?.isMirrored == true
-                }
                 
-                val maskConfig = if (i == 0) {
-                    val mainMask = operations.filterIsInstance<EditOperation.MaskMain>().lastOrNull()?.maskConfig
-                    if (mainMask != null && mainMask.shape != EditOperation.MaskShape.NONE) {
-                        mainMask
-                    } else {
-                        mergeOp?.items?.getOrNull(0)?.maskConfig ?: EditOperation.MaskConfig()
-                    }
-                } else {
-                    mergeOp?.items?.getOrNull(i - 1)?.maskConfig ?: EditOperation.MaskConfig()
-                }
                 
                 // 1. Prepare raw video with basic visual filters
                 var preFilters = "setpts=PTS-STARTPTS"
-                if (lutFilterExpr != null) preFilters += ",$lutFilterExpr"
-                if (adjustFilterExpr != null) preFilters += ",$adjustFilterExpr"
-                if (isMirrored) preFilters += ",hflip"
                 
-                if (maskConfig.shape != EditOperation.MaskShape.NONE) {
-                    val mc = maskConfig
-                    val cx = if (mc.positionKeyframes.isNotEmpty()) "(W*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, false, mc.relativeX, 0L, "T") + "))" else "W*${mc.relativeX}"
-                    val cy = if (mc.positionKeyframes.isNotEmpty()) "(H*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, true, mc.relativeY, 0L, "T") + "))" else "H*${mc.relativeY}"
-                    val sizeExpr = if (mc.sizeKeyframes.isNotEmpty()) buildFFmpegInterpolationExpr(mc.sizeKeyframes, false, ((mc.relativeWidth + mc.relativeHeight) / 2f * 200f), 0L, "T") else null
-                    val mw = if (sizeExpr != null) "(W*(($sizeExpr)/200))" else "W*${mc.relativeWidth}"
-                    val mh = if (sizeExpr != null) "(H*(($sizeExpr)/200))" else "H*${mc.relativeHeight}"
-                    val cosA: String
-                    val sinA: String
-                    if (mc.rotationKeyframes.isNotEmpty()) {
-                        val rotExpr = buildFFmpegInterpolationExpr(mc.rotationKeyframes, false, mc.rotationAngle, 0L, "T")
-                        val rad = "(($rotExpr)*PI/180)"
-                        cosA = "cos($rad)"
-                        sinA = "sin($rad)"
-                    } else {
-                        val rad = Math.toRadians(mc.rotationAngle.toDouble())
-                        cosA = Math.cos(rad).toString()
-                        sinA = Math.sin(rad).toString()
-                    }
-                    val finalAlphaExpr = buildFFmpegMaskAlphaExpr(mc, cx, cy, mw, mh, cosA, sinA, 0L, "T")
-                    preFilters += ",format=rgba,geq=r='r(X,Y)*($finalAlphaExpr/255)':g='g(X,Y)*($finalAlphaExpr/255)':b='b(X,Y)*($finalAlphaExpr/255)':a='255*($finalAlphaExpr/255)'"
-                }
+
                 
                 filterParts.add("[$i:v]$preFilters[pre$i]")
 
@@ -1469,56 +1298,11 @@ class VideoEditingViewModel : ViewModel() {
         val filterComplexParts = mutableListOf<String>()
         var currentInputVideoLabel = "[0:v]"
 
-        val colorFilterOp = operations.filterIsInstance<EditOperation.ColorFilter>().find { it.index == 0 }
-        val adjustOp = operations.filterIsInstance<EditOperation.Adjust>().find { it.index == 0 }
 
-        val prepFilters = mutableListOf<String>()
-        if (colorFilterOp != null) {
-            val lutFilterExpr = getFFmpegFilterForName(colorFilterOp.filterName)
-            if (lutFilterExpr != null) {
-                prepFilters.add(lutFilterExpr)
-            }
-        }
-        if (adjustOp != null) {
-            val adjustFilterExpr = getFFmpegFilterForAdjust(adjustOp)
-            if (adjustFilterExpr != null) {
-                prepFilters.add(adjustFilterExpr)
-            }
-        }
-        val mirrorMainOp = operations.filterIsInstance<EditOperation.MirrorMain>().find { it.isMirrored }
-        if (mirrorMainOp != null) {
-            prepFilters.add("hflip")
-        }
         
-        val maskMainOp = operations.filterIsInstance<EditOperation.MaskMain>().lastOrNull()
-        if (maskMainOp != null && maskMainOp.maskConfig.shape != EditOperation.MaskShape.NONE) {
-            val mc = maskMainOp.maskConfig
-            val cx = if (mc.positionKeyframes.isNotEmpty()) "(W*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, false, mc.relativeX, 0L, "T") + "))" else "W*${mc.relativeX}"
-            val cy = if (mc.positionKeyframes.isNotEmpty()) "(H*(" + buildFFmpegInterpolationExpr(mc.positionKeyframes, true, mc.relativeY, 0L, "T") + "))" else "H*${mc.relativeY}"
-            val sizeExpr = if (mc.sizeKeyframes.isNotEmpty()) buildFFmpegInterpolationExpr(mc.sizeKeyframes, false, ((mc.relativeWidth + mc.relativeHeight) / 2f * 200f), 0L, "T") else null
-            val mw = if (sizeExpr != null) "(W*(($sizeExpr)/200))" else "W*${mc.relativeWidth}"
-            val mh = if (sizeExpr != null) "(H*(($sizeExpr)/200))" else "H*${mc.relativeHeight}"
-            val cosA: String
-            val sinA: String
-            if (mc.rotationKeyframes.isNotEmpty()) {
-                val rotExpr = buildFFmpegInterpolationExpr(mc.rotationKeyframes, false, mc.rotationAngle, 0L, "T")
-                val rad = "(($rotExpr)*PI/180)"
-                cosA = "cos($rad)"
-                sinA = "sin($rad)"
-            } else {
-                val rad = Math.toRadians(mc.rotationAngle.toDouble())
-                cosA = Math.cos(rad).toString()
-                sinA = Math.sin(rad).toString()
-            }
-            val finalAlphaExpr = buildFFmpegMaskAlphaExpr(mc, cx, cy, mw, mh, cosA, sinA, 0L, "T")
-            prepFilters.add("format=rgba,geq=r='r(X,Y)*($finalAlphaExpr/255)':g='g(X,Y)*($finalAlphaExpr/255)':b='b(X,Y)*($finalAlphaExpr/255)':a='255*($finalAlphaExpr/255)'")
-        }
 
-        if (prepFilters.isNotEmpty()) {
-            val combinedFilters = prepFilters.joinToString(",")
-            filterComplexParts.add("[0:v]${combinedFilters}[cfv]")
-            currentInputVideoLabel = "[cfv]"
-        }
+
+
 
         // ── Video filter stages (crop, text, image overlays) ──
         val (videoStages, finalVideoLabel) = buildVideoFilterStages(
@@ -1642,7 +1426,7 @@ class VideoEditingViewModel : ViewModel() {
         }
 
         // ── Assemble the command ──
-        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty()
+        val hasVideoFilters = videoStages.isNotEmpty()
         val hasAudioFilters = finalAudioLabel != null
 
         if (hasVideoFilters || hasAudioFilters) {

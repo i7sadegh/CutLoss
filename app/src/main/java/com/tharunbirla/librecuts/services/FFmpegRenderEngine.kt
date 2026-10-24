@@ -457,16 +457,6 @@ class FFmpegRenderEngine(private val context: Context) {
         return sb.toString()
     }
 
-    /** Extract audio from a video file using FFmpeg. */
-    suspend fun extractAudio(
-        sourceFilePath: String,
-        outputFilePath: String
-    ): RenderResult {
-        // -vn disables video stream, -acodec copy copies the audio stream.
-        val command = "-y -i \"$sourceFilePath\" -vn -acodec copy \"$outputFilePath\""
-        return executeCommand(command)
-    }
-
     /**
      * Merge videos using the FFmpeg concat demuxer.
      * FIX: Both listFilePath and outputFilePath are quoted.
@@ -528,18 +518,6 @@ class FFmpegRenderEngine(private val context: Context) {
     ): RenderResult {
         // Fast proxy generation: Downscale to max 720p (keeping aspect ratio), fast preset for encoding speed.
         val command = "-y -i \"$sourceFilePath\" -vf \"scale='min(1280,iw)':-2\" -c:v libx264 -preset ultrafast -crf 28 -tune fastdecode -c:a copy \"$outputFilePath\""
-        return executeCommand(command)
-    }
-
-    suspend fun reverseVideo(
-        sourceFilePath: String,
-        startMs: Long,
-        endMs: Long,
-        outputFilePath: String
-    ): RenderResult {
-        val startSecs = startMs / 1000.0
-        val durationSecs = (endMs - startMs) / 1000.0
-        val command = "-y -ss $startSecs -i \"$sourceFilePath\" -to $durationSecs -filter:v \"reverse,format=yuv420p\" -filter:a \"areverse\" -c:v libx264 -c:a aac \"$outputFilePath\""
         return executeCommand(command)
     }
 

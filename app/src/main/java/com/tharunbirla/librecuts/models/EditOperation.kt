@@ -36,23 +36,6 @@ sealed class EditOperation : Serializable {
     ) : EditOperation()
     
     /**
-     * Reverse operation for the main video.
-     */
-    data class ReverseMain(
-        val isReversed: Boolean,
-        val proxyUri: Uri? = null,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation()
-    
-    /**
-     * Mirror operation for the main video.
-     */
-    data class MirrorMain(
-        val isMirrored: Boolean,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation()
-    
-    /**
      * Crop operation: Crops video to a specified aspect ratio.
      * Supported aspects: "16:9", "9:16", "1:1"
      * Uses FFmpeg's crop filter with video re-encoding.
@@ -130,111 +113,6 @@ sealed class EditOperation : Serializable {
         fun hasCustomPosition(): Boolean = relativeX != null && relativeY != null
     }
     
-    enum class MaskShape { NONE, SPLIT, SHUTTER, ELLIPSE, RECTANGLE, HEART, STAR }
-    
-    data class MaskConfig(
-        val shape: MaskShape = MaskShape.NONE,
-        val relativeX: Float = 0.5f,
-        val relativeY: Float = 0.5f,
-        val relativeWidth: Float = 0.5f,
-        val relativeHeight: Float = 0.5f,
-        val rotationAngle: Float = 0f,
-        val isInverted: Boolean = false,
-        val feather: Float = 0f,
-        val positionKeyframes: List<KeyframePoint> = emptyList(),
-        val sizeKeyframes: List<KeyframePoint> = emptyList(),
-        val rotationKeyframes: List<KeyframePoint> = emptyList(),
-        val featherKeyframes: List<KeyframePoint> = emptyList()
-    ) : Serializable {
-        fun getInterpolatedPos(timeMs: Long): Pair<Float, Float> {
-            if (positionKeyframes.isEmpty()) return Pair(relativeX, relativeY)
-            val sorted = positionKeyframes.sortedBy { it.timeMs }
-            if (timeMs <= sorted.first().timeMs) return Pair(sorted.first().valueX, sorted.first().valueY)
-            if (timeMs >= sorted.last().timeMs) return Pair(sorted.last().valueX, sorted.last().valueY)
-            for (i in 0 until sorted.size - 1) {
-                val k1 = sorted[i]
-                val k2 = sorted[i + 1]
-                if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                    return Pair(
-                        k1.valueX + progress * (k2.valueX - k1.valueX),
-                        k1.valueY + progress * (k2.valueY - k1.valueY)
-                    )
-                }
-            }
-            return Pair(relativeX, relativeY)
-        }
-
-        fun getInterpolatedSize(timeMs: Long): Float {
-            val defaultScale = ((relativeWidth + relativeHeight) / 2f * 200f).coerceIn(10f, 200f)
-            if (sizeKeyframes.isEmpty()) return defaultScale
-            val sorted = sizeKeyframes.sortedBy { it.timeMs }
-            if (timeMs <= sorted.first().timeMs) return sorted.first().valueX
-            if (timeMs >= sorted.last().timeMs) return sorted.last().valueX
-            for (i in 0 until sorted.size - 1) {
-                val k1 = sorted[i]
-                val k2 = sorted[i + 1]
-                if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                    return k1.valueX + progress * (k2.valueX - k1.valueX)
-                }
-            }
-            return defaultScale
-        }
-
-        fun getInterpolatedRotation(timeMs: Long): Float {
-            if (rotationKeyframes.isEmpty()) return rotationAngle
-            val sorted = rotationKeyframes.sortedBy { it.timeMs }
-            if (timeMs <= sorted.first().timeMs) return sorted.first().valueX
-            if (timeMs >= sorted.last().timeMs) return sorted.last().valueX
-            for (i in 0 until sorted.size - 1) {
-                val k1 = sorted[i]
-                val k2 = sorted[i + 1]
-                if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                    return k1.valueX + progress * (k2.valueX - k1.valueX)
-                }
-            }
-            return rotationAngle
-        }
-
-        fun getInterpolatedFeather(timeMs: Long): Float {
-            if (featherKeyframes.isEmpty()) return feather
-            val sorted = featherKeyframes.sortedBy { it.timeMs }
-            if (timeMs <= sorted.first().timeMs) return sorted.first().valueX
-            if (timeMs >= sorted.last().timeMs) return sorted.last().valueX
-            for (i in 0 until sorted.size - 1) {
-                val k1 = sorted[i]
-                val k2 = sorted[i + 1]
-                if (timeMs >= k1.timeMs && timeMs <= k2.timeMs) {
-                    val progress = (timeMs - k1.timeMs).toFloat() / (k2.timeMs - k1.timeMs)
-                    return k1.valueX + progress * (k2.valueX - k1.valueX)
-                }
-            }
-            return feather
-        }
-
-        fun evaluatedAt(timeMs: Long): MaskConfig {
-            if (positionKeyframes.isEmpty() && sizeKeyframes.isEmpty() && rotationKeyframes.isEmpty() && featherKeyframes.isEmpty()) {
-                return this
-            }
-            val pos = getInterpolatedPos(timeMs)
-            val sizePercent = getInterpolatedSize(timeMs)
-            val relScale = sizePercent / 200f
-            val rot = getInterpolatedRotation(timeMs)
-            val feath = getInterpolatedFeather(timeMs)
-            return copy(
-                relativeX = pos.first,
-                relativeY = pos.second,
-                relativeWidth = relScale,
-                relativeHeight = relScale,
-                rotationAngle = rot,
-                feather = feath
-            )
-        }
-    }
-
-    
     data class MergeItem(
         val uri: Uri,
         val durationMs: Long,
@@ -243,9 +121,6 @@ sealed class EditOperation : Serializable {
         val speed: Float = 1.0f,
         val proxyUri: Uri? = null,
         val scrubProxyUri: Uri? = null,
-        val isReversed: Boolean = false,
-        val isMirrored: Boolean = false,
-        val maskConfig: MaskConfig = MaskConfig(),
         val isImage: Boolean = false
     ) : Serializable {
         val trimmedDurationMs: Long
@@ -268,12 +143,6 @@ sealed class EditOperation : Serializable {
         val videoUris: List<Uri> get() = items.map { it.uri }
     }
 
-    /** Mask configuration for the main track video base (index 0) */
-    data class MaskMain(
-        val maskConfig: MaskConfig,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation()
-    
     /**
      * Mute audio operation: Removes or mutes the audio track.
      * Uses FFmpeg's -an flag.
@@ -304,16 +173,6 @@ sealed class EditOperation : Serializable {
     ) : EditOperation()
 
     /**
-     * Color filter (LUT) operation: Applies a preset color grade filter to a specific clip index.
-     */
-    data class ColorFilter(
-        val index: Int,
-        val filterName: String,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation()
-
-    
-    /**
      * Add background audio operation: Overlays an audio file over the video.
      * If removeOriginalAudio is true, the original audio is removed.
      * Uses FFmpeg's -i and audio filters.
@@ -327,7 +186,6 @@ sealed class EditOperation : Serializable {
         val startTimeMs: Long? = null,
         val endTimeMs: Long? = null,
         val originalDurationMs: Long = 0L,
-        val extractedFromSegmentIndex: Int? = null,
         val beats: List<Long> = emptyList(),
         val ducking: Boolean = false,
         val fadeInDurationMs: Long = 0L,
@@ -362,39 +220,8 @@ sealed class EditOperation : Serializable {
         val isMirrored: Boolean = false,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList(),
-        val speedKeyframes: List<KeyframePoint> = emptyList(),
-        val maskConfig: MaskConfig = MaskConfig()
+        val speedKeyframes: List<KeyframePoint> = emptyList()
     ) : EditOperation()
-
-    /**
-     * Adjust operation: Adjusts video properties for a specific clip index.
-     * All properties range from -100 to 100, default is 0.
-     */
-    data class Adjust(
-        val index: Int,
-        val brightness: Int = 0,
-        val contrast: Int = 0,
-        val warmth: Int = 0,
-        val shadow: Int = 0,
-        val highlights: Int = 0,
-        val saturation: Int = 0,
-        val exposure: Int = 0,
-        val sharpen: Int = 0,
-        val vignette: Int = 0,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation() {
-        fun isDefault(): Boolean {
-            return brightness == 0 &&
-                   contrast == 0 &&
-                   warmth == 0 &&
-                   shadow == 0 &&
-                   highlights == 0 &&
-                   saturation == 0 &&
-                   exposure == 0 &&
-                   sharpen == 0 &&
-                   vignette == 0
-        }
-    }
 
     /**
      * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.
@@ -461,18 +288,13 @@ val EditOperation.id: String
     get() = when (this) {
         is EditOperation.Trim -> id
         is EditOperation.SpeedMain -> id
-        is EditOperation.ReverseMain -> id
-        is EditOperation.MirrorMain -> id
-        is EditOperation.MaskMain -> id
         is EditOperation.Crop -> id
         is EditOperation.AddText -> id
         is EditOperation.Merge -> id
         is EditOperation.MuteAudio -> id
         is EditOperation.Transition -> id
         is EditOperation.MuteClip -> id
-        is EditOperation.ColorFilter -> id
         is EditOperation.AddBackgroundAudio -> id
         is EditOperation.AddImageOverlay -> id
-        is EditOperation.Adjust -> id
         is EditOperation.CanvasBackground -> id
     }

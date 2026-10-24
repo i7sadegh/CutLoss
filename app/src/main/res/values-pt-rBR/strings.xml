@@ -28,16 +28,12 @@
     <string name="str_audio">Áudio</string>
     <string name="str_crop">Recortar</string>
     <string name="str_none">Nenhum</string>
-    <string name="str_adjust">Ajustar</string>
     <string name="str_brightness_0">Brilho: 0</string>
     <string name="str_apply_to_all">Aplicar a todos</string>
     <string name="str_aa">Aa</string>
     <string name="str_mute">Mudo</string>
-    <string name="str_filters">Filtros</string>
     <string name="str_speed">Velocidade</string>
-    <string name="str_extract">Extrair</string>
     <string name="str_freeze">Congelar</string>
-    <string name="str_reverse">Reverter</string>
     <string name="str_saving_video">Salvando vídeo...</string>
     <string name="str_please_don_t_close_the_app">Por favor, não feche o aplicativo</string>
     <string name="str_0">0%</string>
@@ -98,8 +94,6 @@
     <string name="toast_log_copied_to_clipboard">Log copiado para a área de transferência</string>
     <string name="toast_failed_to_load_overlay_file">Falhou em carregar o arquivo de overlay</string>
     <string name="toast_failed_to_apply_speed">Falhou em aplicar a velocidade</string>
-    <string name="toast_audio_extracted_to_new_layer">Áudio extraido para uma nova camada</string>
-    <string name="toast_failed_to_extract_audio">Falhou em extrair o áudio</string>
     <string name="toast_failed_to_load_selected_video">Falhou em carregar o(s) vídeo(s) selecionado(s)</string>
     <string name="toast_audio_track_added">Trilha de áudio adicionada</string>
     <string name="toast_export_location_updated_succes">Localização de exportação atualizada com sucesso!</string>

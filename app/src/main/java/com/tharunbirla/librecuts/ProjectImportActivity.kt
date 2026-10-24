@@ -482,9 +482,6 @@ class ProjectImportActivity : AppCompatActivity() {
                     is EditOperation.SpeedMain -> {
                         if (op.proxyUri != null && !checkUriExists(op.proxyUri)) op.copy(proxyUri = null) else op
                     }
-                    is EditOperation.ReverseMain -> {
-                        if (op.proxyUri != null && !checkUriExists(op.proxyUri)) op.copy(proxyUri = null) else op
-                    }
                     is EditOperation.Merge -> {
                         val newItems = op.items.mapIndexed { index, item ->
                             val dep = dependencies.find { it.operationId == op.id && it.mergeIndex == index }

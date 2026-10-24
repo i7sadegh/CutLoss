@@ -413,8 +413,6 @@ class VideoEditingActivity : AppCompatActivity() {
     private var speedEditingToolbar: View? = null
     private var cropEditingToolbar: View? = null
     private var cropOverlayView: com.tharunbirla.librecuts.customviews.CropOverlayView? = null
-    private var videoMaskOverlayView: com.tharunbirla.librecuts.customviews.VideoMaskOverlayView? = null
-    private var mainVideoMaskContainer: com.tharunbirla.librecuts.customviews.MaskedFrameLayout? = null
     private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null
 
     private var keyframeEditingToolbar: View? = null
@@ -1220,7 +1218,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                 }
-                overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored, maskConfig ->
+                overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored ->
                     val selectedId = viewModel.selectedOperationId.value
                     if (isKeyframeEditingMode) {
                         if (selectedId != null) {
@@ -1246,7 +1244,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             val op = viewModel.project.value?.operations?.find { (it as? EditOperation.AddImageOverlay)?.id == selectedId } as? EditOperation.AddImageOverlay
                             if (op != null) {
                                 viewModel.updateOperation(op.copy(
-                                    imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored, maskConfig = maskConfig
+                                    imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored
                                 ))
                             }
                         } else {
@@ -1269,80 +1267,16 @@ class VideoEditingActivity : AppCompatActivity() {
                                 chromaKeyColor = chromaColor,
                                 chromaKeySimilarity = chromaSim,
                                 opacity = opacity,
-                                isMirrored = isMirrored,
-                                maskConfig = maskConfig
+                                isMirrored = isMirrored
                             )
                         }
                         viewModel.selectOperation(null)
                         exitImageEditingMode()
                     }
                 }
-                overlay.onMaskChanged = { newMaskConfig ->
-                    val selectedId = viewModel.selectedOperationId.value
-                    if (selectedId != null) {
-                        val op = viewModel.project.value?.operations?.find { (it as? EditOperation.AddImageOverlay)?.id == selectedId } as? EditOperation.AddImageOverlay
-                        if (op != null) {
-                            if (isKeyframeEditingMode) {
-                                val globalTimeMs = getGlobalPosition()
-                                val start = op.startTimeMs ?: 0L
-                                val relativeTimeMs = globalTimeMs - start
-                                var mc = newMaskConfig
-                                if (activeKeyframeProperty == "Mask Position" || mc.positionKeyframes.isNotEmpty()) {
-                                    val currentList = mc.positionKeyframes.toMutableList()
-                                    val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                    val newPoint = EditOperation.KeyframePoint(relativeTimeMs, mc.relativeX, mc.relativeY)
-                                    if (existingIndex != -1) {
-                                        currentList[existingIndex] = newPoint
-                                    } else {
-                                        currentList.add(newPoint)
-                                    }
-                                    mc = mc.copy(positionKeyframes = currentList)
-                                }
-                                viewModel.updateOperation(op.copy(maskConfig = mc))
-                            } else {
-                                viewModel.updateOperation(op.copy(maskConfig = newMaskConfig))
-                            }
-                        }
-                    }
-                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "DraggableImageOverlayView not found: ${e.message}")
-            null
-        }
-        mainVideoMaskContainer = findViewById(R.id.mainVideoMaskContainer)
-        videoMaskOverlayView = try {
-            findViewById<com.tharunbirla.librecuts.customviews.VideoMaskOverlayView>(R.id.videoMaskOverlayView)?.also { overlay ->
-                overlay.onMaskChanged = { maskConfig ->
-                    selectedVideoIndex?.let { index ->
-                        if (isKeyframeEditingMode) {
-                            val globalTimeMs = getGlobalPosition()
-                            val sequenceItems = getSequenceItems()
-                            val accumulatedStartMs = sequenceItems.take(index).sumOf { it.trimmedDurationMs }
-                            val relativeTimeMs = globalTimeMs - accumulatedStartMs
-                            var mc = maskConfig
-                            if (activeKeyframeProperty == "Mask Position" || mc.positionKeyframes.isNotEmpty()) {
-                                val currentList = mc.positionKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, mc.relativeX, mc.relativeY)
-                                if (existingIndex != -1) {
-                                    currentList[existingIndex] = newPoint
-                                } else {
-                                    currentList.add(newPoint)
-                                }
-                                mc = mc.copy(positionKeyframes = currentList)
-                            }
-                            viewModel.updateMergeItemMask(index, mc)
-                            mainVideoMaskContainer?.maskConfig = mc
-                        } else {
-                            viewModel.updateMergeItemMask(index, maskConfig)
-                            mainVideoMaskContainer?.maskConfig = maskConfig
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "VideoMaskOverlayView not found: ${e.message}")
             null
         }
 
@@ -1396,9 +1330,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
                 toolbar.findViewById<View>(R.id.btnImageDuplicate)?.setBounceClickListener {
                     duplicateSelectedOverlay()
-                }
-                toolbar.findViewById<View>(R.id.btnImageMask)?.setBounceClickListener {
-                    showMaskBottomSheet()
                 }
                 toolbar.findViewById<View>(R.id.btnImageMirror)?.setBounceClickListener {
                     draggableImageOverlay?.toggleMirror()
@@ -1489,14 +1420,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoExtractAudio)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        val items = getSequenceItems()
-                        if (index >= 0 && index < items.size) {
-                            extractAudioFromSegment(index, items[index])
-                        }
-                    }
-                }
 
                 toolbar.findViewById<ImageButton>(R.id.btnVideoFreezeFrame)?.setBounceClickListener {
                     freezeFrameAtCurrentPosition()
@@ -1509,45 +1432,12 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                 }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoReverse)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        val items = getSequenceItems()
-                        if (index >= 0 && index < items.size) {
-                            reverseVideoSegment(index, items[index])
-                        }
-                    }
-                }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoMirror)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        if (index == 0) {
-                            val isCurrentlyMirrored = viewModel.project.value?.operations?.any { it is EditOperation.MirrorMain && it.isMirrored } ?: false
-                            viewModel.updateMainVideoMirror(!isCurrentlyMirrored)
-                        } else {
-                            viewModel.toggleMergeItemMirror(index - 1)
-                        }
-                        viewModel.project.value?.let { renderTracks(it) }
-                        syncUiWithPlayer()
-                    }
-                }
 
                 toolbar.findViewById<ImageButton>(R.id.btnVideoMute)?.setBounceClickListener {
                     selectedVideoIndex?.let { index ->
                         viewModel.toggleMuteClip(index)
                         viewModel.project.value?.let { renderTracks(it) }
                         updateVideoMuteButtonState(toolbar, index)
-                    }
-                }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoFilter)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        showColorFilterSelectionDialog(index)
-                    }
-                }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoMask)?.setBounceClickListener {
-                    showMaskBottomSheet()
-                }
-                toolbar.findViewById<ImageButton>(R.id.btnVideoAdjust)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        showAdjustSelectionDialog(index)
                     }
                 }
             }
@@ -2265,11 +2155,9 @@ class VideoEditingActivity : AppCompatActivity() {
             canvasLp.gravity = Gravity.CENTER
             canvasContainer.layoutParams = canvasLp
 
-            // Enable clipping on canvasContainer and mainVideoMaskContainer
+            // Enable clipping on canvasContainer
             canvasContainer.clipChildren = true
             canvasContainer.clipToPadding = true
-            mainVideoMaskContainer?.clipChildren = true
-            mainVideoMaskContainer?.clipToPadding = true
 
             // 2. Scale playerView so the crop box fills canvasContainer
             val fullWidth = canvasW / wFrac
@@ -2285,7 +2173,7 @@ class VideoEditingActivity : AppCompatActivity() {
             playerView.translationX = -fullWidth * xFrac
             playerView.translationY = -fullHeight * yFrac
 
-            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView, videoMaskOverlayView)
+            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)
             for (overlay in overlays) {
                 overlay?.let {
                     val overlayParams = it.layoutParams as FrameLayout.LayoutParams
@@ -2340,7 +2228,7 @@ class VideoEditingActivity : AppCompatActivity() {
             playerView.translationX = 0f
             playerView.translationY = 0f
 
-            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView, videoMaskOverlayView)
+            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)
             for (overlay in overlays) {
                 overlay?.let {
                     val overlayParams = it.layoutParams as FrameLayout.LayoutParams
@@ -3250,40 +3138,12 @@ class VideoEditingActivity : AppCompatActivity() {
         updateSpeedUi(speed)
         
         if (speed == 1.0f) {
-            // Reset to normal speed, but preserve reverse if it is reversed!
-            if (item.isReversed) {
-                lifecycleScope.launch {
-                    showLoading("Resetting speed...")
-                    val outputFileName = "proxy_reverse_${System.currentTimeMillis()}.mp4"
-                    val outputFilePath = java.io.File(cacheDir, outputFileName).absolutePath
-                    val result = ffmpegEngine.reverseVideo(
-                        sourceFilePath = getFilePathFromUri(item.uri) ?: "",
-                        startMs = item.trimStartMs,
-                        endMs = item.trimEndMs,
-                        outputFilePath = outputFilePath
-                    )
-                    hideLoading()
-                    if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                        val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                        if (index == 0) {
-                            viewModel.updateMainVideoSpeed(1.0f, null)
-                            viewModel.updateMainVideoReverse(isReversed = true, proxyUri = proxyUri)
-                        } else {
-                            updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = proxyUri, isReversed = true))
-                        }
-                        hideSpeedEditingToolbar()
-                    } else {
-                        android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_apply_speed_reset, android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                }
+            if (index == 0) {
+                viewModel.updateMainVideoSpeed(1.0f, null)
             } else {
-                if (index == 0) {
-                    viewModel.updateMainVideoSpeed(1.0f, null)
-                } else {
-                    updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = null))
-                }
-                hideSpeedEditingToolbar()
+                updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = null))
             }
+            hideSpeedEditingToolbar()
             return
         }
 
@@ -3301,44 +3161,14 @@ class VideoEditingActivity : AppCompatActivity() {
             )
 
             if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                if (item.isReversed) {
-                    showLoading("Reversing speed-adjusted video...")
-                    val reverseFileName = "proxy_reverse_${System.currentTimeMillis()}.mp4"
-                    val reverseFilePath = java.io.File(cacheDir, reverseFileName).absolutePath
-                    val speedProxyPath = result.outputPath
-
-                    val durationMs = ((item.trimEndMs - item.trimStartMs) / speed).toLong()
-                    val reverseResult = ffmpegEngine.reverseVideo(
-                        sourceFilePath = speedProxyPath,
-                        startMs = 0L,
-                        endMs = durationMs,
-                        outputFilePath = reverseFilePath
-                    )
-
-                    hideLoading()
-
-                    if (reverseResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                        val finalProxyUri = android.net.Uri.fromFile(java.io.File(reverseResult.outputPath))
-                        if (index == 0) {
-                            viewModel.updateMainVideoSpeed(speed, null)
-                            viewModel.updateMainVideoReverse(isReversed = true, proxyUri = finalProxyUri)
-                        } else {
-                            updateVideoSegment(index, item.copy(speed = speed, proxyUri = finalProxyUri, isReversed = true))
-                        }
-                        hideSpeedEditingToolbar()
-                    } else {
-                        android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_reverse_speed_proxy, android.widget.Toast.LENGTH_SHORT).show()
-                    }
+                hideLoading()
+                val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
+                if (index == 0) {
+                    viewModel.updateMainVideoSpeed(speed, proxyUri)
                 } else {
-                    hideLoading()
-                    val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                    if (index == 0) {
-                        viewModel.updateMainVideoSpeed(speed, proxyUri)
-                    } else {
-                        updateVideoSegment(index, item.copy(speed = speed, proxyUri = proxyUri))
-                    }
-                    hideSpeedEditingToolbar()
+                    updateVideoSegment(index, item.copy(speed = speed, proxyUri = proxyUri))
                 }
+                hideSpeedEditingToolbar()
             } else {
                 hideLoading()
                 android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_apply_speed, android.widget.Toast.LENGTH_SHORT).show()
@@ -3346,95 +3176,7 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
-    private fun reverseVideoSegment(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
-        if (item.isReversed) {
-            // Un-reverse the clip
-            if (index == 0) {
-                if (item.speed == 1.0f) {
-                    viewModel.updateMainVideoReverse(isReversed = false, proxyUri = null)
-                } else {
-                    regenerateSpeedProxyForUnreverse(index, item)
-                }
-            } else {
-                if (item.speed == 1.0f) {
-                    updateVideoSegment(index, item.copy(isReversed = false, proxyUri = null))
-                } else {
-                    regenerateSpeedProxyForUnreverse(index, item)
-                }
-            }
-            return
-        }
 
-        lifecycleScope.launch {
-            showLoading("Reversing video...")
-            val outputFileName = "proxy_reverse_${System.currentTimeMillis()}.mp4"
-            val outputFilePath = java.io.File(cacheDir, outputFileName).absolutePath
-
-            val sourceFilePath: String
-            val startMs: Long
-            val endMs: Long
-
-            if (item.proxyUri != null) {
-                sourceFilePath = getFilePathFromUri(item.proxyUri) ?: ""
-                startMs = 0L
-                endMs = item.trimmedDurationMs
-            } else {
-                sourceFilePath = getFilePathFromUri(item.uri) ?: ""
-                startMs = item.trimStartMs
-                endMs = item.trimEndMs
-            }
-
-            val result = ffmpegEngine.reverseVideo(
-                sourceFilePath = sourceFilePath,
-                startMs = startMs,
-                endMs = endMs,
-                outputFilePath = outputFilePath
-            )
-
-            hideLoading()
-
-            if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                val reversedProxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                if (index == 0) {
-                    viewModel.updateMainVideoReverse(isReversed = true, proxyUri = reversedProxyUri)
-                } else {
-                    updateVideoSegment(index, item.copy(isReversed = true, proxyUri = reversedProxyUri))
-                }
-            } else {
-                android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_reverse_video, android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-
-    private fun regenerateSpeedProxyForUnreverse(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
-        lifecycleScope.launch {
-            showLoading("Restoring forward video...")
-            val outputFileName = "proxy_speed_${System.currentTimeMillis()}.mp4"
-            val outputFilePath = java.io.File(cacheDir, outputFileName).absolutePath
-
-            val result = ffmpegEngine.generateSpeedProxy(
-                sourceFilePath = getFilePathFromUri(item.uri) ?: "",
-                startMs = item.trimStartMs,
-                endMs = item.trimEndMs,
-                speed = item.speed,
-                outputFilePath = outputFilePath
-            )
-
-            hideLoading()
-
-            if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                if (index == 0) {
-                    viewModel.updateMainVideoSpeed(item.speed, proxyUri)
-                    viewModel.updateMainVideoReverse(isReversed = false, proxyUri = null)
-                } else {
-                    updateVideoSegment(index, item.copy(isReversed = false, speed = item.speed, proxyUri = proxyUri))
-                }
-            } else {
-                android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_restore_video_speed, android.widget.Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
     
     
     private fun updateVideoSegment(index: Int, newItem: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
@@ -3665,52 +3407,6 @@ class VideoEditingActivity : AppCompatActivity() {
         exitVideoEditingMode()
     }
 
-    private fun extractAudioFromSegment(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
-        lifecycleScope.launch {
-            showLoading("Extracting audio...")
-            val ffmpegEngine = com.tharunbirla.librecuts.services.FFmpegRenderEngine(this@VideoEditingActivity)
-            
-            // Generate a unique output file path
-            val outputFileName = "extracted_audio_${System.currentTimeMillis()}.m4a"
-            val outputFilePath = File(cacheDir, outputFileName).absolutePath
-            val sourceFilePath = item.uri.path ?: item.uri.toString()
-
-            val result = withContext(Dispatchers.IO) {
-                ffmpegEngine.extractAudio(sourceFilePath, outputFilePath)
-            }
-
-            hideLoading()
-
-            if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                val sequenceItems = getSequenceItems()
-                var clipStartGlobal = 0L
-                for (i in 0 until index) {
-                    clipStartGlobal += sequenceItems[i].trimmedDurationMs
-                }
-                val clipEndGlobal = clipStartGlobal + item.trimmedDurationMs
-
-                val tempUri = Uri.fromFile(File(outputFilePath))
-                viewModel.addOperation(
-                    com.tharunbirla.librecuts.models.EditOperation.AddBackgroundAudio(
-                        audioUri = tempUri,
-                        internalStartMs = item.trimStartMs,
-                        internalEndMs = item.trimEndMs,
-                        startTimeMs = clipStartGlobal,
-                        endTimeMs = clipEndGlobal,
-                        originalDurationMs = item.durationMs,
-                        extractedFromSegmentIndex = index
-                    )
-                )
-                Toast.makeText(this@VideoEditingActivity, R.string.toast_audio_extracted_to_new_layer, Toast.LENGTH_SHORT).show()
-            } else if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Failure) {
-                Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_extract_audio, Toast.LENGTH_SHORT).show()
-                Log.e(TAG, "Audio extraction failed: ${result.error}")
-            }
-            
-            selectedVideoIndex = null
-            exitVideoEditingMode()
-        }
-    }
 
     private fun mergeAction() {
         openFilePickerMerge()
@@ -4548,13 +4244,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val sTrimEnd = trimOp?.endMs ?: sourceDuration
         val speedOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.SpeedMain>()?.lastOrNull()
         val speed = speedOp?.speed ?: 1.0f
-        val reverseOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ReverseMain>()?.lastOrNull()
-        val isReversed = reverseOp?.isReversed ?: false
-        val proxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri
-        val mirrorOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.MirrorMain>()?.lastOrNull()
-        val isMirrored = mirrorOp?.isMirrored ?: false
-        val maskMainOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.MaskMain>()?.lastOrNull()
-        val maskConfig = maskMainOp?.maskConfig ?: com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
+        val proxyUri = speedOp?.proxyUri
 
         val isMainImg = isImageUri(sourceUri) || (::tempInputFile.isInitialized && isImageUri(Uri.fromFile(tempInputFile)))
         items.add(com.tharunbirla.librecuts.models.EditOperation.MergeItem(
@@ -4563,11 +4253,8 @@ class VideoEditingActivity : AppCompatActivity() {
             trimStartMs = sTrimStart,
             trimEndMs = sTrimEnd,
             speed = speed,
-            isReversed = isReversed,
-            isMirrored = isMirrored,
             proxyUri = proxyUri,
             scrubProxyUri = viewModel.project.value?.scrubProxyUri,
-            maskConfig = maskConfig,
             isImage = isMainImg
         ))
         
@@ -4592,143 +4279,8 @@ class VideoEditingActivity : AppCompatActivity() {
         return getSequenceItems().sumOf { it.trimmedDurationMs }
     }
 
-    private var lastAppliedFilterName: String? = null
-    private var lastAppliedAdjust: com.tharunbirla.librecuts.models.EditOperation.Adjust? = null
 
-    private fun applyColorFilterToPlayer(filterName: String) {
-        val idx = selectedVideoIndex ?: 0
-        val activeAdjust = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Adjust>()
-            ?.find { it.index == idx }
-        applyColorFilterAndAdjustToPlayer(filterName, activeAdjust)
-    }
 
-    private fun applyColorFilterAndAdjustToPlayer(
-        filterName: String,
-        adjust: com.tharunbirla.librecuts.models.EditOperation.Adjust?
-    ) {
-        if (lastAppliedFilterName == filterName && lastAppliedAdjust == adjust) return
-        lastAppliedFilterName = filterName
-        lastAppliedAdjust = adjust
-
-        val filterMatrix = when (filterName.lowercase()) {
-            "vintage" -> floatArrayOf(
-                0.393f, 0.769f, 0.189f, 0f, 0f,
-                0.349f, 0.686f, 0.168f, 0f, 0f,
-                0.272f, 0.534f, 0.131f, 0f, 0f,
-                0f,     0f,     0f,     1f, 0f
-            )
-            "warm" -> floatArrayOf(
-                1.1f, 0f, 0f, 0f, 10f,
-                0f, 1.0f, 0f, 0f, 5f,
-                0f, 0f, 0.9f, 0f, -10f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            "cool" -> floatArrayOf(
-                0.9f, 0f, 0f, 0f, -10f,
-                0f, 1.0f, 0f, 0f, 0f,
-                0f, 0f, 1.2f, 0f, 15f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            "contrast" -> floatArrayOf(
-                1.4f, 0f, 0f, 0f, -50f,
-                0f, 1.4f, 0f, 0f, -50f,
-                0f, 0f, 1.4f, 0f, -50f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            "monochrome" -> floatArrayOf(
-                0.33f, 0.59f, 0.11f, 0f, 0f,
-                0.33f, 0.59f, 0.11f, 0f, 0f,
-                0.33f, 0.59f, 0.11f, 0f, 0f,
-                0f,    0f,    0f,    1f, 0f
-            )
-            "vignette" -> floatArrayOf(
-                0.8f, 0f, 0f, 0f, 0f,
-                0f, 0.8f, 0f, 0f, 0f,
-                0f, 0f, 0.8f, 0f, 0f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            "negative" -> floatArrayOf(
-                -1f, 0f, 0f, 0f, 255f,
-                0f, -1f, 0f, 0f, 255f,
-                0f, 0f, -1f, 0f, 255f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            "crossprocess" -> floatArrayOf(
-                1.2f, 0f, 0f, 0f, 0f,
-                0f, 1.0f, 0f, 0f, 10f,
-                0f, 0f, 1.4f, 0f, -20f,
-                0f, 0f, 0f, 1f, 0f
-            )
-            else -> null
-        }
-
-        val baseMatrix = if (filterMatrix != null) {
-            android.graphics.ColorMatrix(filterMatrix)
-        } else {
-            android.graphics.ColorMatrix()
-        }
-
-        if (adjust != null && !adjust.isDefault()) {
-            if (adjust.saturation != 0) {
-                val satFactor = 1.0f + (adjust.saturation / 100f)
-                val satMatrix = android.graphics.ColorMatrix()
-                satMatrix.setSaturation(satFactor)
-                baseMatrix.postConcat(satMatrix)
-            }
-            if (adjust.contrast != 0) {
-                val scale = 1.0f + (adjust.contrast / 100f)
-                val translate = 127.5f * (1.0f - scale)
-                val contrastMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    scale, 0f, 0f, 0f, translate,
-                    0f, scale, 0f, 0f, translate,
-                    0f, 0f, scale, 0f, translate,
-                    0f, 0f, 0f, 1f, 0f
-                ))
-                baseMatrix.postConcat(contrastMatrix)
-            }
-            if (adjust.brightness != 0) {
-                val bOffset = (adjust.brightness / 100f) * 255f
-                val brightMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    1f, 0f, 0f, 0f, bOffset,
-                    0f, 1f, 0f, 0f, bOffset,
-                    0f, 0f, 1f, 0f, bOffset,
-                    0f, 0f, 0f, 1f, 0f
-                ))
-                baseMatrix.postConcat(brightMatrix)
-            }
-            if (adjust.exposure != 0) {
-                val ev = (adjust.exposure / 100f) * 3.0f
-                val scale = Math.pow(2.0, ev.toDouble()).toFloat()
-                val expMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    scale, 0f, 0f, 0f, 0f,
-                    0f, scale, 0f, 0f, 0f,
-                    0f, 0f, scale, 0f, 0f,
-                    0f, 0f, 0f, 1f, 0f
-                ))
-                baseMatrix.postConcat(expMatrix)
-            }
-            if (adjust.warmth != 0) {
-                val rOffset = (adjust.warmth / 100f) * 30f
-                val bOffset = -(adjust.warmth / 100f) * 30f
-                val warmthMatrix = android.graphics.ColorMatrix(floatArrayOf(
-                    1f, 0f, 0f, 0f, rOffset,
-                    0f, 1f, 0f, 0f, rOffset / 2f,
-                    0f, 0f, 1f, 0f, bOffset,
-                    0f, 0f, 0f, 1f, 0f
-                ))
-                baseMatrix.postConcat(warmthMatrix)
-            }
-        }
-
-        val hasAdjustments = (adjust != null && !adjust.isDefault())
-        if (filterMatrix != null || hasAdjustments) {
-            val paint = android.graphics.Paint()
-            paint.colorFilter = android.graphics.ColorMatrixColorFilter(baseMatrix)
-            playerView.setLayerType(View.LAYER_TYPE_HARDWARE, paint)
-        } else {
-            playerView.setLayerType(View.LAYER_TYPE_NONE, null)
-        }
-    }
 
     private fun syncUiWithPlayer() {
         val currentGlobalPos = getGlobalPosition()
@@ -4751,7 +4303,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 updateDraggableOverlayFromKeyframes(currentGlobalPos)
             }
 
-            // Apply color filter corresponding to the active clip
             val sequenceItems = getSequenceItems()
             var accumulatedStartMs = 0L
             var activeClipIndex = 0
@@ -4764,16 +4315,8 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
                 accumulatedStartMs += item.trimmedDurationMs
             }
-            val activeFilterName = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ColorFilter>()
-                ?.find { it.index == activeClipIndex }?.filterName ?: "none"
-            val activeAdjust = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Adjust>()
-                ?.find { it.index == activeClipIndex }
-            applyColorFilterAndAdjustToPlayer(activeFilterName, activeAdjust)
             
             if (activeClipIndex >= 0 && activeClipIndex < sequenceItems.size) {
-                val relTimeMs = currentGlobalPos - accumulatedStartMs
-                val evaluatedMask = sequenceItems[activeClipIndex].maskConfig.evaluatedAt(relTimeMs)
-                mainVideoMaskContainer?.maskConfig = evaluatedMask
 
                 val activeItem = sequenceItems[activeClipIndex]
                 if (activeItem.isImage || isImageUri(activeItem.uri)) {
@@ -4791,19 +4334,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 updateCanvasBackgroundPreview(activeClipIndex)
             }
 
-            val isMirrored = if (activeClipIndex == 0) {
-                viewModel.project.value?.operations?.any { it is com.tharunbirla.librecuts.models.EditOperation.MirrorMain && it.isMirrored } == true
-            } else {
-                viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Merge>()
-                    ?.firstOrNull()?.items?.getOrNull(activeClipIndex - 1)?.isMirrored == true
-            }
             
-            val videoSurface = playerView.videoSurfaceView
-            if (videoSurface != null) {
-                videoSurface.scaleX = if (isMirrored) -1f else 1f
-            } else {
-                findTextureView(playerView)?.scaleX = if (isMirrored) -1f else 1f
-            }
 
             // Real-time transition preview overlay update
             val transitionOps = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Transition>() ?: emptyList()
@@ -5840,10 +5371,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 keyframes.addAll(op.positionKeyframes.map { it.timeMs })
                 keyframes.addAll(op.opacityKeyframes.map { it.timeMs })
                 keyframes.addAll(op.speedKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.positionKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.sizeKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.rotationKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.featherKeyframes.map { it.timeMs })
                 startTimeMs = op.startTimeMs ?: 0L
                 endTimeMs = op.endTimeMs ?: totalSequenceDuration
             }
@@ -6086,103 +5613,6 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
-    private fun showColorFilterSelectionDialog(clipIndex: Int) {
-        val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
-        val view = layoutInflater.inflate(R.layout.dialog_color_filters, null)
-        bottomSheet.setContentView(view)
-
-        val filtersList = view.findViewById<LinearLayout>(R.id.colorFiltersList)
-        val project = viewModel.project.value ?: return
-        val existingOp = project.operations.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ColorFilter>().find { it.index == clipIndex }
-        var activeFilterName = existingOp?.filterName ?: "none"
-
-        val filters = listOf(
-            Pair("none", "None"),
-            Pair("vintage", "Vintage"),
-            Pair("warm", "Warm"),
-            Pair("cool", "Cool"),
-            Pair("contrast", "Contrast"),
-            Pair("monochrome", "B&W"),
-            Pair("vignette", "Vignette"),
-            Pair("negative", "Negative"),
-            Pair("crossprocess", "Cross P")
-        )
-
-        val itemBgs = mutableMapOf<String, FrameLayout>()
-        val itemTvShorts = mutableMapOf<String, TextView>()
-
-        fun refreshSelectionStates() {
-            for ((id, bgFrame) in itemBgs) {
-                val tvShort = itemTvShorts[id]
-                val isSelected = (id == activeFilterName)
-                if (isSelected) {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
-                    bgFrame.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
-                    tvShort?.setTextColor(android.graphics.Color.WHITE)
-                } else {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
-                    bgFrame.foreground = null
-                    tvShort?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.textColor))
-                }
-            }
-        }
-
-        for ((filterId, displayName) in filters) {
-            val itemView = layoutInflater.inflate(R.layout.item_color_filter_option, filtersList, false)
-            val tvName = itemView.findViewById<TextView>(R.id.filterName)
-            val bg = itemView.findViewById<FrameLayout>(R.id.filterIconBg)
-            val previewImage = itemView.findViewById<ImageView>(R.id.filterPreviewImage)
-            val tvShort = itemView.findViewById<TextView>(R.id.filterShortName)
-
-            itemBgs[filterId] = bg
-            itemTvShorts[filterId] = tvShort
-
-            tvName.text = displayName
-            bg.clipToOutline = true
-
-            if (filterId == "none") {
-                previewImage.visibility = View.GONE
-                tvShort.visibility = View.VISIBLE
-                tvShort.text = "✖"
-            } else {
-                previewImage.visibility = View.VISIBLE
-                tvShort.visibility = View.GONE
-                val resName = "filter_preview_${filterId.lowercase()}"
-                val resId = resources.getIdentifier(resName, "drawable", packageName)
-                if (resId != 0) {
-                    previewImage.setImageResource(resId)
-                }
-            }
-
-            itemView.setOnClickListener {
-                activeFilterName = filterId
-                refreshSelectionStates()
-                viewModel.setColorFilter(clipIndex, filterId)
-                applyColorFilterToPlayer(filterId)
-            }
-            
-            filtersList.addView(itemView)
-        }
-
-        refreshSelectionStates()
-
-        view.findViewById<View>(R.id.btnApplyToAll)?.setOnClickListener {
-            val chunkCount = chunkDurationsMs.size
-            for (i in 0 until chunkCount) {
-                viewModel.setColorFilter(i, activeFilterName)
-            }
-            applyColorFilterToPlayer(activeFilterName)
-            viewModel.project.value?.let { renderTracks(it) }
-            bottomSheet.dismiss()
-        }
-
-        view.findViewById<View>(R.id.btnDone)?.setOnClickListener {
-            viewModel.project.value?.let { renderTracks(it) }
-            bottomSheet.dismiss()
-        }
-
-        bottomSheet.show()
-    }
 
     private fun showTransitionDialog(transitionIndex: Int) {
         val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
@@ -7152,210 +6582,6 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
-    private fun showAdjustSelectionDialog(clipIndex: Int) {
-        val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
-        val view = layoutInflater.inflate(R.layout.dialog_adjustments, null)
-        bottomSheet.setContentView(view)
-
-        val optionsList = view.findViewById<LinearLayout>(R.id.adjustOptionsList)
-        val slider = view.findViewById<com.google.android.material.slider.Slider>(R.id.adjustSlider)
-        val valueLabel = view.findViewById<TextView>(R.id.adjustValueLabel)
-
-        val project = viewModel.project.value ?: return
-        val existingOp = project.operations.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Adjust>().find { it.index == clipIndex }
-        
-        var localAdjust = existingOp ?: com.tharunbirla.librecuts.models.EditOperation.Adjust(index = clipIndex)
-        var selectedOptionId = "brightness" // Default selection
-
-        val options = listOf(
-            Pair("reset", "Reset All"),
-            Pair("brightness", "Brightness"),
-            Pair("contrast", "Contrast"),
-            Pair("warmth", "Warmth"),
-            Pair("shadow", "Shadow"),
-            Pair("highlights", "Highlights"),
-            Pair("saturation", "Saturation"),
-            Pair("exposure", "Exposure"),
-            Pair("sharpen", "Sharpen"),
-            Pair("vignette", "Vignette")
-        )
-
-        val itemBgs = mutableMapOf<String, FrameLayout>()
-        val itemTvShorts = mutableMapOf<String, TextView>()
-        val itemTvNames = mutableMapOf<String, TextView>()
-
-        fun getValForOption(id: String): Int {
-            return when (id) {
-                "brightness" -> localAdjust.brightness
-                "contrast" -> localAdjust.contrast
-                "warmth" -> localAdjust.warmth
-                "shadow" -> localAdjust.shadow
-                "highlights" -> localAdjust.highlights
-                "saturation" -> localAdjust.saturation
-                "exposure" -> localAdjust.exposure
-                "sharpen" -> localAdjust.sharpen
-                "vignette" -> localAdjust.vignette
-                else -> 0
-            }
-        }
-
-        fun refreshSelectionStates() {
-            for ((id, bgFrame) in itemBgs) {
-                val tvName = itemTvNames[id]
-                val isSelected = (id == selectedOptionId)
-                val isModified = (id != "reset" && getValForOption(id) != 0)
-
-                if (isSelected) {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
-                    bgFrame.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
-                    tvName?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.colorPrimary))
-                } else if (isModified) {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
-                    bgFrame.foreground = androidx.core.content.ContextCompat.getDrawable(this, R.drawable.bg_transition_border_selected)
-                    tvName?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.textColor))
-                } else {
-                    bgFrame.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
-                    bgFrame.foreground = null
-                    tvName?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.textColor))
-                }
-            }
-        }
-
-        fun updateSliderForSelection() {
-            if (selectedOptionId == "reset") {
-                slider.visibility = View.INVISIBLE
-                valueLabel.text = "Reset All"
-            } else {
-                slider.visibility = View.VISIBLE
-                val currentVal = getValForOption(selectedOptionId)
-                slider.value = currentVal.toFloat()
-                valueLabel.text = "${selectedOptionId.replaceFirstChar { it.uppercase() }}: $currentVal"
-            }
-        }
-
-        val activeFilterName = project.operations.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ColorFilter>()
-            .find { it.index == clipIndex }?.filterName ?: "none"
-
-        for ((id, displayName) in options) {
-            val itemView = layoutInflater.inflate(R.layout.item_adjust_option, optionsList, false)
-            val tvName = itemView.findViewById<TextView>(R.id.adjustName)
-            val bg = itemView.findViewById<FrameLayout>(R.id.adjustIconBg)
-            val iconImage = itemView.findViewById<ImageView>(R.id.adjustIconImage)
-            val tvShort = itemView.findViewById<TextView>(R.id.adjustShortName)
-
-            itemBgs[id] = bg
-            itemTvShorts[id] = tvShort
-            itemTvNames[id] = tvName
-
-            tvName.text = displayName
-            bg.clipToOutline = true
-
-            val resName = "ic_${id.lowercase()}_24"
-            val resId = resources.getIdentifier(resName, "drawable", packageName)
-            if (resId != 0) {
-                iconImage.setImageResource(resId)
-                iconImage.visibility = View.VISIBLE
-                tvShort.visibility = View.GONE
-            } else {
-                iconImage.visibility = View.GONE
-                tvShort.visibility = View.VISIBLE
-                tvShort.text = displayName.substring(0, minOf(2, displayName.length)).uppercase()
-            }
-
-            itemView.setOnClickListener {
-                if (id == "reset") {
-                    localAdjust = com.tharunbirla.librecuts.models.EditOperation.Adjust(index = clipIndex)
-                    viewModel.setAdjust(
-                        index = clipIndex,
-                        brightness = 0,
-                        contrast = 0,
-                        warmth = 0,
-                        shadow = 0,
-                        highlights = 0,
-                        saturation = 0,
-                        exposure = 0,
-                        sharpen = 0,
-                        vignette = 0
-                    )
-                    applyColorFilterAndAdjustToPlayer(activeFilterName, localAdjust)
-                    refreshSelectionStates()
-                    updateSliderForSelection()
-                } else {
-                    selectedOptionId = id
-                    refreshSelectionStates()
-                    updateSliderForSelection()
-                }
-            }
-
-            optionsList.addView(itemView)
-        }
-
-        slider.addOnChangeListener { _, value, fromUser ->
-            if (fromUser && selectedOptionId != "reset_all") {
-                val intVal = value.toInt()
-                localAdjust = when (selectedOptionId) {
-                    "brightness" -> localAdjust.copy(brightness = intVal)
-                    "contrast" -> localAdjust.copy(contrast = intVal)
-                    "warmth" -> localAdjust.copy(warmth = intVal)
-                    "shadow" -> localAdjust.copy(shadow = intVal)
-                    "highlights" -> localAdjust.copy(highlights = intVal)
-                    "saturation" -> localAdjust.copy(saturation = intVal)
-                    "exposure" -> localAdjust.copy(exposure = intVal)
-                    "sharpen" -> localAdjust.copy(sharpen = intVal)
-                    "vignette" -> localAdjust.copy(vignette = intVal)
-                    else -> localAdjust
-                }
-
-                valueLabel.text = "${selectedOptionId.replaceFirstChar { it.uppercase() }}: $intVal"
-                
-                viewModel.setAdjust(
-                    index = clipIndex,
-                    brightness = localAdjust.brightness,
-                    contrast = localAdjust.contrast,
-                    warmth = localAdjust.warmth,
-                    shadow = localAdjust.shadow,
-                    highlights = localAdjust.highlights,
-                    saturation = localAdjust.saturation,
-                    exposure = localAdjust.exposure,
-                    sharpen = localAdjust.sharpen,
-                    vignette = localAdjust.vignette
-                )
-                applyColorFilterAndAdjustToPlayer(activeFilterName, localAdjust)
-                refreshSelectionStates()
-            }
-        }
-
-        refreshSelectionStates()
-        updateSliderForSelection()
-
-        view.findViewById<View>(R.id.btnApplyToAll)?.setOnClickListener {
-            val chunkCount = chunkDurationsMs.size
-            for (i in 0 until chunkCount) {
-                viewModel.setAdjust(
-                    index = i,
-                    brightness = localAdjust.brightness,
-                    contrast = localAdjust.contrast,
-                    warmth = localAdjust.warmth,
-                    shadow = localAdjust.shadow,
-                    highlights = localAdjust.highlights,
-                    saturation = localAdjust.saturation,
-                    exposure = localAdjust.exposure,
-                    sharpen = localAdjust.sharpen,
-                    vignette = localAdjust.vignette
-                )
-            }
-            applyColorFilterAndAdjustToPlayer(activeFilterName, localAdjust)
-            viewModel.project.value?.let { renderTracks(it) }
-            bottomSheet.dismiss()
-        }
-
-        view.findViewById<View>(R.id.btnDone)?.setOnClickListener {
-            viewModel.project.value?.let { renderTracks(it) }
-            bottomSheet.dismiss()
-        }
-
-        bottomSheet.show()
-    }
 
     private fun showQuitConfirmationDialog() {
         if (!viewModel.hasUnsavedEdits.value) {
@@ -7627,12 +6853,6 @@ class VideoEditingActivity : AppCompatActivity() {
             if (isVideo) {
                 popup.menu.add("Speed")
             }
-            if (op.maskConfig.shape != EditOperation.MaskShape.NONE) {
-                popup.menu.add("Mask Position")
-                popup.menu.add("Mask Size")
-                popup.menu.add("Mask Rotation")
-                popup.menu.add("Mask Feather")
-            }
         }
         
         popup.setOnMenuItemClickListener { item ->
@@ -7643,7 +6863,7 @@ class VideoEditingActivity : AppCompatActivity() {
             val sliderLayout = toolbar.findViewById<View>(R.id.layoutKeyframeSlider)
             val slider = toolbar.findViewById<com.google.android.material.slider.Slider>(R.id.sliderKeyframeValue)
             
-            if (activeKeyframeProperty == "Position" || activeKeyframeProperty == "Mask Position") {
+            if (activeKeyframeProperty == "Position") {
                 sliderLayout?.visibility = View.GONE
             } else {
                 sliderLayout?.visibility = View.VISIBLE
@@ -7657,21 +6877,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         slider?.valueFrom = 0.25f
                         slider?.valueTo = 4.0f
                         slider?.stepSize = 0.05f
-                    }
-                    "Mask Size" -> {
-                        slider?.valueFrom = 1.0f
-                        slider?.valueTo = 200.0f
-                        slider?.stepSize = 1.0f
-                    }
-                    "Mask Rotation" -> {
-                        slider?.valueFrom = -180.0f
-                        slider?.valueTo = 180.0f
-                        slider?.stepSize = 1.0f
-                    }
-                    "Mask Feather" -> {
-                        slider?.valueFrom = 0.0f
-                        slider?.valueTo = 100.0f
-                        slider?.stepSize = 1.0f
                     }
                 }
             }
@@ -7723,46 +6928,6 @@ class VideoEditingActivity : AppCompatActivity() {
                             }
                             viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                         }
-                        "Mask Position" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val pos = mc.getInterpolatedPos(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, pos.first, pos.second))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(positionKeyframes = currentList)))
-                        }
-                        "Mask Size" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val sizeVal = mc.getInterpolatedSize(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, sizeVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(sizeKeyframes = currentList)))
-                        }
-                        "Mask Rotation" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val rotVal = mc.getInterpolatedRotation(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, rotVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(rotationKeyframes = currentList)))
-                        }
-                        "Mask Feather" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val featherVal = mc.getInterpolatedFeather(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, featherVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(featherKeyframes = currentList)))
-                        }
                     }
                 }
                 is EditOperation.AddText -> {
@@ -7786,63 +6951,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
                 else -> {}
             }
-        } else {
-            val index = selectedVideoIndex
-            if (index != null && index >= 0) {
-                val sequenceItems = getSequenceItems()
-                val item = sequenceItems.getOrNull(index)
-                if (item != null) {
-                    val accumulatedStartMs = sequenceItems.take(index).sumOf { it.trimmedDurationMs }
-                    val relativeTimeMs = globalTimeMs - accumulatedStartMs
-                    val mc = item.maskConfig
-                    when (activeKeyframeProperty) {
-                        "Mask Position" -> {
-                            val currentList = mc.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val pos = mc.getInterpolatedPos(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, pos.first, pos.second))
-                            }
-                            val newMc = mc.copy(positionKeyframes = currentList)
-                            viewModel.updateMergeItemMask(index, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                        "Mask Size" -> {
-                            val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val sizeVal = mc.getInterpolatedSize(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, sizeVal))
-                            }
-                            val newMc = mc.copy(sizeKeyframes = currentList)
-                            viewModel.updateMergeItemMask(index, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                        "Mask Rotation" -> {
-                            val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val rotVal = mc.getInterpolatedRotation(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, rotVal))
-                            }
-                            val newMc = mc.copy(rotationKeyframes = currentList)
-                            viewModel.updateMergeItemMask(index, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                        "Mask Feather" -> {
-                            val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val featherVal = mc.getInterpolatedFeather(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, featherVal))
-                            }
-                            val newMc = mc.copy(featherKeyframes = currentList)
-                            viewModel.updateMergeItemMask(index, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                    }
-                }
-            }
         }
         updateDraggableOverlayFromKeyframes(globalTimeMs)
     }
@@ -7859,7 +6967,6 @@ class VideoEditingActivity : AppCompatActivity() {
                     is EditOperation.AddImageOverlay -> {
                         val start = op.startTimeMs ?: 0L
                         val relativeTimeMs = globalTimeMs - start
-                        val mc = op.maskConfig
                         when (activeKeyframeProperty) {
                             "Opacity" -> {
                                 val opacityValue = value / 100.0f
@@ -7876,31 +6983,6 @@ class VideoEditingActivity : AppCompatActivity() {
                                 if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
                                 viewModel.updateOperation(op.copy(speedKeyframes = currentList))
                             }
-                            "Mask Size" -> {
-                                val currentList = mc.sizeKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val relScale = value / 200f
-                                val newMc = mc.copy(relativeWidth = relScale, relativeHeight = relScale, sizeKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
-                            "Mask Rotation" -> {
-                                val currentList = mc.rotationKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val newMc = mc.copy(rotationAngle = value, rotationKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
-                            "Mask Feather" -> {
-                                val currentList = mc.featherKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val newMc = mc.copy(feather = value, featherKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
                         }
                     }
                     is EditOperation.AddText -> {
@@ -7916,47 +6998,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                     else -> {}
-                }
-            }
-        } else {
-            val videoIdx = selectedVideoIndex
-            if (videoIdx != null && videoIdx >= 0) {
-                val sequenceItems = getSequenceItems()
-                val item = sequenceItems.getOrNull(videoIdx)
-                if (item != null) {
-                    val accumulatedStartMs = sequenceItems.take(videoIdx).sumOf { it.trimmedDurationMs }
-                    val relativeTimeMs = globalTimeMs - accumulatedStartMs
-                    val mc = item.maskConfig
-                    when (activeKeyframeProperty) {
-                        "Mask Size" -> {
-                            val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                            if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                            val relScale = value / 200f
-                            val newMc = mc.copy(relativeWidth = relScale, relativeHeight = relScale, sizeKeyframes = currentList)
-                            viewModel.updateMergeItemMask(videoIdx, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                        "Mask Rotation" -> {
-                            val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                            if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                            val newMc = mc.copy(rotationAngle = value, rotationKeyframes = currentList)
-                            viewModel.updateMergeItemMask(videoIdx, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                        "Mask Feather" -> {
-                            val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                            if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                            val newMc = mc.copy(feather = value, featherKeyframes = currentList)
-                            viewModel.updateMergeItemMask(videoIdx, newMc)
-                            mainVideoMaskContainer?.maskConfig = newMc
-                        }
-                    }
                 }
             }
         }
@@ -7983,10 +7024,6 @@ class VideoEditingActivity : AppCompatActivity() {
                             "Position" -> op.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Opacity" -> op.opacityKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             "Speed" -> op.speedKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Position" -> op.maskConfig.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Size" -> op.maskConfig.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Rotation" -> op.maskConfig.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Feather" -> op.maskConfig.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
                             else -> false
                         }
                     }
@@ -7998,24 +7035,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                     else -> false
-                }
-            }
-        } else {
-            val videoIdx = selectedVideoIndex
-            if (videoIdx != null && videoIdx >= 0) {
-                val sequenceItems = getSequenceItems()
-                val item = sequenceItems.getOrNull(videoIdx)
-                if (item != null) {
-                    val accumulatedStartMs = sequenceItems.take(videoIdx).sumOf { it.trimmedDurationMs }
-                    val relativeTimeMs = globalTimeMs - accumulatedStartMs
-                    val mc = item.maskConfig
-                    hasKeyframe = when (activeKeyframeProperty) {
-                        "Mask Position" -> mc.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Size" -> mc.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Rotation" -> mc.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        "Mask Feather" -> mc.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                        else -> false
-                    }
                 }
             }
         }
@@ -8053,7 +7072,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         op.opacity
                     }
                     
-                    val evaluatedMask = op.maskConfig.evaluatedAt(relativeTimeMs)
                     
                     draggableImageOverlay?.setProperties(
                         interpolatedPos.first,
@@ -8064,8 +7082,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         interpolatedOpacity,
                         op.isMirrored
                     )
-                    draggableImageOverlay?.maskConfig = evaluatedMask
-                    draggableImageOverlay?.isMaskEditingMode = evaluatedMask.shape != EditOperation.MaskShape.NONE
 
                     if (activeKeyframeProperty == "Opacity") {
                         val progress = (interpolatedOpacity * 100).toInt()
@@ -8082,21 +7098,6 @@ class VideoEditingActivity : AppCompatActivity() {
                         val steppedSpeed = 0.25f + (steps * 0.05f)
                         slider?.value = steppedSpeed.coerceIn(minVal, maxVal)
                         tvSliderValue?.text = String.format(java.util.Locale.US, "%.2fx", steppedSpeed)
-                    } else if (activeKeyframeProperty == "Mask Size") {
-                        val sizeVal = evaluatedMask.getInterpolatedSize(relativeTimeMs)
-                        val roundedSize = Math.round(sizeVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedSize
-                        tvSliderValue?.text = "${roundedSize.toInt()}%"
-                    } else if (activeKeyframeProperty == "Mask Rotation") {
-                        val rotVal = evaluatedMask.getInterpolatedRotation(relativeTimeMs)
-                        val roundedRot = Math.round(rotVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedRot
-                        tvSliderValue?.text = "${roundedRot.toInt()}°"
-                    } else if (activeKeyframeProperty == "Mask Feather") {
-                        val featherVal = evaluatedMask.getInterpolatedFeather(relativeTimeMs)
-                        val roundedFeather = Math.round(featherVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedFeather
-                        tvSliderValue?.text = "${roundedFeather.toInt()}%"
                     }
                 }
                 is EditOperation.AddText -> {
@@ -8126,37 +7127,6 @@ class VideoEditingActivity : AppCompatActivity() {
                     }
                 }
                 else -> {}
-            }
-        } else {
-            val videoIdx = selectedVideoIndex
-            if (videoIdx != null && videoIdx >= 0) {
-                val sequenceItems = getSequenceItems()
-                val item = sequenceItems.getOrNull(videoIdx)
-                if (item != null) {
-                    val accumulatedStartMs = sequenceItems.take(videoIdx).sumOf { it.trimmedDurationMs }
-                    val relativeTimeMs = globalTimeMs - accumulatedStartMs
-                    val evaluatedMask = item.maskConfig.evaluatedAt(relativeTimeMs)
-                    
-                    mainVideoMaskContainer?.maskConfig = evaluatedMask
-                    videoMaskOverlayView?.maskConfig = evaluatedMask
-
-                    if (activeKeyframeProperty == "Mask Size") {
-                        val sizeVal = evaluatedMask.getInterpolatedSize(relativeTimeMs)
-                        val roundedSize = Math.round(sizeVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedSize
-                        tvSliderValue?.text = "${roundedSize.toInt()}%"
-                    } else if (activeKeyframeProperty == "Mask Rotation") {
-                        val rotVal = evaluatedMask.getInterpolatedRotation(relativeTimeMs)
-                        val roundedRot = Math.round(rotVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedRot
-                        tvSliderValue?.text = "${roundedRot.toInt()}°"
-                    } else if (activeKeyframeProperty == "Mask Feather") {
-                        val featherVal = evaluatedMask.getInterpolatedFeather(relativeTimeMs)
-                        val roundedFeather = Math.round(featherVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedFeather
-                        tvSliderValue?.text = "${roundedFeather.toInt()}%"
-                    }
-                }
             }
         }
         updateKeyframeActionButtonState(globalTimeMs)
@@ -8213,211 +7183,6 @@ class VideoEditingActivity : AppCompatActivity() {
         return Pair(defaultX, defaultY)
     }
 
-    private fun showMaskBottomSheet() {
-        val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
-        val view = layoutInflater.inflate(R.layout.bottom_sheet_mask, null)
-        bottomSheet.setContentView(view)
-
-        val btnNone = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskNone)
-        val btnSplit = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskSplit)
-        val btnShutter = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskShutter)
-        val btnEllipse = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskEllipse)
-        val btnRectangle = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskRectangle)
-        val btnHeart = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskHeart)
-        val btnStar = view.findViewById<android.widget.LinearLayout>(R.id.btnMaskStar)
-
-        val bgNone = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskNone)
-        val bgSplit = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskSplit)
-        val bgShutter = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskShutter)
-        val bgEllipse = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskEllipse)
-        val bgRectangle = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskRectangle)
-        val bgHeart = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskHeart)
-        val bgStar = view.findViewById<android.widget.FrameLayout>(R.id.bgMaskStar)
-
-        val imgNone = view.findViewById<android.widget.ImageView>(R.id.imgMaskNone)
-        val imgSplit = view.findViewById<android.widget.ImageView>(R.id.imgMaskSplit)
-        val imgShutter = view.findViewById<android.widget.ImageView>(R.id.imgMaskShutter)
-        val imgEllipse = view.findViewById<android.widget.ImageView>(R.id.imgMaskEllipse)
-        val imgRectangle = view.findViewById<android.widget.ImageView>(R.id.imgMaskRectangle)
-        val imgHeart = view.findViewById<android.widget.ImageView>(R.id.imgMaskHeart)
-        val imgStar = view.findViewById<android.widget.ImageView>(R.id.imgMaskStar)
-
-        val switchInvert = view.findViewById<com.google.android.material.materialswitch.MaterialSwitch>(R.id.switchInvertMask)
-        val sliderFeather = view.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMaskFeather)
-        val sliderSize = view.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMaskSize)
-        val sliderRotation = view.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMaskRotation)
-        
-        val tvFeatherValue = view.findViewById<TextView>(R.id.tvFeatherValue)
-        val tvSizeValue = view.findViewById<TextView>(R.id.tvSizeValue)
-        val tvRotationValue = view.findViewById<TextView>(R.id.tvRotationValue)
-        val btnResetRotation = view.findViewById<TextView>(R.id.btnResetRotation)
-        
-        val btnResetMask = view.findViewById<View>(R.id.btnResetMask)
-        val btnDoneMask = view.findViewById<View>(R.id.btnDoneMaskSheet)
-
-        val isMainVideo = selectedVideoIndex != null && videoEditingToolbar?.visibility == View.VISIBLE
-        
-        var currentMask = if (isMainVideo) {
-            val idx = selectedVideoIndex!!
-            val items = getSequenceItems()
-            if (idx >= 0 && idx < items.size) items[idx].maskConfig else com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
-        } else {
-            draggableImageOverlay?.maskConfig ?: com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
-        }
-        
-        switchInvert.isChecked = currentMask.isInverted
-        sliderFeather?.value = currentMask.feather.coerceIn(0f, 100f)
-        tvFeatherValue?.text = "${currentMask.feather.toInt()}%"
-
-        val avgScale = ((currentMask.relativeWidth + currentMask.relativeHeight) / 2f * 200f).coerceIn(10f, 200f)
-        sliderSize?.value = avgScale
-        tvSizeValue?.text = "${avgScale.toInt()}%"
-
-        sliderRotation?.value = currentMask.rotationAngle.coerceIn(-180f, 180f)
-        tvRotationValue?.text = "${currentMask.rotationAngle.toInt()}°"
-
-        fun highlightShape(selectedShape: com.tharunbirla.librecuts.models.EditOperation.MaskShape) {
-            val shapeMap = mapOf(
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE to Pair(bgNone, imgNone),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.SPLIT to Pair(bgSplit, imgSplit),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.SHUTTER to Pair(bgShutter, imgShutter),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.ELLIPSE to Pair(bgEllipse, imgEllipse),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.RECTANGLE to Pair(bgRectangle, imgRectangle),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.HEART to Pair(bgHeart, imgHeart),
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.STAR to Pair(bgStar, imgStar)
-            )
-            val activeColor = android.graphics.Color.WHITE
-            val inactiveColor = getColor(R.color.toolTextInactive)
-
-            for ((shape, views) in shapeMap) {
-                val bg = views.first ?: continue
-                val img = views.second ?: continue
-                if (shape == selectedShape) {
-                    bg.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
-                    img.setColorFilter(activeColor)
-                } else {
-                    bg.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
-                    img.setColorFilter(inactiveColor)
-                }
-            }
-        }
-
-        highlightShape(currentMask.shape)
-
-        if (isMainVideo) {
-            videoMaskOverlayView?.maskConfig = currentMask
-            videoMaskOverlayView?.isEditingMode = true
-        } else {
-            draggableImageOverlay?.isMaskEditingMode = currentMask.shape != com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE
-        }
-
-        fun applyMaskToView(newMask: com.tharunbirla.librecuts.models.EditOperation.MaskConfig) {
-            currentMask = newMask
-            if (isMainVideo) {
-                videoMaskOverlayView?.maskConfig = newMask
-                videoMaskOverlayView?.isEditingMode = true
-                videoMaskOverlayView?.invalidate()
-                mainVideoMaskContainer?.maskConfig = newMask
-                videoMaskOverlayView?.onMaskChanged?.invoke(newMask)
-            } else {
-                draggableImageOverlay?.maskConfig = newMask
-                draggableImageOverlay?.isMaskEditingMode = newMask.shape != com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE
-                draggableImageOverlay?.invalidate()
-                draggableImageOverlay?.onMaskChanged?.invoke(newMask)
-            }
-        }
-
-        fun updateMaskShape(shape: com.tharunbirla.librecuts.models.EditOperation.MaskShape) {
-            val newMask = currentMask.copy(shape = shape)
-            applyMaskToView(newMask)
-            highlightShape(shape)
-        }
-
-        btnNone?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE) }
-        btnSplit?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.SPLIT) }
-        btnShutter?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.SHUTTER) }
-        btnEllipse?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.ELLIPSE) }
-        btnRectangle?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.RECTANGLE) }
-        btnHeart?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.HEART) }
-        btnStar?.setOnClickListener { updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.STAR) }
-
-        sliderFeather?.addOnChangeListener { _, value, _ ->
-            tvFeatherValue?.text = "${value.toInt()}%"
-            val newMask = currentMask.copy(feather = value)
-            applyMaskToView(newMask)
-        }
-
-        sliderSize?.addOnChangeListener { _, value, _ ->
-            tvSizeValue?.text = "${value.toInt()}%"
-            val relScale = value / 200f
-            val newMask = currentMask.copy(relativeWidth = relScale, relativeHeight = relScale)
-            applyMaskToView(newMask)
-        }
-
-        sliderRotation?.addOnChangeListener { _, value, _ ->
-            tvRotationValue?.text = "${value.toInt()}°"
-            val newMask = currentMask.copy(rotationAngle = value)
-            applyMaskToView(newMask)
-        }
-
-        btnResetRotation?.setOnClickListener {
-            sliderRotation?.value = 0f
-        }
-
-        switchInvert.setOnCheckedChangeListener { _, isChecked ->
-            val newMask = currentMask.copy(isInverted = isChecked)
-            applyMaskToView(newMask)
-        }
-
-        btnResetMask?.setOnClickListener {
-            val resetMask = com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
-            switchInvert.isChecked = false
-            sliderFeather?.value = 0f
-            sliderSize?.value = 100f
-            sliderRotation?.value = 0f
-            tvFeatherValue?.text = "0%"
-            tvSizeValue?.text = "100%"
-            tvRotationValue?.text = "0°"
-            updateMaskShape(com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE)
-        }
-        
-        bottomSheet.setOnDismissListener {
-            if (isMainVideo) {
-                videoMaskOverlayView?.isEditingMode = false
-                selectedVideoIndex?.let { index ->
-                    viewModel.updateMergeItemMask(index, currentMask)
-                    mainVideoMaskContainer?.maskConfig = currentMask
-                }
-            } else {
-                draggableImageOverlay?.isMaskEditingMode = false
-                draggableImageOverlay?.maskConfig = currentMask
-                draggableImageOverlay?.invalidate()
-                val selectedId = viewModel.selectedOperationId.value
-                if (selectedId != null) {
-                    val op = viewModel.project.value?.operations?.find { (it as? EditOperation.AddImageOverlay)?.id == selectedId } as? EditOperation.AddImageOverlay
-                    if (op != null) {
-                        viewModel.updateOperation(op.copy(maskConfig = currentMask))
-                    }
-                }
-            }
-        }
-        
-        btnDoneMask?.setOnClickListener {
-            bottomSheet.dismiss()
-        }
-
-        bottomSheet.setCanceledOnTouchOutside(false)
-        bottomSheet.window?.clearFlags(android.view.WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-        bottomSheet.window?.addFlags(android.view.WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL)
-
-        bottomSheet.show()
-
-        val touchOutside = bottomSheet.findViewById<View>(com.google.android.material.R.id.touch_outside)
-        touchOutside?.setOnTouchListener { _, event ->
-            findViewById<View>(android.R.id.content).dispatchTouchEvent(event)
-            true
-        }
-    }
 
     companion object {
         private const val TAG = "VideoEditingActivity"

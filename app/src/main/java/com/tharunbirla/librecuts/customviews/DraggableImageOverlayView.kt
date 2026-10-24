@@ -33,9 +33,8 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
     // ── Public callbacks ──────────────────────────────────────────────────────
-    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float, isMirrored: Boolean, maskConfig: com.tharunbirla.librecuts.models.EditOperation.MaskConfig) -> Unit)? = null
+    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float, isMirrored: Boolean) -> Unit)? = null
     var onPositionChanged: ((relativeX: Float, relativeY: Float) -> Unit)? = null
-    var onMaskChanged: ((com.tharunbirla.librecuts.models.EditOperation.MaskConfig) -> Unit)? = null
 
     // ── State ─────────────────────────────────────────────────────────────────
     private var isEditingActive = false
@@ -47,8 +46,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private var opacity = 1.0f
     private var isMirrored = false
     
-    var isMaskEditingMode = false
-    var maskConfig = com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
     
     private var videoWidth = 0
     private var videoHeight = 0
@@ -123,15 +120,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private val scaleDetector = ScaleGestureDetector(context, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
         override fun onScale(detector: ScaleGestureDetector): Boolean {
             val scaleFactor = detector.scaleFactor
-            if (isMaskEditingMode) {
-                maskConfig = maskConfig.copy(
-                    relativeWidth = (maskConfig.relativeWidth * scaleFactor).coerceIn(0.01f, 5.0f),
-                    relativeHeight = (maskConfig.relativeHeight * scaleFactor).coerceIn(0.01f, 5.0f)
-                )
-                onMaskChanged?.invoke(maskConfig)
-                invalidate()
-                return true
-            }
             relativeWidth = (relativeWidth * scaleFactor).coerceIn(0.05f, 5.0f)
             val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
             relativeHeight = relativeWidth * videoRatio / imageAspectRatio
@@ -316,8 +304,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         loadOverlayMedia(uri)
 
         visibility = VISIBLE
-        isMaskEditingMode = false
-        maskConfig = com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
         post {
             updateImageViewSizeAndPosition()
         }
@@ -341,8 +327,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         rotationAngle = op.rotationAngle
         opacity = op.opacity
         isMirrored = op.isMirrored
-        isMaskEditingMode = false
-        maskConfig = op.maskConfig.copy()
 
         loadOverlayMedia(op.imageUri)
 
@@ -401,7 +385,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 
     fun deactivate() {
         isEditingActive = false
-        isMaskEditingMode = false
         visibility = GONE
         imageUri = null
     }
@@ -428,7 +411,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         val uri = imageUri
         if (uri != null) {
             updateRelativePosition()
-            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity, isMirrored, maskConfig)
+            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity, isMirrored)
         }
         deactivate()
     }
@@ -486,42 +469,20 @@ class DraggableImageOverlayView @JvmOverloads constructor(
                     pickColorAt(event.x, event.y)
                     return true
                 }
-                if (!isMaskEditingMode) {
-                    // round 9: the press must land on the image itself
-                    // (plus room for the selection handles) -- presses on
-                    // empty canvas no longer yank the overlay around.
-                    val slop = 32f
-                    val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
-                    val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
-                    if (!inX || !inY) return false
-                }
+                // round 9: the press must land on the image itself
+                // (plus room for the selection handles) -- presses on
+                // empty canvas no longer yank the overlay around.
+                val slop = 32f
+                val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
+                val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
+                if (!inX || !inY) return false
                 isDragging = true
-                if (isMaskEditingMode) {
-                    dragOffsetX = event.x
-                    dragOffsetY = event.y
-                } else {
-                    dragOffsetX = event.x - imageView.x
-                    dragOffsetY = event.y - imageView.y
-                }
+                dragOffsetX = event.x - imageView.x
+                dragOffsetY = event.y - imageView.y
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
                 if (isDragging) {
-                    if (isMaskEditingMode) {
-                        val dx = event.x - dragOffsetX
-                        val dy = event.y - dragOffsetY
-                        dragOffsetX = event.x
-                        dragOffsetY = event.y
-                        if (imageView.width > 0 && imageView.height > 0) {
-                            maskConfig = maskConfig.copy(
-                                relativeX = maskConfig.relativeX + dx / imageView.width,
-                                relativeY = maskConfig.relativeY + dy / imageView.height
-                            )
-                            onMaskChanged?.invoke(maskConfig)
-                        }
-                        invalidate()
-                        return true
-                    }
                     val videoRect = getVideoRect()
                     val centerX = event.x - dragOffsetX + imageView.width / 2f
                     val centerY = event.y - dragOffsetY + imageView.height / 2f
@@ -684,60 +645,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     // ── Drawing ───────────────────────────────────────────────────────────────
 
     override fun dispatchDraw(canvas: Canvas) {
-        val hasMask = maskConfig.shape != com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE
-        if (hasMask && isEditingActive && imageUri != null) {
-            canvas.save()
-            canvas.rotate(rotationAngle, imageView.x + imageView.width / 2f, imageView.y + imageView.height / 2f)
-            
-            val path = android.graphics.Path()
-            val cx = imageView.x + imageView.width * maskConfig.relativeX
-            val cy = imageView.y + imageView.height * maskConfig.relativeY
-            val mw = imageView.width * maskConfig.relativeWidth
-            val mh = imageView.height * maskConfig.relativeHeight
-            
-            when (maskConfig.shape) {
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.RECTANGLE -> {
-                    path.addRect(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, android.graphics.Path.Direction.CW)
-                }
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.ELLIPSE -> {
-                    path.addOval(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, android.graphics.Path.Direction.CW)
-                }
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.SPLIT -> {
-                    path.addRect(imageView.x - imageView.width, cy, imageView.x + imageView.width * 2, imageView.y + imageView.height * 2, android.graphics.Path.Direction.CW)
-                }
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.SHUTTER -> {
-                    path.addRect(imageView.x - imageView.width, cy - mh/2, imageView.x + imageView.width * 2, cy + mh/2, android.graphics.Path.Direction.CW)
-                }
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.HEART -> {
-                    createHeartPath(path, cx, cy, mw, mh)
-                }
-                com.tharunbirla.librecuts.models.EditOperation.MaskShape.STAR -> {
-                    createStarPath(path, cx, cy, mw / 2f, mw / 4f)
-                }
-                else -> {}
-            }
-            
-            if (maskConfig.rotationAngle != 0f) {
-                val matrix = android.graphics.Matrix()
-                matrix.postRotate(maskConfig.rotationAngle, cx, cy)
-                path.transform(matrix)
-            }
-            
-            if (maskConfig.isInverted) {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    canvas.clipOutPath(path)
-                } else {
-                    canvas.clipPath(path, android.graphics.Region.Op.DIFFERENCE)
-                }
-            } else {
-                canvas.clipPath(path)
-            }
-            
-            super.dispatchDraw(canvas)
-            canvas.restore()
-        } else {
-            super.dispatchDraw(canvas)
-        }
+        super.dispatchDraw(canvas)
 
         if (isEditingActive && imageUri != null) {
             val videoRect = getVideoRect()
@@ -797,57 +705,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 
             canvas.restore()
             
-            if (isMaskEditingMode && hasMask) {
-                canvas.save()
-                canvas.rotate(rotationAngle, imageView.x + imageView.width / 2f, imageView.y + imageView.height / 2f)
-                val cx = imageView.x + imageView.width * maskConfig.relativeX
-                val cy = imageView.y + imageView.height * maskConfig.relativeY
-                val mw = imageView.width * maskConfig.relativeWidth
-                val mh = imageView.height * maskConfig.relativeHeight
-                
-                if (maskConfig.rotationAngle != 0f) {
-                    canvas.rotate(maskConfig.rotationAngle, cx, cy)
-                }
-                
-                val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#00E5FF")
-                    style = Paint.Style.STROKE
-                    strokeWidth = 4f
-                }
-                
-                when (maskConfig.shape) {
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.RECTANGLE -> {
-                        canvas.drawRect(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, maskPaint)
-                    }
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.ELLIPSE -> {
-                        canvas.drawOval(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, maskPaint)
-                    }
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.SPLIT -> {
-                        canvas.drawLine(imageView.x - 100f, cy, imageView.x + imageView.width + 100f, cy, maskPaint)
-                    }
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.SHUTTER -> {
-                        canvas.drawLine(imageView.x - 100f, cy - mh/2, imageView.x + imageView.width + 100f, cy - mh/2, maskPaint)
-                        canvas.drawLine(imageView.x - 100f, cy + mh/2, imageView.x + imageView.width + 100f, cy + mh/2, maskPaint)
-                    }
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.HEART -> {
-                        val path = android.graphics.Path()
-                        createHeartPath(path, cx, cy, mw, mh)
-                        canvas.drawPath(path, maskPaint)
-                    }
-                    com.tharunbirla.librecuts.models.EditOperation.MaskShape.STAR -> {
-                        val path = android.graphics.Path()
-                        createStarPath(path, cx, cy, mw / 2f, mw / 4f)
-                        canvas.drawPath(path, maskPaint)
-                    }
-                    else -> {}
-                }
-                
-                // Draw mask center handle
-                canvas.drawCircle(cx, cy, 12f, handleFillPaint)
-                canvas.drawCircle(cx, cy, 12f, handleStrokePaint)
-                
-                canvas.restore()
-            }
+
         }
     }
 
@@ -870,34 +728,5 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         updateImageViewSizeAndPosition()
     }
 
-    private fun createHeartPath(path: android.graphics.Path, cx: Float, cy: Float, width: Float, height: Float) {
-        path.reset()
-        val topCurveHeight = height * 0.3f
-        path.moveTo(cx, cy + height * 0.4f)
-        path.cubicTo(
-            cx - width * 0.5f, cy + height * 0.1f,
-            cx - width * 0.5f, cy - topCurveHeight,
-            cx, cy - topCurveHeight * 0.4f
-        )
-        path.cubicTo(
-            cx + width * 0.5f, cy - topCurveHeight,
-            cx + width * 0.5f, cy + height * 0.1f,
-            cx, cy + height * 0.4f
-        )
-        path.close()
-    }
 
-    private fun createStarPath(path: android.graphics.Path, cx: Float, cy: Float, radiusOuter: Float, radiusInner: Float) {
-        path.reset()
-        val points = 5
-        val angle = Math.PI / points
-        for (i in 0 until 2 * points) {
-            val r = if (i % 2 == 0) radiusOuter else radiusInner
-            val currAngle = i * angle - Math.PI / 2
-            val x = (cx + r * Math.cos(currAngle)).toFloat()
-            val y = (cy + r * Math.sin(currAngle)).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-    }
 }

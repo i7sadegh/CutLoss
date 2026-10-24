@@ -122,84 +122,6 @@
                 android:textColor="@color/toolTextInactive"/>
         </LinearLayout>
 
-        <!-- Color Filters / LUTs -->
-        <LinearLayout
-            android:id="@+id/btnVideoFilterContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoFilter"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_palette_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_filters"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-        <!-- Mask -->
-        <LinearLayout
-            android:id="@+id/btnVideoMaskContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoMask"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_mask_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Mask"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-        <!-- Adjust -->
-        <LinearLayout
-            android:id="@+id/btnVideoAdjustContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoAdjust"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_page_info_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_adjust"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
         <!-- Speed -->
         <LinearLayout
             android:id="@+id/btnVideoSpeedContainer"
@@ -221,32 +143,6 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
                 android:text="@string/str_speed"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-        <!-- Extract Audio -->
-        <LinearLayout
-            android:id="@+id/btnVideoExtractAudioContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoExtractAudio"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_audio_extract_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_extract"
                 android:textSize="11sp"
                 android:fontFamily="sans-serif-medium"
                 android:textColor="@color/toolTextInactive"/>
@@ -278,60 +174,7 @@
                 android:textColor="@color/toolTextInactive"/>
         </LinearLayout>
 
-        <!-- Reverse -->
-        <LinearLayout
-            android:id="@+id/btnVideoReverseContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoReverse"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_fast_rewind_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_reverse"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
 
-
-
-        <!-- Mirror -->
-        <LinearLayout
-            android:id="@+id/btnVideoMirrorContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoMirror"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_mirror"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:id="@+id/tvVideoMirror"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Mirror"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
 
         <!-- Delete -->
         <LinearLayout

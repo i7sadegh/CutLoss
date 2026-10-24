@@ -430,43 +430,6 @@ class ImageOverlayView @JvmOverloads constructor(
         canvas.save()
         canvas.rotate(op.rotationAngle, centerX, centerY)
         
-        val relativeClipTimeMs = currentPositionMs - (op.startTimeMs ?: 0L)
-        val maskConfig = op.maskConfig.evaluatedAt(relativeClipTimeMs)
-        
-        if (maskConfig.shape != EditOperation.MaskShape.NONE) {
-            val path = android.graphics.Path()
-            val cx = dstRect.left + dstRect.width() * maskConfig.relativeX
-            val cy = dstRect.top + dstRect.height() * maskConfig.relativeY
-            val mw = dstRect.width() * maskConfig.relativeWidth
-            val mh = dstRect.height() * maskConfig.relativeHeight
-            
-            when (maskConfig.shape) {
-                EditOperation.MaskShape.RECTANGLE -> path.addRect(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, android.graphics.Path.Direction.CW)
-                EditOperation.MaskShape.ELLIPSE -> path.addOval(cx - mw/2, cy - mh/2, cx + mw/2, cy + mh/2, android.graphics.Path.Direction.CW)
-                EditOperation.MaskShape.SPLIT -> path.addRect(dstRect.left - dstRect.width(), cy, dstRect.right + dstRect.width(), dstRect.bottom + dstRect.height(), android.graphics.Path.Direction.CW)
-                EditOperation.MaskShape.SHUTTER -> path.addRect(dstRect.left - dstRect.width(), cy - mh/2, dstRect.right + dstRect.width(), cy + mh/2, android.graphics.Path.Direction.CW)
-                EditOperation.MaskShape.HEART -> createHeartPath(path, cx, cy, mw, mh)
-                EditOperation.MaskShape.STAR -> createStarPath(path, cx, cy, mw / 2f, mw / 4f)
-                else -> {}
-            }
-            
-            if (maskConfig.rotationAngle != 0f) {
-                val matrix = android.graphics.Matrix()
-                matrix.postRotate(maskConfig.rotationAngle, cx, cy)
-                path.transform(matrix)
-            }
-            
-            if (maskConfig.isInverted) {
-                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                    canvas.clipOutPath(path)
-                } else {
-                    canvas.clipPath(path, android.graphics.Region.Op.DIFFERENCE)
-                }
-            } else {
-                canvas.clipPath(path)
-            }
-        }
-        
         if (op.isMirrored) {
             canvas.scale(-1f, 1f, centerX, centerY)
         }
@@ -475,34 +438,5 @@ class ImageOverlayView @JvmOverloads constructor(
         paint.alpha = oldAlpha
     }
 
-    private fun createHeartPath(path: android.graphics.Path, cx: Float, cy: Float, width: Float, height: Float) {
-        path.reset()
-        val topCurveHeight = height * 0.3f
-        path.moveTo(cx, cy + height * 0.4f)
-        path.cubicTo(
-            cx - width * 0.5f, cy + height * 0.1f,
-            cx - width * 0.5f, cy - topCurveHeight,
-            cx, cy - topCurveHeight * 0.4f
-        )
-        path.cubicTo(
-            cx + width * 0.5f, cy - topCurveHeight,
-            cx + width * 0.5f, cy + height * 0.1f,
-            cx, cy + height * 0.4f
-        )
-        path.close()
-    }
 
-    private fun createStarPath(path: android.graphics.Path, cx: Float, cy: Float, radiusOuter: Float, radiusInner: Float) {
-        path.reset()
-        val points = 5
-        val angle = Math.PI / points
-        for (i in 0 until 2 * points) {
-            val r = if (i % 2 == 0) radiusOuter else radiusInner
-            val currAngle = i * angle - Math.PI / 2
-            val x = (cx + r * Math.cos(currAngle)).toFloat()
-            val y = (cy + r * Math.sin(currAngle)).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-    }
 }

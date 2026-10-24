@@ -30,10 +30,8 @@
     <string name="str_audio">Audio</string>
     <string name="loading_tag">Anschnallen! Dein Video wird geladen</string>
     <string name="str_0">0%</string>
-    <string name="str_adjust">Anpassen</string>
     <string name="str_audio_only">Nur Ton</string>
     <string name="str_ducking">Absenkung</string>
-    <string name="str_extract">Extrahieren</string>
     <string name="str_new_project">NEUES PROJEKT</string>
     <string name="str_apply_to_all">Für alle anwenden</string>
     <string name="str_beats">Takte</string>
@@ -43,7 +41,6 @@
     <string name="str_settings">Einstellungen</string>
     <string name="str_export_folder">Exportverzeichnis</string>
     <string name="str_color_filters">Farbfilter</string>
-    <string name="toast_audio_extracted_to_new_layer">Audio in neue Spur extrahiert</string>
     <string name="toast_audio_track_added">Audiospur hinzugefügt</string>
     <string name="toast_export_cancelled">Export abgebrochen</string>
     <string name="str_trim_video">Video kürzen</string>
@@ -66,8 +63,6 @@
     <string name="str_video_speed">Video Geschwindigkeit</string>
     <string name="str_fade_out">Ausblenden</string>
     <string name="str_saving_video">Speichere Video...</string>
-    <string name="str_reverse">Umkehren</string>
-    <string name="str_filters">Filter</string>
     <string name="str_please_don_t_close_the_app">Bitte App nicht schließen</string>
     <string name="str_00_00_00_00_00_00">00:00 - 00:00 (00:00)</string>
     <string name="str_fade">Blenden</string>
@@ -118,13 +113,8 @@
     <string name="toast_failed_to_load_overlay_file">Überlagerungsdatei konnte nicht geladen werden</string>
     <string name="toast_freeze_frame_added_to_sequence">Standbild zur Timeline hinzugefügt</string>
     <string name="toast_failed_to_create_freeze_frame">Standbild konnte nicht erstellt werden</string>
-    <string name="toast_failed_to_apply_speed_reset">Zurücksetzen der Geschwindigkeit fehlgeschlagen</string>
-    <string name="toast_failed_to_reverse_speed_proxy">Umkehren des Geschwindigkeits-Proxys fehlgeschlagen</string>
     <string name="toast_failed_to_apply_speed">Geschwindigkeit konnte nicht angewendet werden</string>
-    <string name="toast_failed_to_reverse_video">Umkehren des Videos fehlgeschlagen</string>
-    <string name="toast_failed_to_restore_video_speed">Video-Geschwindigkeits-Proxy konnte nicht zurückgesetzt werden</string>
     <string name="toast_seeker_is_not_over_the_selecte">Sucher ist nicht über dem ausgewählten Clip.</string>
-    <string name="toast_failed_to_extract_audio">Audiospur konnte nicht extrahiert werden</string>
     <string name="toast_failed_to_load_selected_video">Ausgewähltes Video konnte nicht geladen werden</string>
     <string name="toast_export_location_updated_succes">Export-Verzeichnis erfolgreich gesetzt!</string>
     <string name="toast_failed_to_select_folder">Verzeichnis konnte nicht ausgewählt werden</string>

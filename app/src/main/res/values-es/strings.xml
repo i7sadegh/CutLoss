@@ -23,16 +23,12 @@
     <string name="str_audio">Audio</string>
     <string name="str_crop">Recortar</string>
     <string name="str_none">Ninguno</string>
-    <string name="str_adjust">Ajustar</string>
     <string name="str_brightness_0">Brillo: 0</string>
     <string name="str_apply_to_all">Aplicar a todo</string>
     <string name="str_aa">Aa</string>
     <string name="str_mute">Silenciar</string>
-    <string name="str_filters">Filtros</string>
     <string name="str_speed">Velocidad</string>
-    <string name="str_extract">Extraer</string>
     <string name="str_freeze">Congelar</string>
-    <string name="str_reverse">Reversa</string>
     <string name="str_saving_video">Guardando video...</string>
     <string name="str_please_don_t_close_the_app">No cierres la aplicación</string>
     <string name="str_0">0%</string>
@@ -101,10 +97,7 @@
     <string name="toast_log_copied_to_clipboard">Copiado al portapapeles</string>
     <string name="toast_freeze_frame_added_to_sequence">Congelar fotograma para secuencia</string>
     <string name="toast_failed_to_create_freeze_frame">Error al congelar fotograma</string>
-    <string name="toast_failed_to_apply_speed_reset">Error al restablecer velocidad</string>
     <string name="toast_failed_to_apply_speed">Error al aolicar velocidad</string>
-    <string name="toast_audio_extracted_to_new_layer">Audio extraído como capa</string>
-    <string name="toast_failed_to_extract_audio">Error al extraer audio</string>
     <string name="toast_failed_to_load_selected_video">Error al sekeccionar audios</string>
     <string name="toast_audio_track_added">Pista de audio añadida</string>
     <string name="toast_failed_to_select_folder">Error al seleccionar carpeta</string>
@@ -117,8 +110,6 @@
     <string name="toast_failed_to_load_overlay_file">Fallo al cargar la superposición</string>
     <string name="toast_snapping_enabled">Pegado activado</string>
     <string name="toast_snapping_disabled">Pegado desactivado</string>
-    <string name="toast_failed_to_reverse_video">Fallo al invertir el video</string>
-    <string name="toast_failed_to_restore_video_speed">Fallo al recuperar la velocidad original del video.</string>
     <string name="toast_seeker_is_not_over_the_selecte">La cabeza no esta sobre el clip seleccionado.</string>
     <string name="toast_export_location_updated_succes">Ubicacion de exportacion cambiada exitosamente!</string>
     <string name="toast_failed_to_save_video_to_galler">Fallo al guardar video en la galería</string>

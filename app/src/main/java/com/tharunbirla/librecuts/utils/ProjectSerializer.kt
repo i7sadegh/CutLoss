@@ -49,7 +49,7 @@ object ProjectSerializer {
             var opTypeStr = jsonObject.get("operationType")?.asString
             if (opTypeStr == null) {
                 val typeVal = jsonObject.get("type")?.asString
-                val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "Adjust", "CanvasBackground")
+                val validClasses = setOf("Trim", "SpeedMain", "Crop", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay", "CanvasBackground")
                 
                 if (typeVal != null && validClasses.contains(typeVal)) {
                     opTypeStr = typeVal
@@ -85,19 +85,14 @@ object ProjectSerializer {
             val clazz = when (type) {
                 "Trim" -> EditOperation.Trim::class.java
                 "SpeedMain" -> EditOperation.SpeedMain::class.java
-                "ReverseMain" -> EditOperation.ReverseMain::class.java
-                "MirrorMain" -> EditOperation.MirrorMain::class.java
                 "Crop" -> EditOperation.Crop::class.java
                 "AddText" -> EditOperation.AddText::class.java
                 "Merge" -> EditOperation.Merge::class.java
-                "MaskMain" -> EditOperation.MaskMain::class.java
                 "MuteAudio" -> EditOperation.MuteAudio::class.java
                 "Transition" -> EditOperation.Transition::class.java
                 "MuteClip" -> EditOperation.MuteClip::class.java
-                "ColorFilter" -> EditOperation.ColorFilter::class.java
                 "AddBackgroundAudio" -> EditOperation.AddBackgroundAudio::class.java
                 "AddImageOverlay" -> EditOperation.AddImageOverlay::class.java
-                "Adjust" -> EditOperation.Adjust::class.java
                 "CanvasBackground" -> EditOperation.CanvasBackground::class.java
                 else -> null
             }
