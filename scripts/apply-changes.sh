@@ -1,50 +1,58 @@
 #!/usr/bin/env bash
 # ==========================================================================
 #  Cutloss simplification pipeline -- scripts/apply-changes.sh
-#  PHASE 7 -- remove six video-toolbar features entirely:
-#    1. Filter  (color filters / LUTs)
-#    2. Adjust  (brightness / contrast / saturation / ...)
-#    3. Mask    (video + image mask system, incl. mask keyframes)
-#    4. Reverse
-#    5. Mirror  (VIDEO mirror only; image-overlay mirror stays)
-#    6. Extract (extract audio to a new layer)
+#  PHASE 8 -- remove two more main-toolbar features entirely:
+#    1. Crop   (aspect-ratio + custom crop box, preview scaling)
+#    2. Canvas (canvas background: color / blur / image padding)
 #
 #  This file is 100% pure ASCII on purpose (paste-safe through mobile
 #  browsers into the GitHub web editor).
 #
 #  Scope of the removal (all of the code, per the no-.lcprj-compat policy):
-#    - video_editing_toolbar.xml : the six button blocks
-#    - image_editing_toolbar.xml : the image Mask button (mask is shared)
-#    - VideoEditingActivity.kt   : wirings, dialogs, preview matrix code,
-#                                  keyframe-mask branches, mask view setup
-#    - VideoEditingViewModelExt  : setColorFilter / setAdjust / mirror /
-#                                  reverse / mask mutators; split + delete
-#                                  promotion logic simplified
-#    - VideoEditingViewModel.kt  : LUT + adjust filter builders, mask geq
-#                                  builder, merge-loop and non-merge paths
-#    - EditOperation.kt          : ReverseMain, MirrorMain, MaskMain,
-#                                  ColorFilter, Adjust, MaskShape, MaskConfig,
-#                                  MergeItem{isReversed,isMirrored,maskConfig},
-#                                  AddImageOverlay.maskConfig,
-#                                  AddBackgroundAudio.extractedFromSegmentIndex
-#    - ProjectSerializer.kt      : the five dead type mappings
-#    - ProjectImportActivity.kt  : ReverseMain proxy revalidation branch
-#    - customviews               : VideoMaskOverlayView + MaskedFrameLayout
-#                                  deleted; mask code stripped from
-#                                  DraggableImageOverlayView + ImageOverlayView
-#    - services/FFmpegRenderEngine.kt : reverseVideo() + extractAudio()
-#    - layouts deleted           : bottom_sheet_mask, dialog_color_filters,
-#                                  item_color_filter_option,
-#                                  dialog_adjustments, item_adjust_option
-#    - drawables deleted         : 9 filter_preview jpgs, ic_mask_24,
-#                                  ic_audio_extract_24, ic_fast_rewind_24,
-#                                  ic_page_info_24, 10 adjust icons
-#    - strings (all locales)     : 9 dead keys
+#    - activity_video_editing.xml : cropOverlayView element,
+#                                  cropEditingToolbar + backgroundEditingToolbar
+#                                  includes, btnCrop + btnCanvasBackground
+#                                  tool blocks, bgPreviewImageView (canvas
+#                                  container gets the black backdrop instead)
+#    - VideoEditingActivity.kt   : fields, try-block wirings, crop/canvas
+#                                  actions + editing modes, applyCropPreview,
+#                                  resetCropPreview (renamed fitCanvasToVideo),
+#                                  getPresetCropBounds, updateCropUi,
+#                                  updateCanvasBackgroundPreview,
+#                                  pickBackgroundImage + its request code +
+#                                  onActivityResult branch, blur-index block,
+#                                  preview gating, tool id list
+#    - VideoEditingViewModelExt  : addCropOperation /
+#                                  updateCanvasBackgroundOperation
+#    - VideoEditingViewModel.kt  : buildCropFilterExpr, crop stage in
+#                                  buildVideoFilterStages, Crop in videoOps
+#                                  filters + preview gating, canvas background
+#                                  image input, merge-path BLUR/IMAGE padding
+#                                  (kept: black color pad for concat/xfade)
+#    - EditOperation.kt          : Crop + CanvasBackground data classes and
+#                                  their id mappings
+#    - ProjectSerializer.kt      : Crop + CanvasBackground type mappings and
+#                                  the CanvasBackground heuristic
+#    - services/FFmpegRenderEngine.kt : renderCropPreview + cropVideo +
+#                                  buildCropFilter
+#    - customviews               : CropOverlayView deleted
+#    - layouts deleted           : crop_editing_toolbar,
+#                                  background_editing_toolbar
+#    - drawables deleted         : ic_crop_24, ic_crop_16_9_24,
+#                                  ic_crop_portrait_24, ic_crop_square_24,
+#                                  ic_canvas_24, ic_canvas_color_24,
+#                                  aspect_ratio_background(.+_selected) (dead)
+#    - strings (all locales)     : str_crop, str_crop_aspect_ratio,
+#                                  str_16_9, str_9_16, str_1_1, str_custom
 #  Kept on purpose (shared / other features):
-#    ic_palette_24 (text palette), ic_mirror (image mirror button),
-#    btnImageMirror + DraggableImageOverlayView.toggleMirror,
-#    speed / freeze / trim / split / mute buttons, keyframes for
-#    Position / Opacity / Speed, findTextureView (transition preview).
+#    canvasContainer + fitCanvasToVideo (overlay alignment, fullscreen /
+#    PiP reparenting), black pad in the merge path (concat/xfade needs
+#    uniform frame sizes), bg_aspect_ratio_item/_selected (audio +
+#    transition toolbars), ic_opacity_24 / ic_image_24 / ic_close_24 /
+#    ic_check_24 (shared icons), showCustomColorPicker (text palette),
+#    copyContentUriToTempFile (merge/audio/images), text background
+#    settings (btnTextBackgroundTab family), circlecrop/rectcrop xfade
+#    transition names + their preview webps.
 #
 #  Verification gate (fails BEFORE the workflow commits anything):
 #    leftover scan, kept-feature survival asserts, function-inventory
@@ -62,12 +70,7 @@ EXT="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewMode
 VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 EO="app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
 PS="app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt"
-PIA="app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
-DIOV="app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt"
-IOV="app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt"
 FRE="app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
-VTB="app/src/main/res/layout/video_editing_toolbar.xml"
-ITB="app/src/main/res/layout/image_editing_toolbar.xml"
 AVEM="app/src/main/res/layout/activity_video_editing.xml"
 SELF="scripts/apply-changes.sh"
 FAILED=0
@@ -78,8 +81,7 @@ FAILED=0
 step0_preconditions() {
     echo "== step 0: preconditions"
     local ok=1 f
-    for f in "$VEA" "$EXT" "$VM" "$EO" "$PS" "$PIA" "$DIOV" "$IOV" "$FRE" \
-             "$VTB" "$ITB" "$AVEM"; do
+    for f in "$VEA" "$EXT" "$VM" "$EO" "$PS" "$FRE" "$AVEM"; do
         if [ ! -f "$f" ]; then
             echo " [FAIL] missing file: $f"
             ok=0
@@ -89,332 +91,415 @@ step0_preconditions() {
         echo " [FAIL] not inside a git repository"
         ok=0
     fi
-    # phase-6 markers must be present (correct base state)
-    if grep -q 'btnVideoReverse' "$VTB" 2>/dev/null; then
-        echo " [ok] video toolbar still contains the six target buttons"
+    # phase-7 must already be applied (the six toolbar features gone)
+    if grep -q 'btnVideoReverse' app/src/main/res/layout/video_editing_toolbar.xml 2>/dev/null; then
+        echo " [FAIL] phase-7 markers still present (btnVideoReverse) -- wrong base"
+        ok=0
     else
-        echo " [skip-check] video toolbar already clean of target buttons"
+        echo " [ok] phase-7 base detected (six toolbar features already gone)"
     fi
+    # phase-6 marker must still be present
     if grep -q 'android:layout_height="200dp"' "$AVEM" 2>/dev/null; then
-        echo " [ok] phase-6 base state detected (timeline 200dp)"
+        echo " [ok] phase-6 marker detected (timeline 200dp)"
     else
         echo " [FAIL] phase-6 marker (timeline 200dp) missing -- wrong base"
         ok=0
     fi
-    [ "$ok" -eq 1 ] && echo " [ok] repo state matches the expected phase-6 base"
+    # phase-8 targets: present (fresh base) or already clean (re-run)
+    if grep -q 'btnCrop' "$AVEM" 2>/dev/null; then
+        echo " [ok] crop + canvas targets still present (fresh phase-8 base)"
+    else
+        echo " [skip-check] crop + canvas targets already clean (phase-8 re-run)"
+    fi
+    [ "$ok" -eq 1 ] && echo " [ok] repo state matches the expected phase-7 base"
     [ "$ok" -eq 1 ] || return 1
     return 0
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 1 -- toolbar layouts: remove the six video buttons + image mask button
+#  STEP 1 -- activity_video_editing.xml: remove crop/canvas views + buttons
 # ---------------------------------------------------------------------------
-step1_toolbars() {
-    echo "== step 1: remove the six buttons from the toolbars"
+step1_layout() {
+    echo "== step 1: strip crop/canvas views from the main layout"
     python3 - <<'CUTPY'
 import sys
 import xml.dom.minidom as md
 
-def lit(t, old, new, cnt=1, name=''):
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+def repl(t, old, new, cnt=1, name=''):
     c = t.count(old)
     if c == cnt:
         return t.replace(old, new), True
     if c == 0 and (new in t or new == ''):
-        return t, False          # already applied
-    print('   [FAIL] %s: expected %d, found %d' % (name or old[:50], cnt, c))
-    sys.exit(1)
+        return t, False
+    fail('%s: expected %d, found %d' % (name or old[:60].replace('\n', '|'), cnt, c))
 
-# ---- video_editing_toolbar.xml: six blocks -------------------------------
-p = 'app/src/main/res/layout/video_editing_toolbar.xml'
-t = open(p, encoding='utf-8').read()
-changed = False
-
-blocks = [
-"""        <!-- Color Filters / LUTs -->
-        <LinearLayout
-            android:id="@+id/btnVideoFilterContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoFilter"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_palette_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_filters"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-""",
-"""        <!-- Mask -->
-        <LinearLayout
-            android:id="@+id/btnVideoMaskContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoMask"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_mask_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Mask"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-""",
-"""        <!-- Adjust -->
-        <LinearLayout
-            android:id="@+id/btnVideoAdjustContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoAdjust"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_page_info_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_adjust"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-""",
-"""        <!-- Extract Audio -->
-        <LinearLayout
-            android:id="@+id/btnVideoExtractAudioContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoExtractAudio"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_audio_extract_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_extract"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-""",
-"""        <!-- Reverse -->
-        <LinearLayout
-            android:id="@+id/btnVideoReverseContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoReverse"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_fast_rewind_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/str_reverse"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-""",
-"""        <!-- Mirror -->
-        <LinearLayout
-            android:id="@+id/btnVideoMirrorContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnVideoMirror"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_mirror"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:id="@+id/tvVideoMirror"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Mirror"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-"""]
-
-removed = 0
-for b in blocks:
-    t2, ch = lit(t, b, '', 1, 'toolbar block')
-    if ch:
-        removed += 1
-    t = t2
-
-md.parseString(t)
-open(p, 'w', encoding='utf-8').write(t)
-print('   [ok] video_editing_toolbar.xml: %d button block(s) removed' % removed)
-
-# ---- image_editing_toolbar.xml: the image Mask block ----------------------
-p = 'app/src/main/res/layout/image_editing_toolbar.xml'
-t = open(p, encoding='utf-8').read()
-blk = """        <!-- Mask -->
-        <LinearLayout
-            android:id="@+id/btnImageMaskContainer"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:orientation="vertical"
-            android:gravity="center">
-            <ImageButton
-                android:id="@+id/btnImageMask"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:background="@drawable/tool_button_inactive"
-                android:src="@drawable/ic_mask_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                app:tint="@color/toolTextInactive" />
-            <TextView
-                android:id="@+id/tvImageMask"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="Mask"
-                android:textSize="11sp"
-                android:fontFamily="sans-serif-medium"
-                android:textColor="@color/toolTextInactive"/>
-        </LinearLayout>
-
-"""
-t, ch = lit(t, blk, '', 1, 'image mask block')
-md.parseString(t)
-open(p, 'w', encoding='utf-8').write(t)
-print('   [ok] image_editing_toolbar.xml: mask block %s' % ('removed' if ch else 'already absent'))
-
-# ---- activity_video_editing.xml: unmask the player container --------------
 p = 'app/src/main/res/layout/activity_video_editing.xml'
 t = open(p, encoding='utf-8').read()
+n = 0
 
-t, c1 = lit(t,
-"""                <com.tharunbirla.librecuts.customviews.MaskedFrameLayout
-                    android:id="@+id/mainVideoMaskContainer"
+# 1a. canvasContainer gets the black backdrop; bgPreviewImageView goes away
+t, ch = repl(t, """            <FrameLayout
+                android:id="@+id/canvasContainer"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center">
+
+                <ImageView
+                    android:id="@+id/bgPreviewImageView"
                     android:layout_width="match_parent"
-                    android:layout_height="match_parent">""",
-"""                <FrameLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent">""", 1, 'MaskedFrameLayout open')
+                    android:layout_height="match_parent"
+                    android:scaleType="centerCrop"
+                    android:background="@color/cinemaBlack" />
 
-t, c2 = lit(t,
-'                </com.tharunbirla.librecuts.customviews.MaskedFrameLayout>',
-'                </FrameLayout>', 1, 'MaskedFrameLayout close')
+""", """            <FrameLayout
+                android:id="@+id/canvasContainer"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:layout_gravity="center"
+                android:background="@color/cinemaBlack">
 
-t, c3 = lit(t,
-"""            <com.tharunbirla.librecuts.customviews.VideoMaskOverlayView
-                android:id="@+id/videoMaskOverlayView"
+""", 1, 'canvasContainer + bgPreviewImageView')
+n += ch
+
+# 1b. CropOverlayView element
+t, ch = repl(t, """            <com.tharunbirla.librecuts.customviews.CropOverlayView
+                android:id="@+id/cropOverlayView"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:visibility="gone" />
 
-""", '', 1, 'VideoMaskOverlayView element')
+""", '', 1, 'cropOverlayView element')
+n += ch
+
+# 1c. cropEditingToolbar include
+t, ch = repl(t, """        <!-- Crop Editing Toolbar (inline mode, hidden by default) -->
+        <include
+            android:id="@+id/cropEditingToolbar"
+            layout="@layout/crop_editing_toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
+""", '', 1, 'cropEditingToolbar include')
+n += ch
+
+# 1d. backgroundEditingToolbar include
+t, ch = repl(t, """        <!-- Background Editing Toolbar (inline mode, hidden by default) -->
+        <include
+            android:id="@+id/backgroundEditingToolbar"
+            layout="@layout/background_editing_toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:visibility="gone" />
+
+""", '', 1, 'backgroundEditingToolbar include')
+n += ch
+
+# 1e. btnCrop + btnCanvasBackground tool blocks
+t, ch = repl(t, """
+                <LinearLayout
+                    android:layout_width="60dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center">
+                    <ImageButton
+                        android:id="@+id/btnCrop"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:background="@drawable/tool_button_inactive"
+                        android:src="@drawable/ic_crop_24"
+                        android:padding="8dp"
+                        android:scaleType="fitCenter"
+                        app:tint="@color/toolTextInactive" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/str_crop"
+                        android:textSize="11sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/toolTextInactive"/>
+                </LinearLayout>
+
+                <LinearLayout
+                    android:layout_width="60dp"
+                    android:layout_height="wrap_content"
+                    android:orientation="vertical"
+                    android:gravity="center">
+                    <ImageButton
+                        android:id="@+id/btnCanvasBackground"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:background="@drawable/tool_button_inactive"
+                        android:src="@drawable/ic_canvas_24"
+                        android:padding="8dp"
+                        android:scaleType="fitCenter"
+                        app:tint="@color/toolTextInactive" />
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="Canvas"
+                        android:textSize="11sp"
+                        android:fontFamily="sans-serif-medium"
+                        android:textColor="@color/toolTextInactive"/>
+                </LinearLayout>
+""", "\n", 1, 'btnCrop + btnCanvasBackground blocks')
+n += ch
 
 md.parseString(t)
 open(p, 'w', encoding='utf-8').write(t)
-print('   [ok] activity_video_editing.xml: player container unmasked (%d/%d/%d edits)'
-      % (c1, c2, c3))
+print('   [ok] activity_video_editing.xml: %d block(s) removed/reworked' % n)
 CUTPY
-    [ $? -ne 0 ] && return 1
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 2 -- delete dead files (view, toolbars, icons)
+# ---------------------------------------------------------------------------
+step2_delete_files() {
+    echo "== step 2: delete crop/canvas files"
+    local n=0 f
+    for f in \
+        app/src/main/java/com/tharunbirla/librecuts/customviews/CropOverlayView.kt \
+        app/src/main/res/layout/crop_editing_toolbar.xml \
+        app/src/main/res/layout/background_editing_toolbar.xml \
+        app/src/main/res/drawable/ic_crop_24.xml \
+        app/src/main/res/drawable/ic_crop_16_9_24.xml \
+        app/src/main/res/drawable/ic_crop_portrait_24.xml \
+        app/src/main/res/drawable/ic_crop_square_24.xml \
+        app/src/main/res/drawable/ic_canvas_24.xml \
+        app/src/main/res/drawable/ic_canvas_color_24.xml \
+        app/src/main/res/drawable/aspect_ratio_background.xml \
+        app/src/main/res/drawable/aspect_ratio_background_selected.xml \
+    ; do
+        if [ -f "$f" ]; then
+            git rm -q -- "$f" 2>/dev/null || rm -f -- "$f"
+            echo " [ok] deleted $f"
+            n=$((n + 1))
+        fi
+    done
+    if [ "$n" -eq 0 ]; then
+        echo " [skip] all crop/canvas files already absent"
+    fi
     return 0
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 2 -- VideoEditingActivity.kt
+#  STEP 3 -- EditOperation.kt: drop the Crop + CanvasBackground models
 # ---------------------------------------------------------------------------
-step2_vea() {
-    echo "== step 2: VideoEditingActivity.kt -- remove the six features"
+step3_models() {
+    echo "== step 3: EditOperation.kt -- remove Crop + CanvasBackground"
+    python3 - <<'CUTPY'
+import re, sys
+
+P = 'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt'
+t = open(P, encoding='utf-8').read()
+n = 0
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+def cut_class(doc_first_line, cls_sig):
+    """Remove a doc comment + data class block, brace-walked from cls_sig."""
+    global t, n
+    if cls_sig not in t:
+        return False
+    i = t.find(cls_sig)
+    # strip the preceding /** ... */ comment block if directly attached
+    head = t[:i]
+    if head.endswith('    /**\n' + doc_first_line + '\n'):
+        j = head.rfind('    /**\n' + doc_first_line)
+    else:
+        j = i
+    # brace-walk the class body
+    k = t.find('{', i)
+    depth, k = 1, k + 1
+    while depth > 0 and k < len(t):
+        if t[k] == '{':
+            depth += 1
+        elif t[k] == '}':
+            depth -= 1
+        k += 1
+    if depth != 0:
+        fail('unbalanced class body for ' + cls_sig)
+    # eat one trailing newline
+    if k < len(t) and t[k] == '\n':
+        k += 1
+    t = t[:j] + t[k:]
+    n += 1
+    return True
+
+# 3a. Crop data class (doc comment + class + init block)
+cut_class('     * Crop operation: Crops video to a specified aspect ratio.',
+          '    data class Crop(\n')
+
+# 3b. CanvasBackground data class (doc comment + class + nested enum)
+cut_class('     * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.',
+          '    data class CanvasBackground(\n')
+
+# 3c. id mappings
+def repl(old, new, cnt=1, name=''):
+    global t, n
+    c = t.count(old)
+    if c == cnt:
+        t = t.replace(old, new)
+        n += 1
+        return True
+    if c == 0 and (new in t or new == ''):
+        return False
+    fail('%s: expected %d, found %d' % (name or old[:60], cnt, c))
+
+repl('        is EditOperation.Crop -> id\n', '', 1, 'Crop id mapping')
+repl('        is EditOperation.CanvasBackground -> id\n', '', 1, 'CanvasBackground id mapping')
+
+open(P, 'w', encoding='utf-8').write(t)
+print('   [ok] EditOperation.kt: %d removal(s)' % n)
+CUTPY
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 4 -- ProjectSerializer.kt: drop the dead type mappings
+# ---------------------------------------------------------------------------
+step4_serializer() {
+    echo "== step 4: ProjectSerializer.kt -- remove Crop/CanvasBackground mappings"
     python3 - <<'CUTPY'
 import sys
 
-P = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+P = 'app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt'
 t = open(P, encoding='utf-8').read()
-orig_lines = t.count('\n')
+n = 0
 
 def fail(msg):
     print('   [FAIL] ' + msg)
     sys.exit(1)
 
 def repl(old, new, cnt=1, name=''):
-    global t
+    global t, n
     c = t.count(old)
     if c == cnt:
         t = t.replace(old, new)
+        n += 1
+        return True
+    if c == 0 and (new in t or new == ''):
+        return False
+    fail('%s: expected %d, found %d' % (name or old[:60], cnt, c))
+
+# 4a. validClasses set entries
+repl('"Crop", "AddText"', '"AddText"', 1, 'validClasses Crop entry')
+repl('"AddImageOverlay", "CanvasBackground")', '"AddImageOverlay")', 1, 'validClasses CanvasBackground entry')
+
+# 4b. CanvasBackground deserialization heuristic
+repl("""                    } else if (jsonObject.has("colorHex") && jsonObject.has("blurRadius")) {
+                        opTypeStr = "CanvasBackground"
+                    } else {
+""", """                    } else {
+""", 1, 'CanvasBackground heuristic')
+
+# 4c. CanvasBackground type-normalization block
+repl("""            } else if (type == "CanvasBackground") {
+                val t = jsonObject.get("type")?.asString
+                if (t != null && t != "CanvasBackground") {
+                     jsonObject.addProperty("backgroundType", t)
+                } else if (!jsonObject.has("backgroundType")) {
+                     jsonObject.addProperty("backgroundType", "COLOR")
+                }
+            }
+""", """            }
+""", 1, 'CanvasBackground normalize block')
+
+# 4d. class mappings
+repl('                "Crop" -> EditOperation.Crop::class.java\n', '', 1, 'Crop class mapping')
+repl('                "CanvasBackground" -> EditOperation.CanvasBackground::class.java\n', '', 1, 'CanvasBackground class mapping')
+
+open(P, 'w', encoding='utf-8').write(t)
+print('   [ok] ProjectSerializer.kt: %d removal(s)' % n)
+CUTPY
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 5 -- VideoEditingViewModelExt.kt: drop the two mutators
+# ---------------------------------------------------------------------------
+step5_ext() {
+    echo "== step 5: VideoEditingViewModelExt.kt -- remove crop/canvas mutators"
+    python3 - <<'CUTPY'
+import sys
+
+P = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt'
+t = open(P, encoding='utf-8').read()
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+old = """fun VideoEditingViewModel.addCropOperation(
+    aspectRatio: String, xFraction: Float = 0f, yFraction: Float = 0f,
+    wFraction: Float = 1f, hFraction: Float = 1f
+) {
+    executeCommand(ReplaceUniqueOperationCommand(
+        EditOperation.Crop(aspectRatio, xFraction, yFraction, wFraction, hFraction),
+        "Crop Video"
+    ))
+}
+
+fun VideoEditingViewModel.updateCanvasBackgroundOperation(
+    type: EditOperation.CanvasBackground.BackgroundType, colorHex: String = "#000000",
+    imageUri: Uri? = null, blurRadius: Int = 20
+) {
+    executeCommand(ReplaceUniqueOperationCommand(
+        EditOperation.CanvasBackground(type, colorHex, imageUri, blurRadius),
+        "Set Canvas Background"
+    ))
+}
+
+"""
+c = t.count(old)
+if c == 1:
+    t = t.replace(old, '')
+    print('   [ok] both mutators removed')
+elif c == 0 and 'addCropOperation' not in t and 'updateCanvasBackgroundOperation' not in t:
+    print('   [skip] mutators already absent')
+else:
+    fail('unexpected state: addCropOperation/updateCanvasBackgroundOperation block mismatch (count=%d)' % c)
+
+open(P, 'w', encoding='utf-8').write(t)
+CUTPY
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 6 -- VideoEditingViewModel.kt: render paths + preview gating
+# ---------------------------------------------------------------------------
+step6_vm() {
+    echo "== step 6: VideoEditingViewModel.kt -- remove crop/canvas render paths"
+    python3 - <<'CUTPY'
+import sys
+
+P = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt'
+t = open(P, encoding='utf-8').read()
+n = 0
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+def repl(old, new, cnt=1, name=''):
+    global t, n
+    c = t.count(old)
+    if c == cnt:
+        t = t.replace(old, new)
+        n += 1
         return True
     if c == 0 and (new in t or new == ''):
         return False
     fail('%s: expected %d, found %d' % (name or old[:60].replace('\n', '|'), cnt, c))
 
-def cut_span(start, end, repl_text=''):
-    global t
-    i = t.find(start)
-    if i == -1:
-        return False
-    j = t.find(end, i + len(start))
-    if j == -1:
-        fail('cut_span: end marker not found for ' + start[:60])
-    t = t[:i] + repl_text + t[j + len(end):]
-    return True
-
 def walk_close(s, i):
-    """index just past the brace closing the first '{' at/after i"""
     j = s.find('{', i)
     if j == -1:
         return -1
@@ -428,7 +513,7 @@ def walk_close(s, i):
     return k if depth == 0 else -1
 
 def cut_fun(sig):
-    global t
+    global t, n
     i = t.find('\n' + sig)
     if i == -1:
         return False
@@ -439,6 +524,241 @@ def cut_fun(sig):
     if k < len(t) and t[k] == '\n':
         k += 1
     t = t[:i] + t[k:]
+    n += 1
+    return True
+
+# 6a. buildCropFilterExpr + its doc comment
+cut_fun('    private fun buildCropFilterExpr(op: EditOperation.Crop): String? {')
+repl('    /** Build a crop filter expression for an aspect ratio. */\n', '', 1, 'buildCropFilterExpr doc')
+
+# 6b. buildVideoFilterStages: iterate operations directly, no crop stage
+repl("""        // Process overlays first so their relative coordinates align with the uncropped original video, matching the UI.
+        val overlayOps = operations.filterNot { it is EditOperation.Crop }
+        val cropOps = operations.filterIsInstance<EditOperation.Crop>()
+
+        for (op in overlayOps) {
+""", """        for (op in operations) {
+""", 1, 'overlayOps/cropOps split')
+
+repl("""
+        // Process crop at the end so it crops the video and all overlays together, matching the preview.
+        for (op in cropOps) {
+            val filterExpr = buildCropFilterExpr(op)
+            if (filterExpr != null) {
+                val nextLabel = "[v$stageIndex]"
+                stages.add("$currentLabel$filterExpr$nextLabel")
+                currentLabel = nextLabel
+                stageIndex++
+            }
+        }
+
+        return Pair(stages, currentLabel)
+""", """
+        return Pair(stages, currentLabel)
+""", 1, 'crop-at-end stage')
+
+# 6c. videoOps filter in buildConsolidatedFFmpegCommand
+repl('        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay }\n',
+     '        val videoOps = nonMergeOps.filter { it is EditOperation.AddText || it is EditOperation.AddImageOverlay }\n',
+     1, 'videoOps filter')
+
+# 6d. canvas background image input section
+repl(r"""        // 5. Canvas Background Image Input
+        val bgOp = operations.filterIsInstance<EditOperation.CanvasBackground>().lastOrNull()
+        var bgImageIndex = -1
+        if (bgOp != null && bgOp.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgOp.imageUri != null) {
+            val bgPath = resolveUriToPath(bgOp.imageUri)
+            if (bgPath != null) {
+                cmd.append(" -loop 1 -i \"$bgPath\"")
+                bgImageIndex = inputIndex
+                inputIndex++
+            }
+        }
+
+""", '', 1, 'canvas background image input')
+
+# 6e. merge path padding: keep only the black color pad
+repl("""                // 2. Apply background/padding
+                if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.BLUR) {
+                    val blur = bgOp.blurRadius
+                    val bgScale = "format=yuv420p,scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight,boxblur=$blur"
+                    val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
+                    filterParts.add("[pre$i]split=2[bg_orig$i][fg_orig$i]")
+                    filterParts.add("[bg_orig$i]$bgScale[bg$i]")
+                    filterParts.add("[fg_orig$i]$fgScale[fg$i]")
+                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,format=yuv420p[norm$i]")
+                } else if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgImageIndex != -1) {
+                    val bgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight"
+                    val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
+                    filterParts.add("[$bgImageIndex:v]$bgScale[bg$i]")
+                    filterParts.add("[pre$i]$fgScale[fg$i]")
+                    // Use shortest=1 in case the loop goes on forever, but we specified -loop 1 which creates an infinite stream for image
+                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                } else {
+                    // Default COLOR
+                    val color = bgOp?.colorHex ?: "black"
+                    val padColor = if (color.startsWith("#")) color else "black"
+                    // Create a solid color background of mainWidth x mainHeight
+                    filterParts.add("color=c=$padColor:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
+                    filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
+                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+                }
+""", """                // 2. Pad every clip onto a black canvas of the main dimensions
+                //    (uniform frame sizes are required for concat/xfade)
+                filterParts.add("color=c=black:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
+                filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
+                filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
+""", 1, 'merge path padding')
+
+# 6f. buildPreviewCommand gating + videoOps
+repl('        if (operations.none { it is EditOperation.Crop || it is EditOperation.AddText }) {\n',
+     '        if (operations.none { it is EditOperation.AddText }) {\n',
+     1, 'preview none gate')
+repl('        val videoOps = operations.filter { it is EditOperation.Crop || it is EditOperation.AddText }\n',
+     '        val videoOps = operations.filter { it is EditOperation.AddText }\n',
+     1, 'preview videoOps filter')
+
+open(P, 'w', encoding='utf-8').write(t)
+print('   [ok] VideoEditingViewModel.kt: %d edit(s)' % n)
+CUTPY
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 7 -- FFmpegRenderEngine.kt: drop the dead crop renderers
+# ---------------------------------------------------------------------------
+step7_engine() {
+    echo "== step 7: FFmpegRenderEngine.kt -- remove crop renderers"
+    python3 - <<'CUTPY'
+import sys
+
+P = 'app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt'
+t = open(P, encoding='utf-8').read()
+n = 0
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+def walk_close(s, i):
+    j = s.find('{', i)
+    if j == -1:
+        return -1
+    depth, k = 1, j + 1
+    while depth > 0 and k < len(s):
+        if s[k] == '{':
+            depth += 1
+        elif s[k] == '}':
+            depth -= 1
+        k += 1
+    return k if depth == 0 else -1
+
+def cut_fun(sig):
+    global t, n
+    i = t.find('\n' + sig)
+    if i == -1:
+        return False
+    i += 1
+    k = walk_close(t, i)
+    if k == -1:
+        fail('cut_fun: unbalanced for ' + sig)
+    if k < len(t) and t[k] == '\n':
+        k += 1
+    t = t[:i] + t[k:]
+    n += 1
+    return True
+
+def cut_span(start, end):
+    global t, n
+    i = t.find(start)
+    if i == -1:
+        return False
+    j = t.find(end, i + len(start))
+    if j == -1:
+        fail('cut_span: end marker not found for ' + start[:60])
+    t = t[:i] + t[j + len(end):]
+    n += 1
+    return True
+
+# 7a. renderCropPreview (brace-walked)
+cut_fun('    suspend fun renderCropPreview(')
+
+# 7b. cropVideo (brace-walked)
+cut_fun('    suspend fun cropVideo(')
+
+# 7c. buildCropFilter (expression-bodied: cut signature line through closer)
+cut_span('    private fun buildCropFilter(aspectRatio: String): String? = when (aspectRatio) {\n',
+         '        else   -> null\n    }\n\n')
+
+open(P, 'w', encoding='utf-8').write(t)
+print('   [ok] FFmpegRenderEngine.kt: %d removal(s)' % n)
+CUTPY
+}
+
+# ---------------------------------------------------------------------------
+#  STEP 8 -- VideoEditingActivity.kt: strip all crop/canvas UI code
+# ---------------------------------------------------------------------------
+step8_vea() {
+    echo "== step 8: VideoEditingActivity.kt -- remove crop/canvas UI code"
+    python3 - <<'CUTPY'
+import sys
+
+P = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
+t = open(P, encoding='utf-8').read()
+n = 0
+
+def fail(msg):
+    print('   [FAIL] ' + msg)
+    sys.exit(1)
+
+def repl(old, new, cnt=1, name=''):
+    global t, n
+    c = t.count(old)
+    if c == cnt:
+        t = t.replace(old, new)
+        n += 1
+        return True
+    if c == 0 and (new in t or new == ''):
+        return False
+    fail('%s: expected %d, found %d' % (name or old[:60].replace('\n', '|'), cnt, c))
+
+def cut_span(start, end, repl_text=''):
+    global t, n
+    i = t.find(start)
+    if i == -1:
+        return False
+    j = t.find(end, i + len(start))
+    if j == -1:
+        fail('cut_span: end marker not found for ' + start[:60].replace('\n', '|'))
+    t = t[:i] + repl_text + t[j + len(end):]
+    n += 1
+    return True
+
+def walk_close(s, i):
+    j = s.find('{', i)
+    if j == -1:
+        return -1
+    depth, k = 1, j + 1
+    while depth > 0 and k < len(s):
+        if s[k] == '{':
+            depth += 1
+        elif s[k] == '}':
+            depth -= 1
+        k += 1
+    return k if depth == 0 else -1
+
+def cut_fun(sig):
+    global t, n
+    i = t.find('\n' + sig)
+    if i == -1:
+        return False
+    i += 1
+    k = walk_close(t, i)
+    if k == -1:
+        fail('cut_fun: unbalanced for ' + sig)
+    if k < len(t) and t[k] == '\n':
+        k += 1
+    t = t[:i] + t[k:]
+    n += 1
     return True
 
 def func_span(sig):
@@ -450,7 +770,7 @@ def func_span(sig):
     return (i, k) if k != -1 else None
 
 def repl_in(sig, old, new, cnt=1):
-    global t
+    global t, n
     r = func_span(sig)
     if r is None:
         return False
@@ -459,1325 +779,188 @@ def repl_in(sig, old, new, cnt=1):
     c = body.count(old)
     if c == cnt:
         t = t[:i] + body.replace(old, new) + t[end:]
+        n += 1
         return True
     if c == 0 and (new in body or new == ''):
         return False
     fail('in %s: expected %d, found %d of %r' % (sig.split('(')[0], cnt, c, old[:60]))
 
-def cut_video_else(sig, first_line):
-    """Remove the trailing `} else { ... }` branch whose first body line is
-    given; the if-close brace before ` else ` is kept."""
-    global t
-    r = func_span(sig)
-    if r is None:
-        return False
-    i, end = r
-    body = t[i:end]
-    sm = '        } else {\n' + first_line
-    si = body.find(sm)
-    if si == -1:
-        return False
-    k = walk_close(body, si + 9)
-    if k == -1:
-        fail('cut_video_else: unbalanced in ' + sig)
-    body = body[:si + 9] + body[k:]
-    t = t[:i] + body + t[end:]
-    return True
+# --- 8a. field declarations ----------------------------------------------
+repl("""    private var bgPreviewImageView: ImageView? = null
+    private var lastActiveClipIndexForBlur: Int = 0
+    private var currentBlurJob: Job? = null
+""", '', 1, 'bg preview fields')
+repl("    private var backgroundEditingToolbar: View? = null\n", '', 1, 'backgroundEditingToolbar field')
+repl("""    private var cropEditingToolbar: View? = null
+    private var cropOverlayView: com.tharunbirla.librecuts.customviews.CropOverlayView? = null
+    private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null
+""", '', 1, 'crop fields')
 
-# --- 2a. whole-function cuts ---------------------------------------------
-funs = [
- ('    private fun reverseVideoSegment(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {', 'reverseVideoSegment'),
- ('    private fun regenerateSpeedProxyForUnreverse(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {', 'regenerateSpeedProxyForUnreverse'),
- ('    private fun extractAudioFromSegment(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {', 'extractAudioFromSegment'),
- ('    private fun showColorFilterSelectionDialog(clipIndex: Int) {', 'showColorFilterSelectionDialog'),
- ('    private fun showAdjustSelectionDialog(clipIndex: Int) {', 'showAdjustSelectionDialog'),
- ('    private fun showMaskBottomSheet() {', 'showMaskBottomSheet'),
- ('    private fun applyColorFilterToPlayer(filterName: String) {', 'applyColorFilterToPlayer'),
- ('    private fun applyColorFilterAndAdjustToPlayer(', 'applyColorFilterAndAdjustToPlayer'),
-]
-nfun = sum(1 for sig, _ in funs if cut_fun(sig))
-print('   [ok] %d whole function(s) cut' % nfun)
+# --- 8b. initializeViews --------------------------------------------------
+repl("        bgPreviewImageView = findViewById(R.id.bgPreviewImageView)\n", '', 1, 'bgPreviewImageView init')
 
-# --- 2b. toolbar wirings ---------------------------------------------------
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoExtractAudio)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        val items = getSequenceItems()
-                        if (index >= 0 && index < items.size) {
-                            extractAudioFromSegment(index, items[index])
-                        }
-                    }
-                }
-""", '', 1, 'extract wiring')
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoReverse)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        val items = getSequenceItems()
-                        if (index >= 0 && index < items.size) {
-                            reverseVideoSegment(index, items[index])
-                        }
-                    }
-                }
-""", '', 1, 'reverse wiring')
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoMirror)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        if (index == 0) {
-                            val isCurrentlyMirrored = viewModel.project.value?.operations?.any { it is EditOperation.MirrorMain && it.isMirrored } ?: false
-                            viewModel.updateMainVideoMirror(!isCurrentlyMirrored)
-                        } else {
-                            viewModel.toggleMergeItemMirror(index - 1)
-                        }
-                        viewModel.project.value?.let { renderTracks(it) }
-                        syncUiWithPlayer()
-                    }
-                }
-""", '', 1, 'mirror wiring')
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoFilter)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        showColorFilterSelectionDialog(index)
-                    }
-                }
-""", '', 1, 'filter wiring')
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoMask)?.setBounceClickListener {
-                    showMaskBottomSheet()
-                }
-""", '', 1, 'mask wiring')
-repl("""                toolbar.findViewById<ImageButton>(R.id.btnVideoAdjust)?.setBounceClickListener {
-                    selectedVideoIndex?.let { index ->
-                        showAdjustSelectionDialog(index)
-                    }
-                }
-""", '', 1, 'adjust wiring')
-repl("""                toolbar.findViewById<View>(R.id.btnImageMask)?.setBounceClickListener {
-                    showMaskBottomSheet()
-                }
-""", '', 1, 'image mask wiring')
-print('   [ok] toolbar wirings removed')
+# --- 8c. cropOverlayView try-block ---------------------------------------
+cut_span("        cropOverlayView = try {\n",
+         '            Log.w(TAG, "CropOverlayView not found: ${e.message}")\n            null\n        }\n\n')
 
-# --- 2c. fields ------------------------------------------------------------
-repl("""    private var videoMaskOverlayView: com.tharunbirla.librecuts.customviews.VideoMaskOverlayView? = null
-    private var mainVideoMaskContainer: com.tharunbirla.librecuts.customviews.MaskedFrameLayout? = null
-""", '', 1, 'mask view fields')
-repl("""    private var lastAppliedFilterName: String? = null
-    private var lastAppliedAdjust: com.tharunbirla.librecuts.models.EditOperation.Adjust? = null
-""", '', 1, 'preview filter fields')
+# --- 8d. cropEditingToolbar try-block -------------------------------------
+cut_span("        cropEditingToolbar = try {\n",
+         '            Log.w(TAG, "Crop editing toolbar not found: ${e.message}")\n            null\n        }\n\n')
 
-# --- 2d. image-commit callback: drop maskConfig parameter ------------------
-repl('overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored, maskConfig ->',
-     'overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored ->',
-     1, 'onImageCommitted lambda')
-repl('imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored, maskConfig = maskConfig',
-     'imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored',
-     1, 'updateOperation args')
-repl("""                                opacity = opacity,
-                                isMirrored = isMirrored,
-                                maskConfig = maskConfig
-                            )""",
-"""                                opacity = opacity,
-                                isMirrored = isMirrored
-                            )""", 1, 'addImageOverlayOperation args')
+# --- 8e. backgroundEditingToolbar try-block -------------------------------
+cut_span("        backgroundEditingToolbar = try {\n",
+         '            Log.w(TAG, "Background editing toolbar not found: ${e.message}")\n            null\n        }\n\n')
 
-# --- 2e. draggableImageOverlay onMaskChanged + videoMaskOverlayView init ---
-cut_span(
-'                overlay.onMaskChanged = { newMaskConfig ->',
-"""                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "DraggableImageOverlayView not found:""",
-"""            }
-        } catch (e: Exception) {
-            Log.w(TAG, "DraggableImageOverlayView not found:""")
-
-cut_span(
-'        mainVideoMaskContainer = findViewById(R.id.mainVideoMaskContainer)',
-"""        } catch (e: Exception) {
-            Log.w(TAG, "VideoMaskOverlayView not found: ${e.message}")
-            null
+# --- 8f. tool button click listeners --------------------------------------
+repl("""        findViewById<ImageButton>(R.id.btnCrop).setBounceClickListener {
+            setActiveToolButton(R.id.btnCrop)
+            cropAction()
         }
-""")
-print('   [ok] mask view initialization removed')
 
-# --- 2f. clipChildren -------------------------------------------------------
-repl("""            // Enable clipping on canvasContainer and mainVideoMaskContainer
-            canvasContainer.clipChildren = true
-            canvasContainer.clipToPadding = true
-            mainVideoMaskContainer?.clipChildren = true
-            mainVideoMaskContainer?.clipToPadding = true""",
-"""            // Enable clipping on canvasContainer
-            canvasContainer.clipChildren = true
-            canvasContainer.clipToPadding = true""", 1, 'clipChildren')
-repl('val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView, videoMaskOverlayView)',
-     'val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)',
-     2, 'overlays lists')
-print('   [ok] overlays + clipping cleaned')
+        findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {
+            setActiveToolButton(R.id.btnCanvasBackground)
+            canvasBackgroundAction()
+        }
 
-# --- 2g. applySpeedToSegment: drop reverse preservation (BOTH branches) ----
-repl("""            if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                if (item.isReversed) {
-                    showLoading("Reversing speed-adjusted video...")
-                    val reverseFileName = "proxy_reverse_${System.currentTimeMillis()}.mp4"
-                    val reverseFilePath = java.io.File(cacheDir, reverseFileName).absolutePath
-                    val speedProxyPath = result.outputPath
+""", '', 1, 'btnCrop/btnCanvasBackground listeners')
 
-                    val durationMs = ((item.trimEndMs - item.trimStartMs) / speed).toLong()
-                    val reverseResult = ffmpegEngine.reverseVideo(
-                        sourceFilePath = speedProxyPath,
-                        startMs = 0L,
-                        endMs = durationMs,
-                        outputFilePath = reverseFilePath
-                    )
+# --- 8g. preview button gating --------------------------------------------
+repl('                it is EditOperation.Crop || it is EditOperation.AddText\n',
+     '                it is EditOperation.AddText\n', 1, 'preview gating')
 
-                    hideLoading()
+# --- 8h. tool id list ------------------------------------------------------
+repl('        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnCanvasBackground)\n',
+     '        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio)\n',
+     1, 'toolIds list')
 
-                    if (reverseResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                        val finalProxyUri = android.net.Uri.fromFile(java.io.File(reverseResult.outputPath))
-                        if (index == 0) {
-                            viewModel.updateMainVideoSpeed(speed, null)
-                            viewModel.updateMainVideoReverse(isReversed = true, proxyUri = finalProxyUri)
-                        } else {
-                            updateVideoSegment(index, item.copy(speed = speed, proxyUri = finalProxyUri, isReversed = true))
-                        }
-                        hideSpeedEditingToolbar()
-                    } else {
-                        android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_reverse_speed_proxy, android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    hideLoading()
-                    val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                    if (index == 0) {
-                        viewModel.updateMainVideoSpeed(speed, proxyUri)
-                    } else {
-                        updateVideoSegment(index, item.copy(speed = speed, proxyUri = proxyUri))
-                    }
-                    hideSpeedEditingToolbar()
-                }
-            } else {""",
-"""            if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                hideLoading()
-                val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                if (index == 0) {
-                    viewModel.updateMainVideoSpeed(speed, proxyUri)
-                } else {
-                    updateVideoSegment(index, item.copy(speed = speed, proxyUri = proxyUri))
-                }
-                hideSpeedEditingToolbar()
-            } else {""", 1, 'speed apply reverse branch')
-print('   [ok] speed apply no longer chains a reverse pass')
+# --- 8i. project observer: always fit, no crop/canvas preview -------------
+cut_span("                    val cropOps = project.operations.filterIsInstance<EditOperation.Crop>()\n",
+         "                    updateCanvasBackgroundPreview()\n",
+         "                    fitCanvasToVideo()\n")
 
-repl("""            // Reset to normal speed, but preserve reverse if it is reversed!
-            if (item.isReversed) {
+# --- 8j. applyCropPreview (whole function) --------------------------------
+cut_fun('    private fun applyCropPreview(aspectRatio: String) {')
+
+# --- 8k. resetCropPreview -> fitCanvasToVideo (rename + strip crop refs) --
+repl('    private fun resetCropPreview() {\n', '    private fun fitCanvasToVideo() {\n', 1, 'rename resetCropPreview')
+repl('            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)\n',
+     '            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay)\n',
+     1, 'overlays list in fitCanvasToVideo')
+repl('            cropOverlayView?.setVideoSize(finalWidth, finalHeight)\n', '', 1, 'cropOverlayView sizing')
+
+# --- 8l. crop/canvas actions + editing modes -------------------------------
+repl("""    @SuppressLint("InflateParams")
+    private fun cropAction() {
+        enterCropEditingMode()
+    }
+
+    private fun canvasBackgroundAction() {
+        enterCanvasBackgroundEditingMode()
+    }
+
+    private fun enterCanvasBackgroundEditingMode() {
+        closeActiveEditingModes()
+        editingControlsWrapper.visibility = View.GONE
+        backgroundEditingToolbar?.visibility = View.VISIBLE
+    }
+
+    private fun exitCanvasBackgroundEditingMode() {
+        backgroundEditingToolbar?.visibility = View.GONE
+        editingControlsWrapper.visibility = View.VISIBLE
+        setActiveToolButton(-1)
+    }
+
+""", '', 1, 'crop/canvas actions + editing modes')
+
+# --- 8m. closeActiveEditingModes ------------------------------------------
+repl("""        cropEditingToolbar?.visibility = View.GONE
+        backgroundEditingToolbar?.visibility = View.GONE
+""", '', 1, 'closeActiveEditingModes lines')
+
+# --- 8n. pickBackgroundImage (whole function) ------------------------------
+cut_fun('    private fun pickBackgroundImage() {')
+
+# --- 8o. getPresetCropBounds / enter/exit crop mode (whole functions) -----
+cut_fun('    private fun getPresetCropBounds(aspectRatio: String): android.graphics.RectF {')
+cut_fun('    private fun enterCropEditingMode() {')
+cut_fun('    private fun exitCropEditingMode() {')
+
+# --- 8p. updateCanvasBackgroundPreview / updateCropUi (whole functions) ---
+cut_fun('    private fun updateCanvasBackgroundPreview(activeClipIndex: Int = lastActiveClipIndexForBlur) {')
+cut_fun('    private fun updateCropUi(ratio: String) {')
+
+# --- 8q. onActivityResult: background-image branch -------------------------
+repl("""        } else if (requestCode == PICK_BACKGROUND_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {
+            data?.data?.let { imageUri ->
                 lifecycleScope.launch {
-                    showLoading("Resetting speed...")
-                    val outputFileName = "proxy_reverse_${System.currentTimeMillis()}.mp4"
-                    val outputFilePath = java.io.File(cacheDir, outputFileName).absolutePath
-                    val result = ffmpegEngine.reverseVideo(
-                        sourceFilePath = getFilePathFromUri(item.uri) ?: "",
-                        startMs = item.trimStartMs,
-                        endMs = item.trimEndMs,
-                        outputFilePath = outputFilePath
-                    )
-                    hideLoading()
-                    if (result is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                        val proxyUri = android.net.Uri.fromFile(java.io.File(result.outputPath))
-                        if (index == 0) {
-                            viewModel.updateMainVideoSpeed(1.0f, null)
-                            viewModel.updateMainVideoReverse(isReversed = true, proxyUri = proxyUri)
-                        } else {
-                            updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = proxyUri, isReversed = true))
-                        }
-                        hideSpeedEditingToolbar()
+                    val tempFile = withContext(Dispatchers.IO) { copyContentUriToTempFile(imageUri, "bg_image", ".png") }
+                    if (tempFile != null) {
+                        val tempUri = Uri.fromFile(tempFile)
+                        viewModel.updateCanvasBackgroundOperation(
+                            type = EditOperation.CanvasBackground.BackgroundType.IMAGE,
+                            imageUri = tempUri
+                        )
+                        updateCanvasBackgroundPreview()
                     } else {
-                        android.widget.Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_apply_speed_reset, android.widget.Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@VideoEditingActivity, "Failed to load image", Toast.LENGTH_SHORT).show()
                     }
                 }
-            } else {
-                if (index == 0) {
-                    viewModel.updateMainVideoSpeed(1.0f, null)
-                } else {
-                    updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = null))
-                }
-                hideSpeedEditingToolbar()
-            }""",
-"""            if (index == 0) {
-                viewModel.updateMainVideoSpeed(1.0f, null)
-            } else {
-                updateVideoSegment(index, item.copy(speed = 1.0f, proxyUri = null))
-            }
-            hideSpeedEditingToolbar()""", 1, 'speed reset branch')
-print('   [ok] speed reset no longer preserves reverse')
-
-# --- 2h. getSequenceItems ---------------------------------------------------
-repl("""        val reverseOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ReverseMain>()?.lastOrNull()
-        val isReversed = reverseOp?.isReversed ?: false
-        val proxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri
-        val mirrorOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.MirrorMain>()?.lastOrNull()
-        val isMirrored = mirrorOp?.isMirrored ?: false
-        val maskMainOp = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.MaskMain>()?.lastOrNull()
-        val maskConfig = maskMainOp?.maskConfig ?: com.tharunbirla.librecuts.models.EditOperation.MaskConfig()
-""", '        val proxyUri = speedOp?.proxyUri\n', 1, 'getSequenceItems ops')
-repl("""            speed = speed,
-            isReversed = isReversed,
-            isMirrored = isMirrored,
-            proxyUri = proxyUri,
-            scrubProxyUri = viewModel.project.value?.scrubProxyUri,
-            maskConfig = maskConfig,
-            isImage = isMainImg""",
-"""            speed = speed,
-            proxyUri = proxyUri,
-            scrubProxyUri = viewModel.project.value?.scrubProxyUri,
-            isImage = isMainImg""", 1, 'MergeItem ctor args')
-print('   [ok] getSequenceItems simplified')
-
-# --- 2i. syncUiWithPlayer ----------------------------------------------------
-repl('            // Apply color filter corresponding to the active clip\n', '', 1, 'syncUi filter comment')
-repl("""            val activeFilterName = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.ColorFilter>()
-                ?.find { it.index == activeClipIndex }?.filterName ?: "none"
-            val activeAdjust = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Adjust>()
-                ?.find { it.index == activeClipIndex }
-            applyColorFilterAndAdjustToPlayer(activeFilterName, activeAdjust)
-""", '', 1, 'syncUi filter block')
-
-repl("""                val relTimeMs = currentGlobalPos - accumulatedStartMs
-                val evaluatedMask = sequenceItems[activeClipIndex].maskConfig.evaluatedAt(relTimeMs)
-                mainVideoMaskContainer?.maskConfig = evaluatedMask
-""", '', 1, 'syncUi mask block')
-
-repl("""            val isMirrored = if (activeClipIndex == 0) {
-                viewModel.project.value?.operations?.any { it is com.tharunbirla.librecuts.models.EditOperation.MirrorMain && it.isMirrored } == true
-            } else {
-                viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Merge>()
-                    ?.firstOrNull()?.items?.getOrNull(activeClipIndex - 1)?.isMirrored == true
-            }
-""", '', 1, 'syncUi mirror decl')
-
-repl("""            val videoSurface = playerView.videoSurfaceView
-            if (videoSurface != null) {
-                videoSurface.scaleX = if (isMirrored) -1f else 1f
-            } else {
-                findTextureView(playerView)?.scaleX = if (isMirrored) -1f else 1f
-            }
-""", '', 1, 'syncUi mirror surface')
-print('   [ok] syncUiWithPlayer: filter/adjust/mask/mirror preview removed')
-
-# --- 2j. keyframe functions: strip mask branches ----------------------------
-
-repl_in('    private fun showKeyframePropertyMenu(view: View) {',
-"""            if (op.maskConfig.shape != EditOperation.MaskShape.NONE) {
-                popup.menu.add("Mask Position")
-                popup.menu.add("Mask Size")
-                popup.menu.add("Mask Rotation")
-                popup.menu.add("Mask Feather")
-            }
-""", '')
-repl_in('    private fun showKeyframePropertyMenu(view: View) {',
-'if (activeKeyframeProperty == "Position" || activeKeyframeProperty == "Mask Position") {',
-'if (activeKeyframeProperty == "Position") {')
-repl_in('    private fun showKeyframePropertyMenu(view: View) {',
-"""                    "Mask Size" -> {
-                        slider?.valueFrom = 1.0f
-                        slider?.valueTo = 200.0f
-                        slider?.stepSize = 1.0f
-                    }
-                    "Mask Rotation" -> {
-                        slider?.valueFrom = -180.0f
-                        slider?.valueTo = 180.0f
-                        slider?.stepSize = 1.0f
-                    }
-                    "Mask Feather" -> {
-                        slider?.valueFrom = 0.0f
-                        slider?.valueTo = 100.0f
-                        slider?.stepSize = 1.0f
-                    }
-""", '')
-
-repl_in('    private fun handleKeyframeActionClick() {',
-"""                        "Mask Position" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.positionKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val pos = mc.getInterpolatedPos(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, pos.first, pos.second))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(positionKeyframes = currentList)))
-                        }
-                        "Mask Size" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.sizeKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val sizeVal = mc.getInterpolatedSize(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, sizeVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(sizeKeyframes = currentList)))
-                        }
-                        "Mask Rotation" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.rotationKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val rotVal = mc.getInterpolatedRotation(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, rotVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(rotationKeyframes = currentList)))
-                        }
-                        "Mask Feather" -> {
-                            val mc = op.maskConfig
-                            val currentList = mc.featherKeyframes.toMutableList()
-                            val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            if (existingIndex != -1) currentList.removeAt(existingIndex) else {
-                                val featherVal = mc.getInterpolatedFeather(relativeTimeMs)
-                                currentList.add(EditOperation.KeyframePoint(relativeTimeMs, featherVal))
-                            }
-                            viewModel.updateOperation(op.copy(maskConfig = mc.copy(featherKeyframes = currentList)))
-                        }
-""", '')
-cut_video_else('    private fun handleKeyframeActionClick() {',
-               '            val index = selectedVideoIndex\n')
-
-repl_in('    private fun handleKeyframeSliderChange(value: Float) {',
-'                        val mc = op.maskConfig\n', '')
-repl_in('    private fun handleKeyframeSliderChange(value: Float) {',
-"""                            "Mask Size" -> {
-                                val currentList = mc.sizeKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val relScale = value / 200f
-                                val newMc = mc.copy(relativeWidth = relScale, relativeHeight = relScale, sizeKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
-                            "Mask Rotation" -> {
-                                val currentList = mc.rotationKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val newMc = mc.copy(rotationAngle = value, rotationKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
-                            "Mask Feather" -> {
-                                val currentList = mc.featherKeyframes.toMutableList()
-                                val existingIndex = currentList.indexOfFirst { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                                val newPoint = EditOperation.KeyframePoint(relativeTimeMs, value)
-                                if (existingIndex != -1) currentList[existingIndex] = newPoint else currentList.add(newPoint)
-                                val newMc = mc.copy(feather = value, featherKeyframes = currentList)
-                                viewModel.updateOperation(op.copy(maskConfig = newMc))
-                            }
-""", '')
-cut_video_else('    private fun handleKeyframeSliderChange(value: Float) {',
-               '            val videoIdx = selectedVideoIndex\n')
-
-repl_in('    private fun updateKeyframeActionButtonState(globalTimeMs: Long) {',
-"""                            "Mask Position" -> op.maskConfig.positionKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Size" -> op.maskConfig.sizeKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Rotation" -> op.maskConfig.rotationKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-                            "Mask Feather" -> op.maskConfig.featherKeyframes.any { Math.abs(it.timeMs - relativeTimeMs) < 150L }
-""", '')
-cut_video_else('    private fun updateKeyframeActionButtonState(globalTimeMs: Long) {',
-               '            val videoIdx = selectedVideoIndex\n')
-
-repl_in('    private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {',
-'                    val evaluatedMask = op.maskConfig.evaluatedAt(relativeTimeMs)\n', '')
-repl_in('    private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {',
-"""                    draggableImageOverlay?.maskConfig = evaluatedMask
-                    draggableImageOverlay?.isMaskEditingMode = evaluatedMask.shape != EditOperation.MaskShape.NONE
-""", '')
-repl_in('    private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {',
-"""                    } else if (activeKeyframeProperty == "Mask Size") {
-                        val sizeVal = evaluatedMask.getInterpolatedSize(relativeTimeMs)
-                        val roundedSize = Math.round(sizeVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedSize
-                        tvSliderValue?.text = "${roundedSize.toInt()}%"
-                    } else if (activeKeyframeProperty == "Mask Rotation") {
-                        val rotVal = evaluatedMask.getInterpolatedRotation(relativeTimeMs)
-                        val roundedRot = Math.round(rotVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedRot
-                        tvSliderValue?.text = "${roundedRot.toInt()}\u00b0"
-                    } else if (activeKeyframeProperty == "Mask Feather") {
-                        val featherVal = evaluatedMask.getInterpolatedFeather(relativeTimeMs)
-                        val roundedFeather = Math.round(featherVal).toFloat().coerceIn(minVal, maxVal)
-                        slider?.value = roundedFeather
-                        tvSliderValue?.text = "${roundedFeather.toInt()}%"
-                    }""", '                    }')
-cut_video_else('    private fun updateDraggableOverlayFromKeyframes(globalTimeMs: Long) {',
-               '            val videoIdx = selectedVideoIndex\n')
-print('   [ok] keyframe mask branches removed (Position/Opacity/Speed kept)')
-
-# --- 2j-b. renderTracks: mask keyframe markers --------------------------------
-repl("""                keyframes.addAll(op.maskConfig.positionKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.sizeKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.rotationKeyframes.map { it.timeMs })
-                keyframes.addAll(op.maskConfig.featherKeyframes.map { it.timeMs })
-""", '', 1, 'renderTracks mask keyframes')
-print('   [ok] renderTracks: mask keyframe markers removed')
-
-# --- 2k. final checks --------------------------------------------------------
-if t.count('{') != t.count('}'):
-    fail('brace balance broken in VideoEditingActivity.kt')
-for tok in ('btnVideoFilter', 'btnVideoMask', 'btnVideoAdjust', 'btnVideoExtractAudio',
-            'btnVideoReverse', 'btnVideoMirror', 'btnImageMask', 'showMaskBottomSheet',
-            'showColorFilterSelectionDialog', 'showAdjustSelectionDialog',
-            'reverseVideoSegment', 'extractAudioFromSegment', 'applyColorFilterToPlayer',
-            'videoMaskOverlayView', 'mainVideoMaskContainer', 'isReversed',
-            'updateMainVideoMirror', 'toggleMergeItemMirror', 'viewModel.setColorFilter',
-            'viewModel.setAdjust', 'updateMergeItemMask', 'MaskMain', 'ReverseMain', 'MirrorMain',
-            'MaskConfig', 'MaskShape', 'EditOperation.ColorFilter', 'EditOperation.Adjust',
-            'lastAppliedFilterName', 'maskConfig'):
-    if tok in t:
-        fail('leftover token in VEA: ' + tok)
-n_ftv = t.count('findTextureView')
-if n_ftv != 3:
-    fail('findTextureView count is %d, expected 3 (def+recursion+transition)' % n_ftv)
-
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] VideoEditingActivity.kt: %d -> %d lines' % (orig_lines, t.count('\n')))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 3 -- VideoEditingViewModelExt.kt
-# ---------------------------------------------------------------------------
-step3_ext() {
-    echo "== step 3: VideoEditingViewModelExt.kt -- remove feature mutators"
-    python3 - <<'CUTPY'
-import sys
-
-P = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-def repl(old, new, cnt=1):
-    global t
-    c = t.count(old)
-    if c == cnt:
-        t = t.replace(old, new)
-        return True
-    if c == 0 and (new in t or new == ''):
-        return False
-    fail('expected %d, found %d of %r' % (cnt, c, old[:60]))
-
-def walk_close(s, i):
-    j = s.find('{', i)
-    if j == -1:
-        return -1
-    depth, k = 1, j + 1
-    while depth > 0 and k < len(s):
-        if s[k] == '{':
-            depth += 1
-        elif s[k] == '}':
-            depth -= 1
-        k += 1
-    return k if depth == 0 else -1
-
-def cut_fun(sig):
-    global t
-    i = t.find('\n' + sig)
-    if i == -1:
-        return False
-    i += 1
-    k = walk_close(t, i)
-    if k == -1:
-        fail('unbalanced cut: ' + sig)
-    if k < len(t) and t[k] == '\n':
-        k += 1
-    t = t[:i] + t[k:]
-    return True
-
-for sig in (
- 'fun VideoEditingViewModel.updateMainVideoReverse(isReversed: Boolean, proxyUri: Uri?) {',
- 'fun VideoEditingViewModel.updateMainVideoMirror(isMirrored: Boolean) {',
- 'fun VideoEditingViewModel.toggleMergeItemMirror(index: Int) {',
- 'fun VideoEditingViewModel.setColorFilter(index: Int, filterName: String) {',
- 'fun VideoEditingViewModel.updateMergeItemMask(index: Int, maskConfig: EditOperation.MaskConfig) {',
- 'fun VideoEditingViewModel.setAdjust('):
-    cut_fun(sig)
-print('   [ok] six mutator functions removed')
-
-# addBackgroundAudioOperation: drop extractedFromSegmentIndex
-repl('    endTimeMs: Long? = null, originalDurationMs: Long = 0L, extractedFromSegmentIndex: Int? = null,',
-     '    endTimeMs: Long? = null, originalDurationMs: Long = 0L,')
-repl('        endTimeMs, originalDurationMs, extractedFromSegmentIndex, beats, ducking, fadeInDurationMs, fadeOutDurationMs',
-     '        endTimeMs, originalDurationMs, beats, ducking, fadeInDurationMs, fadeOutDurationMs')
-
-# addImageOverlayOperation: drop maskConfig
-repl('    opacity: Float = 1.0f, isMirrored: Boolean = false, maskConfig: EditOperation.MaskConfig = EditOperation.MaskConfig()',
-     '    opacity: Float = 1.0f, isMirrored: Boolean = false')
-repl('        chromaKeySimilarity, opacity, isMirrored, maskConfig = maskConfig',
-     '        chromaKeySimilarity, opacity, isMirrored')
-
-# splitVideoSegment: drop reverse/mirror/mask carry-over
-repl("""            val reverseOp = newOps.filterIsInstance<EditOperation.ReverseMain>().lastOrNull()
-            val mirrorOp = newOps.filterIsInstance<EditOperation.MirrorMain>().lastOrNull()
-            val maskOp = newOps.filterIsInstance<EditOperation.MaskMain>().lastOrNull()
-""", '')
-repl("""            val isReversed = reverseOp?.isReversed ?: false
-            val isMirrored = mirrorOp?.isMirrored ?: false
-            val maskConfig = maskOp?.maskConfig ?: EditOperation.MaskConfig()
-""", '')
-repl('            val proxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri',
-     '            val proxyUri = speedOp?.proxyUri')
-repl('            val newItem = EditOperation.MergeItem(sourceUri, sourceDuration, trimStartMs = localSplitTimeMs, trimEndMs = oldEndMs, speed = speed, isReversed = isReversed, isMirrored = isMirrored, maskConfig = maskConfig, proxyUri = proxyUri)',
-     '            val newItem = EditOperation.MergeItem(sourceUri, sourceDuration, trimStartMs = localSplitTimeMs, trimEndMs = oldEndMs, speed = speed, proxyUri = proxyUri)')
-
-# deleteSequenceSegment: simplify removeAll + drop promotion blocks
-repl('ops.removeAll { it is EditOperation.Trim || it is EditOperation.SpeedMain || it is EditOperation.ReverseMain || it is EditOperation.MirrorMain || it is EditOperation.MaskMain }',
-     'ops.removeAll { it is EditOperation.Trim || it is EditOperation.SpeedMain }')
-repl("""                    if (promotedItem.isReversed) {
-                        ops.add(EditOperation.ReverseMain(true, promotedItem.proxyUri))
-                    }
-""", '')
-repl("""                    if (promotedItem.isMirrored) {
-                        ops.add(EditOperation.MirrorMain(true))
-                    }
-""", '')
-repl("""                    if (promotedItem.maskConfig.shape != EditOperation.MaskShape.NONE) {
-                        ops.add(EditOperation.MaskMain(promotedItem.maskConfig))
-                    }
-""", '')
-
-if t.count('{') != t.count('}'):
-    fail('brace balance broken in Ext')
-for tok in ('ReverseMain', 'MirrorMain', 'MaskMain', 'ColorFilter', 'EditOperation.Adjust',
-            'MaskConfig', 'isReversed', 'extractedFromSegmentIndex'):
-    if tok in t:
-        fail('leftover token in Ext: ' + tok)
-for need in ('updateMainVideoTrim', 'updateMainVideoSpeed', 'addCropOperation',
-             'addTextOperation', 'updateMergeItemTrim', 'addMergeOperation',
-             'addTransitionOperation', 'toggleMuteClip', 'addBackgroundAudioOperation',
-             'addImageOverlayOperation', 'splitVideoSegment', 'deleteSequenceSegment',
-             'moveOverlayOperation', 'setScrubProxyUri'):
-    if need not in t:
-        fail('kept function missing in Ext: ' + need)
-
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] Ext: %d -> %d lines' % (orig, t.count('\n')))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 4 -- VideoEditingViewModel.kt
-# ---------------------------------------------------------------------------
-step4_vm() {
-    echo "== step 4: VideoEditingViewModel.kt -- remove render paths"
-    python3 - <<'CUTPY'
-import sys
-
-P = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-def repl(old, new, cnt=1):
-    global t
-    c = t.count(old)
-    if c == cnt:
-        t = t.replace(old, new)
-        return True
-    if c == 0 and (new in t or new == ''):
-        return False
-    fail('expected %d, found %d of %r' % (cnt, c, old[:60]))
-
-def walk_close(s, i):
-    j = s.find('{', i)
-    if j == -1:
-        return -1
-    depth, k = 1, j + 1
-    while depth > 0 and k < len(s):
-        if s[k] == '{':
-            depth += 1
-        elif s[k] == '}':
-            depth -= 1
-        k += 1
-    return k if depth == 0 else -1
-
-def cut_fun(sig):
-    global t
-    i = t.find('\n' + sig)
-    if i == -1:
-        return False
-    i += 1
-    k = walk_close(t, i)
-    if k == -1:
-        fail('unbalanced cut: ' + sig)
-    if k < len(t) and t[k] == '\n':
-        k += 1
-    t = t[:i] + t[k:]
-    return True
-
-cut_fun('    private fun buildFFmpegMaskAlphaExpr(')
-cut_fun('    private fun getFFmpegFilterForAdjust(op: EditOperation.Adjust): String? {')
-cut_fun('    private fun getFFmpegFilterForName(name: String): String? {')
-print('   [ok] three filter-builder functions removed')
-
-# buildVideoFilterStages: image-overlay mask handling
-repl('                            val hasMaskKeyframes = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()\n                            if (op.opacityKeyframes.isNotEmpty() || hasMaskKeyframes) {',
-     '                            if (op.opacityKeyframes.isNotEmpty()) {')
-
-i = t.find('                        if (op.maskConfig.shape != EditOperation.MaskShape.NONE) {')
-if i != -1:
-    k = walk_close(t, i)
-    if k == -1:
-        fail('mask stage block unbalanced')
-    t = t[:i] + t[k:]
-
-repl('                        val hasMaskKfs = op.maskConfig.positionKeyframes.isNotEmpty() || op.maskConfig.sizeKeyframes.isNotEmpty() || op.maskConfig.rotationKeyframes.isNotEmpty() || op.maskConfig.featherKeyframes.isNotEmpty()\n                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && (op.opacityKeyframes.isNotEmpty() || hasMaskKfs))) ":shortest=1" else ""',
-     '                        val shortestPart = if (((isGif || isVideo) && op.isLooping) || (!isGif && !isVideo && op.opacityKeyframes.isNotEmpty())) ":shortest=1" else ""')
-
-# input selection: reverse proxy no longer exists
-repl("""        val reverseOp = operations.filterIsInstance<EditOperation.ReverseMain>().lastOrNull()
-        val speedOp = operations.filterIsInstance<EditOperation.SpeedMain>().lastOrNull()
-        val finalProxyUri = reverseOp?.proxyUri ?: speedOp?.proxyUri""",
-"""        val speedOp = operations.filterIsInstance<EditOperation.SpeedMain>().lastOrNull()
-        val finalProxyUri = speedOp?.proxyUri""")
-
-# merge path per-input loop: strip filter/adjust/mirror/mask pre-filters
-repl("""                val colorFilterOp = operations.filterIsInstance<EditOperation.ColorFilter>().find { it.index == i }
-                val lutFilterExpr = colorFilterOp?.let { getFFmpegFilterForName(it.filterName) }
-                val adjustOp = operations.filterIsInstance<EditOperation.Adjust>().find { it.index == i }
-                val adjustFilterExpr = adjustOp?.let { getFFmpegFilterForAdjust(it) }
-""", '')
-repl("""                val isMirrored = if (i == 0) {
-                    operations.any { it is EditOperation.MirrorMain && it.isMirrored }
-                } else {
-                    mergeOp?.items?.getOrNull(i - 1)?.isMirrored == true
-                }
-""", '')
-repl("""                val maskConfig = if (i == 0) {
-                    val mainMask = operations.filterIsInstance<EditOperation.MaskMain>().lastOrNull()?.maskConfig
-                    if (mainMask != null && mainMask.shape != EditOperation.MaskShape.NONE) {
-                        mainMask
-                    } else {
-                        mergeOp?.items?.getOrNull(0)?.maskConfig ?: EditOperation.MaskConfig()
-                    }
-                } else {
-                    mergeOp?.items?.getOrNull(i - 1)?.maskConfig ?: EditOperation.MaskConfig()
-                }
-""", '')
-repl("""                if (lutFilterExpr != null) preFilters += ",$lutFilterExpr"
-                if (adjustFilterExpr != null) preFilters += ",$adjustFilterExpr"
-                if (isMirrored) preFilters += ",hflip"
-""", '')
-i = t.find('                if (maskConfig.shape != EditOperation.MaskShape.NONE) {')
-if i != -1:
-    k = walk_close(t, i)
-    if k == -1:
-        fail('merge-loop mask block unbalanced')
-    t = t[:i] + t[k:]
-print('   [ok] merge-path pre-filters simplified to setpts only')
-
-# non-merge path: strip lut/adjust/mirror/mask prep entirely
-repl("""        val colorFilterOp = operations.filterIsInstance<EditOperation.ColorFilter>().find { it.index == 0 }
-        val adjustOp = operations.filterIsInstance<EditOperation.Adjust>().find { it.index == 0 }
-""", '')
-repl("""        if (colorFilterOp != null) {
-            val lutFilterExpr = getFFmpegFilterForName(colorFilterOp.filterName)
-            if (lutFilterExpr != null) {
-                prepFilters.add(lutFilterExpr)
             }
         }
-""", '')
-repl("""        if (adjustOp != null) {
-            val adjustFilterExpr = getFFmpegFilterForAdjust(adjustOp)
-            if (adjustFilterExpr != null) {
-                prepFilters.add(adjustFilterExpr)
-            }
+""", """        }
+""", 1, 'background-image result branch')
+
+# --- 8r. position listener: blur-index block -------------------------------
+cut_span("            if (activeClipIndex != lastActiveClipIndexForBlur) {\n",
+         "                updateCanvasBackgroundPreview(activeClipIndex)\n            }\n\n")
+
+# --- 8s. triggerCanvasLayoutUpdate: always fit ------------------------------
+repl("""    private fun triggerCanvasLayoutUpdate() {
+        val cropOps = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
+        if (cropOps != null && cropOps.isNotEmpty() && cropEditingToolbar?.visibility != View.VISIBLE) {
+            applyCropPreview(cropOps.last().aspectRatio)
+        } else {
+            resetCropPreview()
         }
-""", '')
-repl("""        val mirrorMainOp = operations.filterIsInstance<EditOperation.MirrorMain>().find { it.isMirrored }
-        if (mirrorMainOp != null) {
-            prepFilters.add("hflip")
-        }
-""", '')
-i = t.find('        val maskMainOp = operations.filterIsInstance<EditOperation.MaskMain>().lastOrNull()')
-if i != -1:
-    j = t.find('        if (maskMainOp != null && maskMainOp.maskConfig.shape != EditOperation.MaskShape.NONE) {', i)
-    if j == -1:
-        fail('non-merge mask if not found')
-    k = walk_close(t, j)
-    if k == -1:
-        fail('non-merge mask block unbalanced')
-    t = t[:i] + t[k:]
-repl('        val prepFilters = mutableListOf<String>()\n', '')
-repl('        val hasVideoFilters = videoStages.isNotEmpty() || prepFilters.isNotEmpty()',
-     '        val hasVideoFilters = videoStages.isNotEmpty()')
-i = t.find('        if (prepFilters.isNotEmpty()) {')
-if i != -1:
-    k = walk_close(t, i)
-    if k == -1:
-        fail('prepFilters if-block unbalanced')
-    t = t[:i] + t[k:]
-print('   [ok] non-merge path: lut/adjust/mirror/mask prep removed')
-
-if t.count('{') != t.count('}'):
-    fail('brace balance broken in ViewModel')
-for tok in ('ReverseMain', 'MirrorMain', 'MaskMain', 'ColorFilter', 'EditOperation.Adjust',
-            'MaskConfig', 'MaskShape', 'isReversed', 'getFFmpegFilterForName',
-            'getFFmpegFilterForAdjust', 'buildFFmpegMaskAlphaExpr', 'prepFilters'):
-    if tok in t:
-        fail('leftover token in ViewModel: ' + tok)
-for need in ('buildVideoFilterStages', 'buildConsolidatedFFmpegCommand', 'SpeedMain',
-             'buildDrawtextExpr', 'buildFFmpegInterpolationExpr'):
-    if need not in t:
-        fail('kept symbol missing in ViewModel: ' + need)
-
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] ViewModel: %d -> %d lines' % (orig, t.count('\n')))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 5 -- EditOperation.kt (models)
-# ---------------------------------------------------------------------------
-step5_models() {
-    echo "== step 5: EditOperation.kt -- remove dead operation models"
-    python3 - <<'CUTPY'
-import sys
-
-P = 'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-def cut_span(start, end, repl_text):
-    global t
-    i = t.find(start)
-    if i == -1:
-        return False
-    j = t.find(end, i + len(start))
-    if j == -1:
-        fail('end marker missing for ' + start[:50])
-    t = t[:i] + repl_text + t[j + len(end):]
-    return True
-
-def repl(old, new, cnt=1):
-    global t
-    c = t.count(old)
-    if c == cnt:
-        t = t.replace(old, new)
-        return True
-    if c == 0 and (new in t or new == ''):
-        return False
-    fail('expected %d, found %d of %r' % (cnt, c, old[:60]))
-
-cut_span("""    /**
-     * Reverse operation for the main video.
-     */""", "    /**\n     * Mirror operation for the main video.", "    /**\n     * Mirror operation for the main video.")
-cut_span("""    /**
-     * Mirror operation for the main video.
-     */""", "    /**\n     * Crop operation:", "    /**\n     * Crop operation:")
-cut_span("    enum class MaskShape", "    data class MergeItem(", "    data class MergeItem(")
-cut_span("    /** Mask configuration for the main track video base (index 0) */",
-         "    /**\n     * Mute audio operation:", "    /**\n     * Mute audio operation:")
-cut_span("""    /**
-     * Color filter (LUT) operation: Applies a preset color grade filter to a specific clip index.
-     */""", "    /**\n     * Add background audio operation:", "    /**\n     * Add background audio operation:")
-cut_span("""    /**
-     * Adjust operation: Adjusts video properties for a specific clip index.
-     * All properties range from -100 to 100, default is 0.
-     */""", "    /**\n     * Canvas background operation:", "    /**\n     * Canvas background operation:")
-
-# MergeItem: drop isReversed / isMirrored / maskConfig
-repl("""        val isReversed: Boolean = false,
-        val isMirrored: Boolean = false,
-        val maskConfig: MaskConfig = MaskConfig(),
-        val isImage: Boolean = false""",
-'        val isImage: Boolean = false')
-
-# AddBackgroundAudio: drop extractedFromSegmentIndex
-repl('        val extractedFromSegmentIndex: Int? = null,\n', '')
-
-# AddImageOverlay: drop maskConfig
-repl("""        val speedKeyframes: List<KeyframePoint> = emptyList(),
-        val maskConfig: MaskConfig = MaskConfig()
-    ) : EditOperation()""",
-"""        val speedKeyframes: List<KeyframePoint> = emptyList()
-    ) : EditOperation()""")
-
-# id extension: drop the five dead branches
-for line in ('        is EditOperation.ReverseMain -> id\n',
-             '        is EditOperation.MirrorMain -> id\n',
-             '        is EditOperation.MaskMain -> id\n',
-             '        is EditOperation.ColorFilter -> id\n',
-             '        is EditOperation.Adjust -> id\n'):
-    repl(line, '')
-
-if t.count('{') != t.count('}'):
-    fail('brace balance broken in EditOperation')
-for tok in ('ReverseMain', 'MirrorMain', 'MaskMain', 'ColorFilter', 'MaskConfig',
-            'MaskShape', 'Adjust', 'isReversed', 'extractedFromSegmentIndex'):
-    if tok in t:
-        fail('leftover token in EditOperation: ' + tok)
-for need in ('data class Trim(', 'data class SpeedMain(', 'data class Crop(',
-             'data class AddText(', 'data class MergeItem(', 'data class Merge(',
-             'data class MuteAudio(', 'data class Transition(', 'data class MuteClip(',
-             'data class AddBackgroundAudio(', 'data class AddImageOverlay(',
-             'data class CanvasBackground(', 'val isMirrored: Boolean = false',
-             'val speedKeyframes:'):
-    if need not in t:
-        fail('kept model missing: ' + need)
-
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] EditOperation: %d -> %d lines' % (orig, t.count('\n')))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 6 -- ProjectSerializer.kt + ProjectImportActivity.kt
-# ---------------------------------------------------------------------------
-step6_serializer() {
-    echo "== step 6: serializer + import activity dead mappings"
-    python3 - <<'CUTPY'
-import sys
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-P = 'app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt'
-t = open(P, encoding='utf-8').read()
-
-old_set = 'val validClasses = setOf("Trim", "SpeedMain", "ReverseMain", "MirrorMain", "Crop", "AddText", "Merge", "MaskMain", "MuteAudio", "Transition", "MuteClip", "ColorFilter", "AddBackgroundAudio", "AddImageOverlay", "Adjust", "CanvasBackground")'
-new_set = 'val validClasses = setOf("Trim", "SpeedMain", "Crop", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay", "CanvasBackground")'
-c = t.count(old_set)
-if c == 1:
-    t = t.replace(old_set, new_set)
-elif c == 0 and new_set in t:
-    print('   [skip] validClasses already cleaned')
-else:
-    fail('validClasses marker count %d' % c)
-
-for line in ('                "ReverseMain" -> EditOperation.ReverseMain::class.java\n',
-             '                "MirrorMain" -> EditOperation.MirrorMain::class.java\n',
-             '                "MaskMain" -> EditOperation.MaskMain::class.java\n',
-             '                "ColorFilter" -> EditOperation.ColorFilter::class.java\n',
-             '                "Adjust" -> EditOperation.Adjust::class.java\n'):
-    c = t.count(line)
-    if c == 1:
-        t = t.replace(line, '')
-    elif c == 0:
-        pass
-    else:
-        fail('serializer mapping count %d for %r' % (c, line[:40]))
-
-if t.count('{') != t.count('}'):
-    fail('brace balance broken in serializer')
-for tok in ('ReverseMain', 'MirrorMain', 'MaskMain', 'ColorFilter', 'EditOperation.Adjust'):
-    if tok in t:
-        fail('leftover token in serializer: ' + tok)
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] serializer type mappings cleaned')
-
-Q = 'app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt'
-t = open(Q, encoding='utf-8').read()
-old = """                    is EditOperation.ReverseMain -> {
-                        if (op.proxyUri != null && !checkUriExists(op.proxyUri)) op.copy(proxyUri = null) else op
-                    }
-"""
-if t.count(old) == 1:
-    t = t.replace(old, '')
-    open(Q, 'w', encoding='utf-8').write(t)
-    print('   [ok] ProjectImportActivity: ReverseMain branch removed')
-elif t.count(old) == 0:
-    print('   [skip] ProjectImportActivity already clean')
-else:
-    fail('PIA branch count %d' % t.count(old))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 7 -- custom views (DraggableImageOverlayView + ImageOverlayView)
-# ---------------------------------------------------------------------------
-step7_views() {
-    echo "== step 7: custom views -- strip mask rendering"
-    python3 - <<'CUTPY'
-import sys
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-def walk_close(s, i):
-    j = s.find('{', i)
-    if j == -1:
-        return -1
-    depth, k = 1, j + 1
-    while depth > 0 and k < len(s):
-        if s[k] == '{':
-            depth += 1
-        elif s[k] == '}':
-            depth -= 1
-        k += 1
-    return k if depth == 0 else -1
-
-# ---------- DraggableImageOverlayView.kt ----------------------------------
-P = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def repl(old, new, cnt=1):
-    global t
-    c = t.count(old)
-    if c == cnt:
-        t = t.replace(old, new)
-        return True
-    if c == 0 and (new in t or new == ''):
-        return False
-    fail('DIOV: expected %d, found %d of %r' % (cnt, c, old[:60]))
-
-def cut_span(start, end, repl_text=''):
-    global t
-    i = t.find(start)
-    if i == -1:
-        return False
-    j = t.find(end, i + len(start))
-    if j == -1:
-        fail('DIOV span end missing for ' + start[:50])
-    t = t[:i] + repl_text + t[j + len(end):]
-    return True
-
-def cut_fun(sig):
-    global t
-    i = t.find('\n' + sig)
-    if i == -1:
-        return False
-    i += 1
-    k = walk_close(t, i)
-    if k == -1:
-        fail('DIOV unbalanced: ' + sig)
-    if k < len(t) and t[k] == '\n':
-        k += 1
-    t = t[:i] + t[k:]
-    return True
-
-repl('    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float, isMirrored: Boolean, maskConfig: com.tharunbirla.librecuts.models.EditOperation.MaskConfig) -> Unit)? = null',
-     '    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float, isMirrored: Boolean) -> Unit)? = null')
-repl('    var onMaskChanged: ((com.tharunbirla.librecuts.models.EditOperation.MaskConfig) -> Unit)? = null\n', '')
-repl('    var isMaskEditingMode = false\n    var maskConfig = com.tharunbirla.librecuts.models.EditOperation.MaskConfig()\n', '')
-
-repl('        visibility = VISIBLE\n        isMaskEditingMode = false\n        maskConfig = com.tharunbirla.librecuts.models.EditOperation.MaskConfig()\n',
-     '        visibility = VISIBLE\n')
-
-repl('        isMirrored = op.isMirrored\n        isMaskEditingMode = false\n        maskConfig = op.maskConfig.copy()\n',
-     '        isMirrored = op.isMirrored\n')
-
-repl('        isEditingActive = false\n        isMaskEditingMode = false\n        visibility = GONE',
-     '        isEditingActive = false\n        visibility = GONE')
-
-repl('            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity, isMirrored, maskConfig)',
-     '            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity, isMirrored)')
-
-repl("""            if (isMaskEditingMode) {
-                maskConfig = maskConfig.copy(
-                    relativeWidth = (maskConfig.relativeWidth * scaleFactor).coerceIn(0.01f, 5.0f),
-                    relativeHeight = (maskConfig.relativeHeight * scaleFactor).coerceIn(0.01f, 5.0f)
-                )
-                onMaskChanged?.invoke(maskConfig)
-                invalidate()
-                return true
-            }
-""", '')
-
-repl("""                if (!isMaskEditingMode) {
-                    // round 9: the press must land on the image itself
-                    // (plus room for the selection handles) -- presses on
-                    // empty canvas no longer yank the overlay around.
-                    val slop = 32f
-                    val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
-                    val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
-                    if (!inX || !inY) return false
-                }""",
-"""                // round 9: the press must land on the image itself
-                // (plus room for the selection handles) -- presses on
-                // empty canvas no longer yank the overlay around.
-                val slop = 32f
-                val inX = event.x >= imageView.x - slop && event.x <= imageView.x + imageView.width + slop
-                val inY = event.y >= imageView.y - slop && event.y <= imageView.y + imageView.height + slop
-                if (!inX || !inY) return false""")
-
-repl("""                isDragging = true
-                if (isMaskEditingMode) {
-                    dragOffsetX = event.x
-                    dragOffsetY = event.y
-                } else {
-                    dragOffsetX = event.x - imageView.x
-                    dragOffsetY = event.y - imageView.y
-                }""",
-"""                isDragging = true
-                dragOffsetX = event.x - imageView.x
-                dragOffsetY = event.y - imageView.y""")
-
-repl("""                    if (isMaskEditingMode) {
-                        val dx = event.x - dragOffsetX
-                        val dy = event.y - dragOffsetY
-                        dragOffsetX = event.x
-                        dragOffsetY = event.y
-                        if (imageView.width > 0 && imageView.height > 0) {
-                            maskConfig = maskConfig.copy(
-                                relativeX = maskConfig.relativeX + dx / imageView.width,
-                                relativeY = maskConfig.relativeY + dy / imageView.height
-                            )
-                            onMaskChanged?.invoke(maskConfig)
-                        }
-                        invalidate()
-                        return true
-                    }
-""", '')
-
-cut_span('        val hasMask = maskConfig.shape != com.tharunbirla.librecuts.models.EditOperation.MaskShape.NONE',
-         '        } else {\n            super.dispatchDraw(canvas)\n        }',
-         '        super.dispatchDraw(canvas)')
-
-cut_span('            if (isMaskEditingMode && hasMask) {',
-         '                canvas.restore()\n            }', '')
-
-cut_fun('    private fun createHeartPath(')
-cut_fun('    private fun createStarPath(')
-
-if t.count('{') != t.count('}'):
-    fail('DIOV brace balance broken')
-for tok in ('maskConfig', 'MaskConfig', 'MaskShape', 'isMaskEditingMode', 'onMaskChanged'):
-    if tok in t:
-        fail('DIOV leftover token: ' + tok)
-for need in ('toggleMirror', 'commitImage', 'activateForEdit', 'setProperties',
-             'isMirrored = op.isMirrored'):
-    if need not in t:
-        fail('DIOV kept symbol missing: ' + need)
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] DraggableImageOverlayView: %d -> %d lines' % (orig, t.count('\n')))
-
-# ---------- ImageOverlayView.kt --------------------------------------------
-P = 'app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def repl2(old, new, cnt=1):
-    global t
-    c = t.count(old)
-    if c == cnt:
-        t = t.replace(old, new)
-        return True
-    if c == 0 and (new in t or new == ''):
-        return False
-    fail('IOV: expected %d, found %d of %r' % (cnt, c, old[:60]))
-
-def cut_span2(start, end, repl_text=''):
-    global t
-    i = t.find(start)
-    if i == -1:
-        return False
-    j = t.find(end, i + len(start))
-    if j == -1:
-        fail('IOV span end missing for ' + start[:50])
-    t = t[:i] + repl_text + t[j + len(end):]
-    return True
-
-def cut_fun2(sig):
-    global t
-    i = t.find('\n' + sig)
-    if i == -1:
-        return False
-    i += 1
-    k = walk_close(t, i)
-    if k == -1:
-        fail('IOV unbalanced: ' + sig)
-    if k < len(t) and t[k] == '\n':
-        k += 1
-    t = t[:i] + t[k:]
-    return True
-
-cut_span2('        val relativeClipTimeMs = currentPositionMs - (op.startTimeMs ?: 0L)',
-          '        if (op.isMirrored) {', '        if (op.isMirrored) {')
-cut_fun2('    private fun createHeartPath(')
-cut_fun2('    private fun createStarPath(')
-
-if t.count('{') != t.count('}'):
-    fail('IOV brace balance broken')
-for tok in ('maskConfig', 'MaskConfig', 'MaskShape', 'relativeClipTimeMs'):
-    if tok in t:
-        fail('IOV leftover token: ' + tok)
-for need in ('op.isMirrored', 'drawBitmap'):
-    if need not in t:
-        fail('IOV kept symbol missing: ' + need)
-open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] ImageOverlayView: %d -> %d lines' % (orig, t.count('\n')))
-CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 8 -- FFmpegRenderEngine.kt: drop reverseVideo + extractAudio
-# ---------------------------------------------------------------------------
-step8_engine() {
-    echo "== step 8: FFmpegRenderEngine.kt -- drop reverse/extract helpers"
-    python3 - <<'CUTPY'
-import sys
-
-P = 'app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt'
-t = open(P, encoding='utf-8').read()
-orig = t.count('\n')
-
-def fail(m):
-    print('   [FAIL] ' + m)
-    sys.exit(1)
-
-def cut_lit(old):
-    global t
-    c = t.count(old)
-    if c == 1:
-        t = t.replace(old, '')
-        return True
-    if c == 0:
-        return False
-    fail('engine: count %d for %r' % (c, old[:50]))
-
-cut_lit("""    /** Extract audio from a video file using FFmpeg. */
-    suspend fun extractAudio(
-        sourceFilePath: String,
-        outputFilePath: String
-    ): RenderResult {
-        // -vn disables video stream, -acodec copy copies the audio stream.
-        val command = "-y -i \\"$sourceFilePath\\" -vn -acodec copy \\"$outputFilePath\\""
-        return executeCommand(command)
     }
-
-""")
-
-cut_lit("""    suspend fun reverseVideo(
-        sourceFilePath: String,
-        startMs: Long,
-        endMs: Long,
-        outputFilePath: String
-    ): RenderResult {
-        val startSecs = startMs / 1000.0
-        val durationSecs = (endMs - startMs) / 1000.0
-        val command = "-y -ss $startSecs -i \\"$sourceFilePath\\" -to $durationSecs -filter:v \\"reverse,format=yuv420p\\" -filter:a \\"areverse\\" -c:v libx264 -c:a aac \\"$outputFilePath\\""
-        return executeCommand(command)
+""", """    private fun triggerCanvasLayoutUpdate() {
+        fitCanvasToVideo()
     }
+""", 1, 'triggerCanvasLayoutUpdate')
 
-""")
+# --- 8t. request-code constant ----------------------------------------------
+repl('        private const val PICK_BACKGROUND_IMAGE_REQUEST = 6\n', '', 1, 'PICK_BACKGROUND_IMAGE_REQUEST const')
 
-if t.count('{') != t.count('}'):
-    fail('engine brace balance broken')
-for tok in ('reverseVideo', 'extractAudio'):
-    if tok in t:
-        fail('engine leftover token: ' + tok)
-for need in ('mergeVideos', 'trimVideo', 'generateSpeedProxy', 'generateScrubProxy', 'cropVideo'):
-    if need not in t:
-        fail('engine kept function missing: ' + need)
 open(P, 'w', encoding='utf-8').write(t)
-print('   [ok] engine: %d -> %d lines' % (orig, t.count('\n')))
+print('   [ok] VideoEditingActivity.kt: %d edit(s)' % n)
 CUTPY
-    [ $? -ne 0 ] && return 1
-    return 0
 }
 
 # ---------------------------------------------------------------------------
-#  STEP 9 -- delete dead files + strings sweep + icon cleanup
+#  STEP 9 -- strings sweep: remove the six dead keys from every locale
 # ---------------------------------------------------------------------------
-step9_resources() {
-    echo "== step 9: delete dead layouts, strings, icons"
-
-    # 9a: dead files
-    local dead=(
-        app/src/main/java/com/tharunbirla/librecuts/customviews/VideoMaskOverlayView.kt
-        app/src/main/java/com/tharunbirla/librecuts/customviews/MaskedFrameLayout.kt
-        app/src/main/res/layout/bottom_sheet_mask.xml
-        app/src/main/res/layout/dialog_color_filters.xml
-        app/src/main/res/layout/item_color_filter_option.xml
-        app/src/main/res/layout/dialog_adjustments.xml
-        app/src/main/res/layout/item_adjust_option.xml
-    )
-    local f ndel=0
-    for f in "${dead[@]}"; do
-        if [ -f "$f" ]; then
-            rm -f "$f"
-            ndel=$((ndel+1))
-        fi
-    done
-    echo " [ok] deleted $ndel/7 dead files (views + layouts)"
-
-    # 9b: strings sweep (9 dead keys, all locales)
+step9_strings() {
+    echo "== step 9: strings sweep (all locales)"
     python3 - <<'CUTPY'
 import glob, re, sys
-import xml.dom.minidom as md
 
-pat = re.compile(
-    r'^[ \t]*<string name="(?:str_filters|str_adjust|str_extract|str_reverse|'
-    r'toast_failed_to_reverse_video|toast_failed_to_restore_video_speed|'
-    r'toast_audio_extracted_to_new_layer|toast_failed_to_extract_audio|'
-    r'toast_failed_to_apply_speed_reset|toast_failed_to_reverse_speed_proxy)">[^\n]*</string>[ \t]*\n', re.M)
-
-total = files = 0
-for f in sorted(glob.glob('app/src/main/res/values*/strings.xml')):
+KEYS = ['str_crop', 'str_crop_aspect_ratio', 'str_16_9', 'str_9_16', 'str_1_1', 'str_custom']
+files = sorted(glob.glob('app/src/main/res/values*/strings.xml'))
+removed_total = 0
+for f in files:
     t = open(f, encoding='utf-8').read()
-    t2, n = pat.subn('', t)
-    if n == 0:
-        continue
-    md.parseString(t2)
-    open(f, 'w', encoding='utf-8').write(t2)
-    total += n
-    files += 1
-if total == 0:
-    print('   [skip] no dead string keys found (already removed)')
-else:
-    print('   [ok] removed %d string lines across %d locale files' % (total, files))
+    before = t
+    for k in KEYS:
+        # exact name match -- never touches str_custom_directory / str_custom_speed
+        t = re.sub(r'[ \t]*<string name="' + k + r'">[^<]*</string>\n', '', t)
+    if t != before:
+        open(f, 'w', encoding='utf-8').write(t)
+        removed_total += 1
+print('   [ok] %d locale file(s) cleaned' % removed_total)
+if not files:
+    print('   [FAIL] no strings.xml files found')
+    sys.exit(1)
 CUTPY
-    [ $? -ne 0 ] && return 1
-
-    # 9c: dead drawables
-    local icons=(
-        app/src/main/res/drawable/filter_preview_contrast.jpg
-        app/src/main/res/drawable/filter_preview_cool.jpg
-        app/src/main/res/drawable/filter_preview_crossprocess.jpg
-        app/src/main/res/drawable/filter_preview_monochrome.jpg
-        app/src/main/res/drawable/filter_preview_negative.jpg
-        app/src/main/res/drawable/filter_preview_none.jpg
-        app/src/main/res/drawable/filter_preview_vignette.jpg
-        app/src/main/res/drawable/filter_preview_vintage.jpg
-        app/src/main/res/drawable/filter_preview_warm.jpg
-        app/src/main/res/drawable/ic_mask_24.xml
-        app/src/main/res/drawable/ic_audio_extract_24.xml
-        app/src/main/res/drawable/ic_fast_rewind_24.xml
-        app/src/main/res/drawable/ic_page_info_24.xml
-        app/src/main/res/drawable/ic_brightness_24.xml
-        app/src/main/res/drawable/ic_contrast_24.xml
-        app/src/main/res/drawable/ic_warmth_24.xml
-        app/src/main/res/drawable/ic_shadow_24.xml
-        app/src/main/res/drawable/ic_shadows_24.xml
-        app/src/main/res/drawable/ic_highlights_24.xml
-        app/src/main/res/drawable/ic_saturation_24.xml
-        app/src/main/res/drawable/ic_exposure_24.xml
-        app/src/main/res/drawable/ic_sharpen_24.xml
-        app/src/main/res/drawable/ic_vignette_24.xml
-    )
-    local nidel=0
-    for f in "${icons[@]}"; do
-        if [ -f "$f" ]; then
-            rm -f "$f"
-            nidel=$((nidel+1))
-        fi
-    done
-    echo " [ok] deleted $nidel/23 dead drawables (ic_palette_24 + ic_mirror kept)"
-    return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -1786,29 +969,30 @@ CUTPY
 step10_verify() {
     echo "== step 10: verification gate"
 
-    # 10a: leftover reference scan
+    # 10a: leftover scan -- zero references to the removed features
     local left=0 tok n
-    for tok in btnVideoFilter btnVideoMask btnVideoAdjust btnVideoExtractAudio \
-               btnVideoReverse btnVideoMirror btnImageMask tvVideoMirror \
-               showColorFilterSelectionDialog showAdjustSelectionDialog \
-               showMaskBottomSheet reverseVideoSegment regenerateSpeedProxyForUnreverse \
-               extractAudioFromSegment applyColorFilterToPlayer applyColorFilterAndAdjustToPlayer \
-               updateMainVideoReverse updateMainVideoMirror toggleMergeItemMirror \
-               "viewModel.setColorFilter" "viewModel.setAdjust" updateMergeItemMask \
-               ReverseMain MirrorMain MaskMain MaskConfig MaskShape \
-               "EditOperation.ColorFilter" "EditOperation.Adjust" \
-               videoMaskOverlayView mainVideoMaskContainer MaskedFrameLayout \
-               VideoMaskOverlayView isReversed extractedFromSegmentIndex \
-               maskConfig onMaskChanged isMaskEditingMode \
-               bottom_sheet_mask dialog_color_filters dialog_adjustments \
-               item_color_filter_option item_adjust_option filter_preview_ \
-               ic_mask_24 ic_audio_extract_24 ic_fast_rewind_24 ic_page_info_24 \
-               getFFmpegFilterForName getFFmpegFilterForAdjust buildFFmpegMaskAlphaExpr \
-               reverseVideo extractAudio lastAppliedFilterName lastAppliedAdjust \
-               str_filters str_adjust str_extract str_reverse \
-               toast_failed_to_reverse_video toast_failed_to_restore_video_speed \
-               toast_audio_extracted_to_new_layer toast_failed_to_extract_audio \
-               toast_failed_to_apply_speed_reset toast_failed_to_reverse_speed_proxy; do
+    for tok in btnCrop btnCanvasBackground btnCropDone btnBackFromBackground \
+               btnBackgroundDone btnBackgroundColor btnBackgroundBlur btnBackgroundImage \
+               tvTitleBackground tvTitleCrop frameAspectRatio1 frameAspectRatio2 \
+               frameAspectRatio3 frameAspectRatioCustom \
+               bg16_9 ic16_9 txt16_9 bg9_16 ic9_16 txt9_16 \
+               bg1_1 ic1_1 txt1_1 bgCustom icCustom txtCustom \
+               cropOverlayView cropEditingToolbar backgroundEditingToolbar \
+               initialCropOperation bgPreviewImageView lastActiveClipIndexForBlur \
+               currentBlurJob pickBackgroundImage PICK_BACKGROUND_IMAGE_REQUEST \
+               applyCropPreview resetCropPreview getPresetCropBounds \
+               enterCropEditingMode exitCropEditingMode updateCropUi \
+               updateCanvasBackgroundPreview canvasBackgroundAction \
+               enterCanvasBackgroundEditingMode exitCanvasBackgroundEditingMode \
+               cropAction CropOverlayView \
+               addCropOperation updateCanvasBackgroundOperation \
+               buildCropFilterExpr buildCropFilter renderCropPreview cropVideo \
+               "EditOperation.Crop" "EditOperation.CanvasBackground" \
+               "viewModel.addCropOperation" "updateCanvasBackground" \
+               crop_editing_toolbar background_editing_toolbar \
+               ic_crop_24 ic_crop_16_9_24 ic_crop_portrait_24 ic_crop_square_24 \
+               ic_canvas_24 ic_canvas_color_24 aspect_ratio_background \
+               str_crop str_crop_aspect_ratio str_16_9 str_9_16 str_1_1 ; do
         n=$(grep -rn -- "$tok" app/src/main 2>/dev/null | wc -l)
         if [ "$n" -ne 0 ]; then
             echo " [FAIL] leftover reference: $tok ($n hits)"
@@ -1816,8 +1000,17 @@ step10_verify() {
             left=1
         fi
     done
+    # str_custom needs a word-boundary scan (avoids str_custom_directory etc.)
+    n=$(grep -rnE -- 'name="str_custom"|@string/str_custom"|R\.string\.str_custom\b' app/src/main 2>/dev/null | wc -l)
+    if [ "$n" -ne 0 ]; then
+        echo " [FAIL] leftover reference: str_custom ($n hits)"
+        grep -rnE -- 'name="str_custom"|@string/str_custom"|R\.string\.str_custom\b' app/src/main 2>/dev/null | head -3
+        left=1
+    fi
     if [ "$left" -eq 0 ]; then
-        echo " [ok] zero leftover references to the six removed features"
+        echo " [ok] zero leftover references to crop + canvas"
+    else
+        return 1
     fi
 
     # 10b: kept-feature survival asserts
@@ -1831,9 +1024,8 @@ vea = rd('app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt')
 ext = rd('app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt')
 vm = rd('app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt')
 eo = rd('app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt')
-di = rd('app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt')
-vtb = rd('app/src/main/res/layout/video_editing_toolbar.xml')
-itb = rd('app/src/main/res/layout/image_editing_toolbar.xml')
+ps = rd('app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt')
+fre = rd('app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt')
 avem = rd('app/src/main/res/layout/activity_video_editing.xml')
 
 errs = []
@@ -1842,37 +1034,49 @@ def need(text, tok, lo, name):
     if c < lo:
         errs.append('%s: expected >=%d of %r, found %d' % (name, lo, tok, c))
 
-need(vea, 'fun pickBackgroundImage', 1, 'VEA')
-need(vea, 'findTextureView', 3, 'VEA')
-need(vea, 'btnVideoFreezeFrame', 1, 'VEA')
-need(vea, 'btnVideoSpeed', 1, 'VEA')
+# the renamed fit function + its two call sites
+need(vea, 'fun fitCanvasToVideo', 1, 'VEA')
+need(vea, 'fitCanvasToVideo()', 2, 'VEA')
+need(vea, 'reparentCanvasContainer', 3, 'VEA')
+need(vea, 'triggerCanvasLayoutUpdate', 2, 'VEA')
+# remaining main tools
+need(vea, 'R.id.btnText)', 1, 'VEA')
+need(vea, 'R.id.btnMediaOverlay', 1, 'VEA')
+need(vea, 'R.id.btnAudio', 1, 'VEA')
+need(vea, 'val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio)', 1, 'VEA')
+# video toolbar survivors (phase 7 kept these)
 need(vea, 'btnVideoTrim', 1, 'VEA')
 need(vea, 'btnVideoSplit', 1, 'VEA')
+need(vea, 'btnVideoSpeed', 1, 'VEA')
+need(vea, 'btnVideoFreezeFrame', 1, 'VEA')
 need(vea, 'btnVideoMute', 1, 'VEA')
-need(vea, 'btnVideoCancel', 1, 'VEA')
-need(vea, 'btnVideoDelete', 1, 'VEA')
-need(vea, 'applySpeedToSegment', 1, 'VEA')
-need(vea, 'freezeFrameAtCurrentPosition', 1, 'VEA')
-need(vea, 'updateVideoMuteButtonState', 1, 'VEA')
-need(vea, 'btnImageMirror', 1, 'VEA')
-need(vea, 'showChromaKeyDialog', 1, 'VEA')
-need(vea, 'popup.menu.add("Position")', 1, 'VEA')
-need(vea, 'popup.menu.add("Opacity")', 1, 'VEA')
-need(vea, 'popup.menu.add("Speed")', 1, 'VEA')
-need(vea, 'fun interpolateKeyframes', 1, 'VEA')
-need(vea, 'onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored ->', 1, 'VEA')
-need(ext, 'updateMainVideoTrim', 1, 'Ext')
-need(ext, 'updateMainVideoSpeed', 1, 'Ext')
-need(ext, 'splitVideoSegment', 1, 'Ext')
-need(ext, 'deleteSequenceSegment', 1, 'Ext')
-need(ext, 'addBackgroundAudioOperation', 1, 'Ext')
-need(ext, 'addImageOverlayOperation', 1, 'Ext')
-need(vm, 'buildVideoFilterStages', 1, 'VM')
-need(vm, 'buildConsolidatedFFmpegCommand', 1, 'VM')
+# shared helpers that must survive
+need(vea, 'fun showCustomColorPicker', 1, 'VEA')
+need(vea, 'fun copyContentUriToTempFile', 2, 'VEA')
+need(vea, 'findTextureView', 3, 'VEA')
+need(vea, 'PICK_VIDEO_REQUEST', 2, 'VEA')
+need(vea, 'PICK_AUDIO_REQUEST', 2, 'VEA')
+need(vea, 'PICK_IMAGE_REQUEST', 2, 'VEA')
+need(vea, 'PICK_DIRECTORY_REQUEST', 2, 'VEA')
+need(vea, 'is EditOperation.AddText', 2, 'VEA')
+# viewmodel survivors
+need(ext, 'fun VideoEditingViewModel.updateMainVideoTrim', 1, 'Ext')
+need(ext, 'fun VideoEditingViewModel.updateMainVideoSpeed', 1, 'Ext')
+need(ext, 'fun VideoEditingViewModel.addTextOperation', 1, 'Ext')
+need(ext, 'fun VideoEditingViewModel.addMergeOperation', 1, 'Ext')
+need(ext, 'fun VideoEditingViewModel.addBackgroundAudioOperation', 1, 'Ext')
+need(ext, 'fun VideoEditingViewModel.addImageOverlayOperation', 1, 'Ext')
+need(vm, 'fun buildVideoFilterStages', 1, 'VM')
+need(vm, 'fun buildConsolidatedFFmpegCommand', 1, 'VM')
+need(vm, 'fun buildPreviewCommand', 1, 'VM')
+need(vm, 'fun buildMergeCommand', 1, 'VM')
+need(vm, 'for (op in operations) {', 1, 'VM')
+need(vm, 'color=c=black:s=', 1, 'VM')
+need(vm, 'xfade=transition=', 1, 'VM')
 need(vm, 'EditOperation.SpeedMain', 1, 'VM')
+# model survivors
 need(eo, 'data class Trim(', 1, 'EO')
 need(eo, 'data class SpeedMain(', 1, 'EO')
-need(eo, 'data class Crop(', 1, 'EO')
 need(eo, 'data class AddText(', 1, 'EO')
 need(eo, 'data class MergeItem(', 1, 'EO')
 need(eo, 'data class Merge(', 1, 'EO')
@@ -1881,21 +1085,28 @@ need(eo, 'data class Transition(', 1, 'EO')
 need(eo, 'data class MuteClip(', 1, 'EO')
 need(eo, 'data class AddBackgroundAudio(', 1, 'EO')
 need(eo, 'data class AddImageOverlay(', 1, 'EO')
-need(eo, 'data class CanvasBackground(', 1, 'EO')
-need(eo, 'val isMirrored: Boolean = false', 1, 'EO')
-need(di, 'fun toggleMirror()', 1, 'DIOV')
-need(vtb, 'btnVideoFreezeFrame', 1, 'toolbar')
-need(vtb, 'btnVideoSpeed', 1, 'toolbar')
-need(vtb, 'btnVideoMute', 1, 'toolbar')
-need(vtb, 'btnVideoTrim', 1, 'toolbar')
-need(vtb, 'btnVideoSplit', 1, 'toolbar')
-need(vtb, 'btnVideoCancel', 1, 'toolbar')
-need(vtb, 'btnVideoDelete', 1, 'toolbar')
-need(itb, 'btnImageMirror', 1, 'image-toolbar')
-need(itb, 'btnImageChromaKey', 1, 'image-toolbar')
-need(itb, 'ic_mirror', 1, 'image-toolbar')
-need(avem, '<FrameLayout', 1, 'main-layout')
-need(rd('app/src/main/res/layout/text_editing_toolbar.xml'), 'ic_palette_24', 1, 'text-toolbar')
+# serializer survivors
+need(ps, '"Trim" -> EditOperation.Trim::class.java', 1, 'PS')
+need(ps, '"AddText" -> EditOperation.AddText::class.java', 1, 'PS')
+need(ps, '"AddImageOverlay" -> EditOperation.AddImageOverlay::class.java', 1, 'PS')
+need(ps, '"Transition" -> EditOperation.Transition::class.java', 1, 'PS')
+# engine survivors
+need(fre, 'fun executeCommand', 1, 'FRE')
+need(fre, 'suspend fun generateScrubProxy', 1, 'FRE')
+need(fre, 'suspend fun addTextOverlay', 1, 'FRE')
+need(fre, 'fun buildDrawtextFilter', 1, 'FRE')
+# layout survivors
+need(avem, 'canvasContainer', 1, 'main-layout')
+need(avem, '@color/cinemaBlack', 1, 'main-layout')
+need(avem, 'btnText', 1, 'main-layout')
+need(avem, 'btnMediaOverlay', 1, 'main-layout')
+need(avem, 'btnAudio', 1, 'main-layout')
+need(avem, 'android:layout_height="200dp"', 1, 'main-layout')
+need(rd('app/src/main/res/layout/video_editing_toolbar.xml'), 'btnVideoSpeed', 1, 'video-toolbar')
+need(rd('app/src/main/res/layout/video_editing_toolbar.xml'), 'btnVideoCancel', 1, 'video-toolbar')
+need(rd('app/src/main/res/values/strings.xml'), 'name="str_text"', 1, 'strings')
+need(rd('app/src/main/res/values/strings.xml'), 'name="str_overlay"', 1, 'strings')
+need(rd('app/src/main/res/values/strings.xml'), 'name="str_audio"', 1, 'strings')
 
 if errs:
     for e in errs:
@@ -1906,7 +1117,11 @@ CUTPY
 
     # 10c: function-inventory guard vs git HEAD
     inv_check() {
-        local f="$1" exp_rm="$2"
+        local f="$1" exp_rm="$2" exp_add="$3"
+        if [ ! -f "$f" ]; then
+            echo " [FAIL] expected file missing: $f"
+            return 1
+        fi
         if git diff --quiet HEAD -- "$f" 2>/dev/null; then
             echo " [skip] $f matches HEAD (already committed)"
             return 0
@@ -1918,9 +1133,9 @@ CUTPY
             rm -f "$tmp"
             return 1
         fi
-        python3 - "$tmp" "$f" "$exp_rm" <<'CUTPY'
+        python3 - "$tmp" "$f" "$exp_rm" "$exp_add" <<'CUTPY'
 import re, sys
-head, work, exp_rm = sys.argv[1], sys.argv[2], sys.argv[3]
+head, work, exp_rm, exp_add = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 
 def inv(p):
     t = open(p, encoding='utf-8').read()
@@ -1932,29 +1147,28 @@ def inv(p):
 h, w = inv(head), inv(work)
 rm, add = h - w, w - h
 erm = set(x for x in exp_rm.split(',') if x)
+ead = set(x for x in exp_add.split(',') if x)
 bad = []
 if rm != erm:
     bad.append('removed=%s expected=%s' % (sorted(rm), sorted(erm)))
-if add:
-    bad.append('added=%s' % sorted(add))
+if add != ead:
+    bad.append('added=%s expected=%s' % (sorted(add), sorted(ead)))
 if bad:
     print(' [FAIL] function inventory drift in %s: %s' % (work, '; '.join(bad)))
     sys.exit(1)
-print(' [ok] inventory intact: %s (removed %d)' % (work.split('/')[-1], len(erm)))
+print(' [ok] inventory intact: %s (removed %d, added %d)' % (work.split('/')[-1], len(erm), len(ead)))
 CUTPY
         local rc=$?
         rm -f "$tmp"
         [ $rc -ne 0 ] && return 1
         return 0
     }
-    inv_check "$VEA" "reverseVideoSegment,regenerateSpeedProxyForUnreverse,extractAudioFromSegment,showColorFilterSelectionDialog,showAdjustSelectionDialog,showMaskBottomSheet,applyColorFilterToPlayer,applyColorFilterAndAdjustToPlayer,getValForOption,updateSliderForSelection,highlightShape,applyMaskToView,updateMaskShape" || return 1
-    inv_check "$EXT" "updateMainVideoReverse,updateMainVideoMirror,toggleMergeItemMirror,setColorFilter,updateMergeItemMask,setAdjust" || return 1
-    inv_check "$VM" "buildFFmpegMaskAlphaExpr,getFFmpegFilterForAdjust,getFFmpegFilterForName" || return 1
-    inv_check "$EO" "getInterpolatedPos,getInterpolatedSize,getInterpolatedRotation,getInterpolatedFeather,evaluatedAt,isDefault" || return 1
-    inv_check "$DIOV" "createHeartPath,createStarPath" || return 1
-    inv_check "app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt" "createHeartPath,createStarPath" || return 1
-    inv_check "$FRE" "extractAudio,reverseVideo" || return 1
-    inv_check "$PIA" "" || return 1
+    inv_check "$VEA" "applyCropPreview,resetCropPreview,cropAction,canvasBackgroundAction,enterCanvasBackgroundEditingMode,exitCanvasBackgroundEditingMode,pickBackgroundImage,getPresetCropBounds,enterCropEditingMode,exitCropEditingMode,updateCanvasBackgroundPreview,updateCropUi" "fitCanvasToVideo" || return 1
+    inv_check "$EXT" "addCropOperation,updateCanvasBackgroundOperation" "" || return 1
+    inv_check "$VM" "buildCropFilterExpr" "" || return 1
+    inv_check "$EO" "" "" || return 1
+    inv_check "$PS" "" "" || return 1
+    inv_check "$FRE" "renderCropPreview,cropVideo,buildCropFilter" "" || return 1
 
     # 10d: brace-balance DELTA vs git HEAD (pre-existing deltas tolerated)
     python3 - <<'CUTPY' || return 1
@@ -1965,9 +1179,6 @@ files = [
  'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt',
  'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt',
  'app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt',
- 'app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt',
- 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt',
- 'app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt',
  'app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt',
 ]
 for f in files:
@@ -1986,9 +1197,7 @@ CUTPY
     python3 - <<'CUTPY' || return 1
 import glob
 import xml.dom.minidom as md
-files = ['app/src/main/res/layout/video_editing_toolbar.xml',
-         'app/src/main/res/layout/image_editing_toolbar.xml',
-         'app/src/main/res/layout/activity_video_editing.xml']
+files = ['app/src/main/res/layout/activity_video_editing.xml']
 files += sorted(glob.glob('app/src/main/res/values*/strings.xml'))
 for f in files:
     md.parse(f)
@@ -1998,7 +1207,7 @@ CUTPY
     # 10f: scope gate
     local bad
     bad=$(git status --porcelain 2>/dev/null | cut -c4- | grep -Ev \
-'^(scripts/apply-changes\.sh|app/src/main/res/layout/(video_editing_toolbar|image_editing_toolbar|activity_video_editing)\.xml|app/src/main/java/com/tharunbirla/librecuts/(VideoEditingActivity|ProjectImportActivity)\.kt|app/src/main/java/com/tharunbirla/librecuts/(viewmodels/VideoEditingViewModelExt|viewmodels/VideoEditingViewModel|models/EditOperation|utils/ProjectSerializer|services/FFmpegRenderEngine)\.kt|app/src/main/java/com/tharunbirla/librecuts/customviews/(DraggableImageOverlayView|ImageOverlayView|VideoMaskOverlayView|MaskedFrameLayout)\.kt|app/src/main/res/layout/(bottom_sheet_mask|dialog_color_filters|item_color_filter_option|dialog_adjustments|item_adjust_option)\.xml|app/src/main/res/drawable/(filter_preview_[a-z]+\.jpg|ic_(mask|audio_extract|fast_rewind|page_info|brightness|contrast|warmth|shadows?|highlights|saturation|exposure|sharpen|vignette)_24\.xml)|app/src/main/res/values[^/]*/strings\.xml)$' || true)
+'^(scripts/apply-changes\.sh|app/src/main/res/layout/activity_video_editing\.xml|app/src/main/java/com/tharunbirla/librecuts/(VideoEditingActivity|models/EditOperation|utils/ProjectSerializer|services/FFmpegRenderEngine)\.kt|app/src/main/java/com/tharunbirla/librecuts/viewmodels/(VideoEditingViewModelExt|VideoEditingViewModel)\.kt|app/src/main/java/com/tharunbirla/librecuts/customviews/CropOverlayView\.kt|app/src/main/res/layout/(crop_editing_toolbar|background_editing_toolbar)\.xml|app/src/main/res/drawable/(ic_crop_24|ic_crop_16_9_24|ic_crop_portrait_24|ic_crop_square_24|ic_canvas_24|ic_canvas_color_24|aspect_ratio_background|aspect_ratio_background_selected)\.xml|app/src/main/res/values[^/]*/strings\.xml)$' || true)
     if [ -n "$bad" ]; then
         echo " [FAIL] unexpected files in the working diff:"
         echo "$bad"
@@ -2034,35 +1243,39 @@ CUTPY
 #  MAIN
 # ---------------------------------------------------------------------------
 echo "=========================================================="
-echo " Cutloss phase 7 -- remove Filter, Adjust, Mask, Reverse,"
-echo " Mirror and Extract from the video toolbar (all code)"
+echo " Cutloss phase 8 -- remove Crop and Canvas Background"
+echo " from the main toolbar (all the way down to models,"
+echo " serializers, render paths, icons and translated strings)"
 echo "=========================================================="
 step0_preconditions || FAILED=1
-step1_toolbars     || FAILED=1
-step2_vea          || FAILED=1
-step3_ext          || FAILED=1
-step4_vm           || FAILED=1
-step5_models       || FAILED=1
-step6_serializer   || FAILED=1
-step7_views        || FAILED=1
-step8_engine       || FAILED=1
-step9_resources    || FAILED=1
+step1_layout       || FAILED=1
+step2_delete_files || FAILED=1
+step3_models       || FAILED=1
+step4_serializer   || FAILED=1
+step5_ext          || FAILED=1
+step6_vm           || FAILED=1
+step7_engine       || FAILED=1
+step8_vea          || FAILED=1
+step9_strings      || FAILED=1
 step10_verify      || FAILED=1
 
 echo "----------------------------------------------------------"
-echo " line counts: VEA $(wc -l < "$VEA" 2>/dev/null) | Ext $(wc -l < "$EXT" 2>/dev/null) | VM $(wc -l < "$VM" 2>/dev/null) | EO $(wc -l < "$EO" 2>/dev/null)"
+echo " line counts: VEA $(wc -l < "$VEA" 2>/dev/null) | Ext $(wc -l < "$EXT" 2>/dev/null) | VM $(wc -l < "$VM" 2>/dev/null) | EO $(wc -l < "$EO" 2>/dev/null) | PS $(wc -l < "$PS" 2>/dev/null) | FRE $(wc -l < "$FRE" 2>/dev/null)"
 if [ "$FAILED" -ne 0 ]; then
-    echo " PHASE 7 FAILED -- see the [FAIL] lines above."
+    echo " PHASE 8 FAILED -- see the [FAIL] lines above."
     echo " Nothing was committed; main is untouched."
     echo "----------------------------------------------------------"
     exit 1
 fi
-echo " Phase 7 complete. Steps ok or skipped."
-echo "  The video toolbar now shows only: Cancel, Trim, Split,"
-echo "  Mute, Speed, Freeze, Delete. All six removed features"
-echo "  are gone down to their models, serializers, render"
-echo "  paths, icons and translated strings."
-echo "  Image-overlay mirror + chroma key + text palette stay."
+echo " Phase 8 complete. Steps ok or skipped."
+echo "  The main toolbar now shows only: Text, Overlay, Audio."
+echo "  Crop and Canvas Background are gone down to their models,"
+echo "  serializers, render paths, icons and translated strings."
+echo "  The canvas container keeps a black backdrop and still"
+echo "  fits the video aspect ratio (fitCanvasToVideo) so overlay"
+echo "  alignment, fullscreen and PiP reparenting keep working."
+echo "  Merge exports keep the black pad (concat/xfade requires"
+echo "  uniform frame sizes)."
 echo " Next: the workflow commits these changes and builds the APK."
 echo "----------------------------------------------------------"
 exit 0
