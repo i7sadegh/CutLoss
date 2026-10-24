@@ -1,15 +1,79 @@
+<?xml version="1.0" encoding="utf-8"?>
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24"
-    android:tint="#FF4081">
-  <group android:scaleX="0.464"
-      android:scaleY="0.464"
-      android:translateX="6.432"
-      android:translateY="6.432">
-    <path
-        android:fillColor="@android:color/white"
-        android:pathData="M11,9.16V2c-5,0.5 -9,4.79 -9,10s4,9.5 9,10v-7.16c-1,-0.41 -2,-1.52 -2,-2.84s1,-2.43 2,-2.84zM14.86,11H22c-0.48,-4.75 -4,-8.53 -9,-9v7.16c1,0.3 1.52,0.98 1.86,1.84zM13,14.84V22c5,-0.47 8.52,-4.25 9,-9h-7.14c-0.34,0.86 -0.86,1.54 -1.86,1.84z"/>
-  </group>
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <group
+        android:scaleX="0.65"
+        android:scaleY="0.65"
+        android:pivotX="256"
+        android:pivotY="256">
+
+        <!-- simple video frame -->
+        <path
+            android:pathData="M 210,150 H 410 A 20,20 0 0 1 430,170 V 342 A 20,20 0 0 1 410,362 H 210"
+            android:strokeWidth="18"
+            android:fillColor="#00000000"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:startX="210"
+                    android:startY="150"
+                    android:endX="430"
+                    android:endY="362"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFB703" />
+                    <item android:offset="1.0" android:color="#FB8500" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- solid play triangle -->
+        <path
+            android:pathData="M 265,215 L 265,297 L 335,256 Z"
+            android:strokeWidth="12"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="265"
+                    android:startY="215"
+                    android:endX="335"
+                    android:endY="297"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFB703" />
+                    <item android:offset="1.0" android:color="#FB8500" />
+                </gradient>
+            </aapt:attr>
+            <aapt:attr name="android:strokeColor">
+                <gradient
+                    android:startX="265"
+                    android:startY="215"
+                    android:endX="335"
+                    android:endY="297"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#FFB703" />
+                    <item android:offset="1.0" android:color="#FB8500" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- one-line scissors (black) -->
+        <path
+            android:pathData="M 115,360 m -35,0 a 35,35 0 1,0 70,0 a 35,35 0 1,0 -70,0 M 215,360 m -35,0 a 35,35 0 1,0 70,0 a 35,35 0 1,0 -70,0 M 140,330 L 225,130 M 190,330 L 105,130"
+            android:strokeWidth="18"
+            android:strokeColor="#1A1A1A"
+            android:fillColor="#00000000"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round" />
+
+        <!-- scissors center pivot (on the exact crossing point) -->
+        <path
+            android:pathData="M 165,271.2 m -9,0 a 9,9 0 1,0 18,0 a 9,9 0 1,0 -18,0"
+            android:fillColor="#FFB703" />
+    </group>
 </vector>

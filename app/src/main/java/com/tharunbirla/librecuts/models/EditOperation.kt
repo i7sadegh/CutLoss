@@ -36,12 +36,6 @@ sealed class EditOperation : Serializable {
     ) : EditOperation()
     
     /**
-     * Crop operation: Crops video to a specified aspect ratio.
-     * Supported aspects: "16:9", "9:16", "1:1"
-     * Uses FFmpeg's crop filter with video re-encoding.
-     */
-    
-    /**
      * Text overlay operation: Adds customizable text to the video at specified position and size.
      * Supports 7 predefined positions (Bottom Right, Top Right, Top Left, Bottom Left, Center Bottom, Center Top, Center Align)
      * Uses FFmpeg's drawtext filter.

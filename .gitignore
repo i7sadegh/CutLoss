@@ -40,3 +40,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# phase 9: the committed debug key is intentional -- it keeps every
+# CI build on the same signature so debug APKs install over each
+# other. Do not remove.
+!app/debug.keystore
