@@ -25,8 +25,8 @@ android {
         applicationId "com.i7sadegh.cutloss"
         minSdk 26
         targetSdk 34
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 11
-        versionName "1.0-beta8"
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 12
+        versionName "1.0-beta9"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

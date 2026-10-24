@@ -154,13 +154,13 @@ fun VideoEditingViewModel.addBackgroundAudioOperation(
 fun VideoEditingViewModel.addImageOverlayOperation(
     imageUri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float,
     rotationAngle: Float, startTimeMs: Long? = null, endTimeMs: Long? = null, fileDurationMs: Long? = null,
-    isLooping: Boolean = true, chromaKeyColor: String? = null, chromaKeySimilarity: Float = 0.1f,
-    opacity: Float = 1.0f, isMirrored: Boolean = false
+    isLooping: Boolean = true,
+    opacity: Float = 1.0f
 ) {
     executeCommand(AddOperationCommand(EditOperation.AddImageOverlay(
         imageUri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, startTimeMs,
-        endTimeMs, id = System.nanoTime().toString(), fileDurationMs, isLooping, chromaKeyColor,
-        chromaKeySimilarity, opacity, isMirrored
+        endTimeMs, id = System.nanoTime().toString(), fileDurationMs, isLooping,
+        opacity
     ), "Add Image Overlay"))
 }
 

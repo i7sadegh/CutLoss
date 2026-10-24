@@ -537,35 +537,26 @@ class VideoEditingViewModel : ViewModel() {
                         if (isVideo) {
                             val startSec = (op.startTimeMs ?: 0L) / 1000.0
                             val ptsLabel = "[pts_$stageIndex]"
-                            val mirrorStr = if (op.isMirrored) ",hflip" else ""
                             val speedExpr = if (op.speedKeyframes.isNotEmpty()) {
                                 buildFFmpegInterpolationExpr(op.speedKeyframes, useValueY = false, defaultValue = 1.0f, startTimeMs = 0L, timeVar = "T")
                             } else {
                                 "1.0"
                             }
                             val safeSpeedExpr = "if(gt($speedExpr,0.1),$speedExpr,0.1)"
-                            stages.add("[$imageInputIndex:v]setpts='(PTS-STARTPTS)/($safeSpeedExpr)+${startSec}/TB',format=rgba$mirrorStr$ptsLabel")
+                            stages.add("[$imageInputIndex:v]setpts='(PTS-STARTPTS)/($safeSpeedExpr)+${startSec}/TB',format=rgba$ptsLabel")
                             stages.add("${ptsLabel}${currentLabel}scale2ref=w=iw*${op.relativeWidth}:h=ih*${op.relativeHeight}${scaledImgLabel}${refVidLabel}")
                         } else {
                             val rgbaImgLabel = "[rgba_img_$stageIndex]"
-                            val mirrorStr = if (op.isMirrored) ",hflip" else ""
                             if (op.opacityKeyframes.isNotEmpty()) {
                                 // Static image: convert to video stream so geq's T variable advances
-                                stages.add("[$imageInputIndex:v]format=rgba$mirrorStr,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel")
+                                stages.add("[$imageInputIndex:v]format=rgba,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel")
                             } else {
-                                stages.add("[$imageInputIndex:v]format=rgba$mirrorStr$rgbaImgLabel")
+                                stages.add("[$imageInputIndex:v]format=rgba$rgbaImgLabel")
                             }
                             stages.add("${rgbaImgLabel}${currentLabel}scale2ref=w=iw*${op.relativeWidth}:h=ih*${op.relativeHeight}${scaledImgLabel}${refVidLabel}")
                         }
 
                         var currentOverlayLabel = scaledImgLabel
-                        if (op.chromaKeyColor != null) {
-                            val colorkeyLabel = "[colorkey_$stageIndex]"
-                            val color = formatColorForFFmpeg(op.chromaKeyColor)
-                            // colorkey=color=0xRRGGBB:similarity=0.1:blend=0.1
-                            stages.add("${currentOverlayLabel}colorkey=${color}:${op.chromaKeySimilarity}:0.1${colorkeyLabel}")
-                            currentOverlayLabel = colorkeyLabel
-                        }
 
                         val overlayStartMs = op.startTimeMs ?: 0L
                         if (op.opacityKeyframes.isNotEmpty()) {

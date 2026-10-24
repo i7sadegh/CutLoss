@@ -194,10 +194,7 @@ sealed class EditOperation : Serializable {
         val id: String = System.nanoTime().toString(),
         val fileDurationMs: Long? = null,
         val isLooping: Boolean = true,
-        val chromaKeyColor: String? = null,
-        val chromaKeySimilarity: Float = 0.1f,
         val opacity: Float = 1.0f,
-        val isMirrored: Boolean = false,
         val positionKeyframes: List<KeyframePoint> = emptyList(),
         val opacityKeyframes: List<KeyframePoint> = emptyList(),
         val speedKeyframes: List<KeyframePoint> = emptyList()

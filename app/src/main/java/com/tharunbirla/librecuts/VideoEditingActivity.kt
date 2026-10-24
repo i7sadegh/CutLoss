@@ -1210,7 +1210,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         }
                     }
                 }
-                overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored ->
+                overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity ->
                     val selectedId = viewModel.selectedOperationId.value
                     if (isKeyframeEditingMode) {
                         if (selectedId != null) {
@@ -1236,7 +1236,7 @@ class VideoEditingActivity : AppCompatActivity() {
                             val op = viewModel.project.value?.operations?.find { (it as? EditOperation.AddImageOverlay)?.id == selectedId } as? EditOperation.AddImageOverlay
                             if (op != null) {
                                 viewModel.updateOperation(op.copy(
-                                    imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored
+                                    imageUri = uri, relativeX = relX, relativeY = relY, relativeWidth = relW, relativeHeight = relH, rotationAngle = rotationAngle, opacity = opacity
                                 ))
                             }
                         } else {
@@ -1244,8 +1244,6 @@ class VideoEditingActivity : AppCompatActivity() {
                             val fileDuration = getOverlayFileDurationMs(uri)
                             val duration = fileDuration ?: 3000L
                             val end = minOf(start + duration, getTotalSequenceDuration())
-                            val chromaColor = draggableImageOverlay?.currentChromaColor
-                            val chromaSim = draggableImageOverlay?.currentChromaSimilarity ?: 0.1f
                             viewModel.addImageOverlayOperation(
                                 imageUri = uri,
                                 relativeX = relX,
@@ -1256,10 +1254,7 @@ class VideoEditingActivity : AppCompatActivity() {
                                 startTimeMs = start,
                                 endTimeMs = end,
                                 fileDurationMs = fileDuration,
-                                chromaKeyColor = chromaColor,
-                                chromaKeySimilarity = chromaSim,
-                                opacity = opacity,
-                                isMirrored = isMirrored
+                                opacity = opacity
                             )
                         }
                         viewModel.selectOperation(null)
@@ -1296,14 +1291,20 @@ class VideoEditingActivity : AppCompatActivity() {
                         .setNegativeButton("Cancel", null)
                         .show()
                 }
-                toolbar.findViewById<View>(R.id.btnImageDuplicate)?.setBounceClickListener {
-                    duplicateSelectedOverlay()
-                }
-                toolbar.findViewById<View>(R.id.btnImageMirror)?.setBounceClickListener {
-                    draggableImageOverlay?.toggleMirror()
-                }
-                toolbar.findViewById<View>(R.id.btnImageChromaKey)?.setBounceClickListener {
-                    showChromaKeyDialog()
+                toolbar.findViewById<View>(R.id.btnImageScale)?.setBounceClickListener {
+                    val scaleRow = toolbar.findViewById<View>(R.id.imageScaleSliderRow)
+                    val opacityRow = toolbar.findViewById<View>(R.id.imageOpacitySliderRow)
+                    val rotationRow = toolbar.findViewById<View>(R.id.imageRotationSliderRow)
+                    if (scaleRow?.visibility == View.VISIBLE) {
+                        scaleRow.visibility = View.GONE
+                        rotationRow?.visibility = View.VISIBLE
+                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.toolTextInactive))
+                    } else {
+                        scaleRow?.visibility = View.VISIBLE
+                        opacityRow?.visibility = View.GONE
+                        rotationRow?.visibility = View.GONE
+                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
+                    }
                 }
                 toolbar.findViewById<View>(R.id.btnImageLoop)?.setBounceClickListener {
                     val selectedId = viewModel.selectedOperationId.value
@@ -1334,6 +1335,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 toolbar.findViewById<View>(R.id.btnImageOpacity)?.setBounceClickListener {
                     val opacityRow = toolbar.findViewById<View>(R.id.imageOpacitySliderRow)
                     val rotationRow = toolbar.findViewById<View>(R.id.imageRotationSliderRow)
+                    val scaleRow = toolbar.findViewById<View>(R.id.imageScaleSliderRow)
                     if (opacityRow?.visibility == View.VISIBLE) {
                         opacityRow.visibility = View.GONE
                         rotationRow?.visibility = View.VISIBLE
@@ -1341,6 +1343,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     } else {
                         opacityRow?.visibility = View.VISIBLE
                         rotationRow?.visibility = View.GONE
+                        scaleRow?.visibility = View.GONE
                         toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))
                     }
                 }
@@ -1350,6 +1353,13 @@ class VideoEditingActivity : AppCompatActivity() {
                 opacitySlider?.addOnChangeListener { _, value, _ ->
                     tvOpacityValue?.text = "${value.toInt()}%"
                     draggableImageOverlay?.setOpacity(value / 100f)
+                }
+
+                val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)
+                val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)
+                scaleSlider?.addOnChangeListener { _, value, _ ->
+                    tvScaleValue?.text = "${value.toInt()}%"
+                    draggableImageOverlay?.setScaleWidth(value / 100f)
                 }
                 toolbar.findViewById<View>(R.id.btnImageKeyframe)?.setBounceClickListener {
                     enterKeyframeEditingMode(isText = false)
@@ -2052,46 +2062,19 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun duplicateSelectedOverlay() {
         val selectedId = viewModel.selectedOperationId.value ?: return
         val currentProject = viewModel.project.value ?: return
-        val op = currentProject.operations.find {
-            when (it) {
-                is EditOperation.AddText -> it.id == selectedId
-                is EditOperation.AddImageOverlay -> it.id == selectedId
-                else -> false
-            }
-        } ?: return
+        val textOp = currentProject.operations.find {
+            (it as? EditOperation.AddText)?.id == selectedId
+        } as? EditOperation.AddText ?: return
 
-        val newOp = when (op) {
-            is EditOperation.AddText -> {
-                val newX = ((op.relativeX ?: 0.5f) + 0.05f).coerceIn(0f, 1f)
-                val newY = ((op.relativeY ?: 0.5f) + 0.05f).coerceIn(0f, 1f)
-                op.copy(
-                    id = System.nanoTime().toString(),
-                    relativeX = newX,
-                    relativeY = newY
-                )
-            }
-            is EditOperation.AddImageOverlay -> {
-                val newX = (op.relativeX + 0.05f).coerceIn(0f, 1f)
-                val newY = (op.relativeY + 0.05f).coerceIn(0f, 1f)
-                op.copy(
-                    id = System.nanoTime().toString(),
-                    relativeX = newX,
-                    relativeY = newY
-                )
-            }
-            else -> null
-        }
-
-        val newOpId = when (newOp) {
-            is EditOperation.AddText -> newOp.id
-            is EditOperation.AddImageOverlay -> newOp.id
-            else -> null
-        }
-
-        if (newOp != null && newOpId != null) {
-            viewModel.addOperation(newOp)
-            viewModel.selectOperation(newOpId)
-        }
+        val newX = ((textOp.relativeX ?: 0.5f) + 0.05f).coerceIn(0f, 1f)
+        val newY = ((textOp.relativeY ?: 0.5f) + 0.05f).coerceIn(0f, 1f)
+        val newOp = textOp.copy(
+            id = System.nanoTime().toString(),
+            relativeX = newX,
+            relativeY = newY
+        )
+        viewModel.addOperation(newOp)
+        viewModel.selectOperation(newOp.id)
     }
 
 
@@ -2295,9 +2278,16 @@ class VideoEditingActivity : AppCompatActivity() {
             opacitySlider?.value = 100f
             tvOpacityValue?.text = "100%"
 
+            val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)
+            val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)
+            scaleSlider?.value = 30f
+            tvScaleValue?.text = "30%"
+
             toolbar.findViewById<View>(R.id.imageOpacitySliderRow)?.visibility = View.GONE
             toolbar.findViewById<View>(R.id.imageRotationSliderRow)?.visibility = View.VISIBLE
             toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
+            toolbar.findViewById<View>(R.id.imageScaleSliderRow)?.visibility = View.GONE
+            toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
         }
         findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
         if (::player.isInitialized && player.isPlaying) {
@@ -2345,9 +2335,17 @@ class VideoEditingActivity : AppCompatActivity() {
             opacitySlider?.value = currentOpacity
             tvOpacityValue?.text = "${currentOpacity.toInt()}%"
 
+            val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)
+            val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)
+            val currentScale = Math.round(((op?.relativeWidth ?: 0.3f) * 100f).coerceIn(5f, 500f))
+            scaleSlider?.value = currentScale.toFloat()
+            tvScaleValue?.text = "$currentScale%"
+
             toolbar.findViewById<View>(R.id.imageOpacitySliderRow)?.visibility = View.GONE
             toolbar.findViewById<View>(R.id.imageRotationSliderRow)?.visibility = View.VISIBLE
             toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
+            toolbar.findViewById<View>(R.id.imageScaleSliderRow)?.visibility = View.GONE
+            toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
         }
         findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
         if (::player.isInitialized && player.isPlaying) {
@@ -6137,100 +6135,6 @@ class VideoEditingActivity : AppCompatActivity() {
         return targets.toList().sorted()
     }
 
-    private fun showChromaKeyDialog() {
-        val selectedId = viewModel.selectedOperationId.value
-        val op = if (selectedId != null) {
-            viewModel.project.value?.operations?.find { (it as? EditOperation.AddImageOverlay)?.id == selectedId } as? EditOperation.AddImageOverlay
-        } else null
-
-        if (op == null && draggableImageOverlay?.visibility != View.VISIBLE) return
-
-        val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
-        val view = layoutInflater.inflate(R.layout.chroma_key_bottom_sheet_dialog, null)
-        bottomSheet.setContentView(view)
-
-        val colorPreview = view.findViewById<View>(R.id.chromaColorPreview)
-        val hsvPicker = view.findViewById<com.tharunbirla.librecuts.customviews.HSVColorPickerView>(R.id.hsvChromaColorPicker)
-        val slider = view.findViewById<com.google.android.material.slider.Slider>(R.id.chromaIntensitySlider)
-        val btnClear = view.findViewById<Button>(R.id.btnChromaClear)
-        val btnApply = view.findViewById<Button>(R.id.btnChromaApply)
-        val btnEyedropper = view.findViewById<ImageView>(R.id.btnChromaEyedropper)
-
-        var selectedColor = op?.chromaKeyColor ?: draggableImageOverlay?.currentChromaColor ?: "#00FF00"
-        slider.value = (op?.chromaKeySimilarity ?: draggableImageOverlay?.currentChromaSimilarity ?: 0.1f).coerceIn(0.01f, 0.5f)
-
-        val originalColor = op?.chromaKeyColor ?: draggableImageOverlay?.currentChromaColor
-        val originalSimilarity = op?.chromaKeySimilarity ?: draggableImageOverlay?.currentChromaSimilarity ?: 0.1f
-
-        fun updatePreview() {
-            try {
-                colorPreview.setBackgroundColor(android.graphics.Color.parseColor(selectedColor))
-                draggableImageOverlay?.setChromaKey(selectedColor, slider.value)
-            } catch (e: Exception) {
-                // Ignore parsing errors for safety
-            }
-        }
-        
-        try {
-            colorPreview.setBackgroundColor(android.graphics.Color.parseColor(selectedColor))
-            hsvPicker.setColor(android.graphics.Color.parseColor(selectedColor))
-        } catch (e: Exception) {
-            hsvPicker.setColor(android.graphics.Color.GREEN)
-        }
-        
-        hsvPicker.onColorChanged = { newColor ->
-            selectedColor = String.format("#%06X", (0xFFFFFF and newColor))
-            updatePreview()
-        }
-
-        slider.addOnChangeListener { _, _, _ -> updatePreview() }
-
-        btnEyedropper.setBounceClickListener {
-            bottomSheet.hide()
-            Toast.makeText(this@VideoEditingActivity, "Tap a color on the image to pick it", Toast.LENGTH_SHORT).show()
-            draggableImageOverlay?.isColorPickingMode = true
-            draggableImageOverlay?.onColorPicked = { hex ->
-                selectedColor = hex
-                try {
-                    hsvPicker.setColor(android.graphics.Color.parseColor(selectedColor))
-                } catch(e: Exception){}
-                updatePreview()
-                draggableImageOverlay?.isColorPickingMode = false
-                bottomSheet.show()
-            }
-        }
-        
-        var applied = false
-
-        btnClear.setOnClickListener {
-            applied = true
-            if (op != null) {
-                viewModel.updateOperation(op.copy(chromaKeyColor = null))
-            }
-            draggableImageOverlay?.setChromaKey(null, 0.1f)
-            bottomSheet.dismiss()
-        }
-
-        btnApply.setOnClickListener {
-            applied = true
-            if (op != null && selectedColor != null) {
-                viewModel.updateOperation(op.copy(
-                    chromaKeyColor = selectedColor,
-                    chromaKeySimilarity = slider.value
-                ))
-            }
-            bottomSheet.dismiss()
-        }
-
-        bottomSheet.setOnDismissListener {
-            if (!applied) {
-                draggableImageOverlay?.setChromaKey(originalColor, originalSimilarity)
-            }
-            draggableImageOverlay?.isColorPickingMode = false
-        }
-        bottomSheet.show()
-    }
-
     private fun showCustomColorPicker(initialHex: String, onColorPicked: (String) -> Unit) {
         val bottomSheet = com.google.android.material.bottomsheet.BottomSheetDialog(this)
         val view = layoutInflater.inflate(R.layout.dialog_custom_color_picker, null)
@@ -6561,8 +6465,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         op.relativeWidth,
                         op.relativeHeight,
                         op.rotationAngle,
-                        interpolatedOpacity,
-                        op.isMirrored
+                        interpolatedOpacity
                     )
 
                     if (activeKeyframeProperty == "Opacity") {

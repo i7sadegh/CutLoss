@@ -15,16 +15,9 @@ import android.view.ScaleGestureDetector
 import android.widget.FrameLayout
 import android.widget.ImageView
 import androidx.appcompat.widget.AppCompatImageView
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.util.Log
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class DraggableImageOverlayView @JvmOverloads constructor(
     context: Context,
@@ -33,7 +26,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
     // ── Public callbacks ──────────────────────────────────────────────────────
-    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float, isMirrored: Boolean) -> Unit)? = null
+    var onImageCommitted: ((uri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float, rotationAngle: Float, opacity: Float) -> Unit)? = null
     var onPositionChanged: ((relativeX: Float, relativeY: Float) -> Unit)? = null
 
     // ── State ─────────────────────────────────────────────────────────────────
@@ -44,7 +37,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private var relativeHeight = 0.3f
     private var rotationAngle = 0f
     private var opacity = 1.0f
-    private var isMirrored = false
     
     
     private var videoWidth = 0
@@ -59,18 +51,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     private var isDragging = false
     private var dragOffsetX = 0f
     private var dragOffsetY = 0f
-
-    // ── Chroma Key Picker State ──
-    var isColorPickingMode = false
-    var onColorPicked: ((colorHex: String) -> Unit)? = null
-    
-    private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
-    private var originalBitmapForChroma: Bitmap? = null
-    var currentChromaColor: String? = null
-        private set
-    var currentChromaSimilarity: Float = 0.1f
-        private set
-    private var chromaJob: Job? = null
 
     private val guidelinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.parseColor("#CEC0EC")
@@ -284,9 +264,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     fun activate(uri: Uri, aspect: Float = 1.0f) {
         isEditingActive = true
         imageUri = uri
-        originalBitmapForChroma?.recycle()
-        originalBitmapForChroma = null
-        currentChromaColor = null
         
         val trueAspect = getMediaAspectRatio(uri)
         imageAspectRatio = trueAspect
@@ -297,9 +274,7 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         relativeHeight = relativeWidth * videoRatio / imageAspectRatio
         rotationAngle = 0f
         opacity = 1.0f
-        isMirrored = false
         imageView.alpha = opacity
-        imageView.scaleX = if (isMirrored) -1f else 1f
 
         loadOverlayMedia(uri)
 
@@ -312,10 +287,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     fun activateForEdit(op: com.tharunbirla.librecuts.models.EditOperation.AddImageOverlay) {
         isEditingActive = true
         imageUri = op.imageUri
-        originalBitmapForChroma?.recycle()
-        originalBitmapForChroma = null
-        currentChromaColor = op.chromaKeyColor
-        currentChromaSimilarity = op.chromaKeySimilarity
         val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
         
         val trueAspect = getMediaAspectRatio(op.imageUri)
@@ -326,19 +297,14 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         relativeHeight = relativeWidth * videoRatio / imageAspectRatio
         rotationAngle = op.rotationAngle
         opacity = op.opacity
-        isMirrored = op.isMirrored
 
         loadOverlayMedia(op.imageUri)
 
         imageView.rotation = rotationAngle
         imageView.alpha = opacity
-        imageView.scaleX = if (isMirrored) -1f else 1f
         visibility = VISIBLE
         post {
             updateImageViewSizeAndPosition()
-            if (currentChromaColor != null) {
-                applyChromaKey()
-            }
         }
     }
 
@@ -401,17 +367,19 @@ class DraggableImageOverlayView @JvmOverloads constructor(
         invalidate()
     }
     
-    fun toggleMirror() {
-        isMirrored = !isMirrored
-        imageView.scaleX = if (isMirrored) -1f else 1f
-        invalidate()
+    fun setScaleWidth(w: Float) {
+        relativeWidth = w.coerceIn(0.05f, 5.0f)
+        val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f
+        relativeHeight = relativeWidth * videoRatio / imageAspectRatio
+        syncRelativePositionFromVisual()
+        updateImageViewSizeAndPosition()
     }
 
     fun commitImage() {
         val uri = imageUri
         if (uri != null) {
             updateRelativePosition()
-            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity, isMirrored)
+            onImageCommitted?.invoke(uri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, opacity)
         }
         deactivate()
     }
@@ -439,9 +407,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 
                 // Check if touch is inside the image bounds
                 if (touchX in imgLeft..imgRight && touchY in imgTop..imgBottom) {
-                    if (isColorPickingMode) {
-                        return true
-                    }
                     isDragging = true
                     dragOffsetX = touchX - imageView.x
                     dragOffsetY = touchY - imageView.y
@@ -465,10 +430,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
 
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
-                if (isColorPickingMode) {
-                    pickColorAt(event.x, event.y)
-                    return true
-                }
                 // round 9: the press must land on the image itself
                 // (plus room for the selection handles) -- presses on
                 // empty canvas no longer yank the overlay around.
@@ -532,114 +493,6 @@ class DraggableImageOverlayView @JvmOverloads constructor(
             }
         }
         return super.onTouchEvent(event)
-    }
-
-    private fun pickColorAt(x: Float, y: Float) {
-        try {
-            val bmpToUse = originalBitmapForChroma ?: run {
-                imageView.isDrawingCacheEnabled = true
-                imageView.buildDrawingCache(true)
-                val c = imageView.getDrawingCache(true)?.copy(Bitmap.Config.ARGB_8888, true)
-                imageView.isDrawingCacheEnabled = false
-                c
-            }
-            if (bmpToUse != null) {
-                // map coordinates
-                val localX = (x - imageView.x).toInt().coerceIn(0, bmpToUse.width - 1)
-                val localY = (y - imageView.y).toInt().coerceIn(0, bmpToUse.height - 1)
-                val pixelColor = bmpToUse.getPixel(localX, localY)
-                val hexColor = String.format("#%06X", 0xFFFFFF and pixelColor)
-                isColorPickingMode = false
-                onColorPicked?.invoke(hexColor)
-            }
-        } catch (e: Exception) {
-            android.util.Log.e("DraggableImage", "Error picking color: ${e.message}")
-            isColorPickingMode = false
-        }
-    }
-
-    fun setChromaKey(colorHex: String?, similarity: Float) {
-        currentChromaColor = colorHex
-        currentChromaSimilarity = similarity
-        applyChromaKey()
-    }
-    
-    private fun applyChromaKey() {
-        if (currentChromaColor == null) {
-            chromaJob?.cancel()
-            originalBitmapForChroma?.recycle()
-            originalBitmapForChroma = null
-            imageUri?.let { loadOverlayMedia(it) }
-            return
-        }
-        
-        chromaJob?.cancel()
-        chromaJob = scope.launch {
-            if (originalBitmapForChroma == null) {
-                imageView.isDrawingCacheEnabled = true
-                imageView.buildDrawingCache(true)
-                val cache = imageView.getDrawingCache(true)
-                if (cache != null) {
-                    originalBitmapForChroma = cache.copy(Bitmap.Config.ARGB_8888, true)
-                }
-                imageView.isDrawingCacheEnabled = false
-            }
-            val base = originalBitmapForChroma ?: return@launch
-            
-            val sim = currentChromaSimilarity
-            val colorHex = currentChromaColor!!
-            
-            val result = withContext(Dispatchers.Default) {
-                try {
-                    val color = android.graphics.Color.parseColor(colorHex)
-                    val targetR = android.graphics.Color.red(color)
-                    val targetG = android.graphics.Color.green(color)
-                    val targetB = android.graphics.Color.blue(color)
-                    
-                    val width = base.width
-                    val height = base.height
-                    val pixels = IntArray(width * height)
-                    base.getPixels(pixels, 0, width, 0, 0, width, height)
-                    
-                    val maxDistSq = 255f * 255f * 3f
-                    val simSq = sim * sim * maxDistSq
-                    val blendSq = 0.1f * 0.1f * maxDistSq
-                    
-                    for (i in pixels.indices) {
-                        val p = pixels[i]
-                        val a = (p shr 24) and 0xFF
-                        if (a == 0) continue
-                        
-                        val r = (p shr 16) and 0xFF
-                        val g = (p shr 8) and 0xFF
-                        val b = p and 0xFF
-                        
-                        val diffR = r - targetR
-                        val diffG = g - targetG
-                        val diffB = b - targetB
-                        val distSq = (diffR * diffR + diffG * diffG + diffB * diffB).toFloat()
-                        
-                        if (distSq < simSq) {
-                            if (blendSq > 0 && distSq > simSq - blendSq) {
-                                val alphaMult = (distSq - (simSq - blendSq)) / blendSq
-                                val newA = (a * alphaMult).toInt().coerceIn(0, 255)
-                                pixels[i] = (newA shl 24) or (r shl 16) or (g shl 8) or b
-                            } else {
-                                pixels[i] = 0
-                            }
-                        }
-                    }
-                    val keyed = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                    keyed.setPixels(pixels, 0, width, 0, 0, width, height)
-                    keyed
-                } catch (e: Exception) {
-                    null
-                }
-            }
-            if (result != null) {
-                imageView.setImageBitmap(result)
-            }
-        }
     }
 
     // ── Drawing ───────────────────────────────────────────────────────────────
@@ -715,16 +568,14 @@ class DraggableImageOverlayView @JvmOverloads constructor(
     fun getRelativeHeight(): Float = relativeHeight
     fun getRotationAngle(): Float = rotationAngle
     fun getOpacity(): Float = opacity
-    fun getIsMirrored(): Boolean = isMirrored
 
-    fun setProperties(rx: Float, ry: Float, rw: Float, rh: Float, rot: Float, op: Float, mir: Boolean) {
+    fun setProperties(rx: Float, ry: Float, rw: Float, rh: Float, rot: Float, op: Float) {
         relativeX = rx
         relativeY = ry
         relativeWidth = rw
         relativeHeight = rh
         rotationAngle = rot
         setOpacity(op)
-        isMirrored = mir
         updateImageViewSizeAndPosition()
     }
 

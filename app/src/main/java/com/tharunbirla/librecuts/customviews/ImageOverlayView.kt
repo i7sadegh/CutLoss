@@ -35,7 +35,6 @@ class ImageOverlayView @JvmOverloads constructor(
     
     // Memory pools to prevent GC churn during playback
     private val reusableBitmaps = mutableMapOf<String, Bitmap>()
-    private val reusableIntArrays = mutableMapOf<String, IntArray>()
     
     private val pendingFetches = mutableSetOf<String>()
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
@@ -58,7 +57,7 @@ class ImageOverlayView @JvmOverloads constructor(
     fun setImageOperations(operations: List<EditOperation.AddImageOverlay>) {
         this.imageOperations = operations
         
-        // Cache static images with their chroma key properties considered
+        // Cache static images for preview rendering
         scope.launch(Dispatchers.Default) {
             for (op in operations) {
                 val path = op.imageUri.path ?: continue
@@ -69,7 +68,7 @@ class ImageOverlayView @JvmOverloads constructor(
                               path.endsWith(".3gp", ignoreCase = true)
 
                 if (!isGif && !isVideo) {
-                    val cacheKey = "${op.imageUri}_${op.chromaKeyColor}_${op.chromaKeySimilarity}"
+                    val cacheKey = op.imageUri.toString()
                     if (!bitmapCache.containsKey(cacheKey)) {
                         try {
                             val file = File(path)
@@ -95,9 +94,6 @@ class ImageOverlayView @JvmOverloads constructor(
                                     } catch (e: Exception) {
                                         e.printStackTrace()
                                     }
-                                }
-                                if (bitmap != null && op.chromaKeyColor != null) {
-                                    bitmap = applyChromaKey(bitmap, op.chromaKeyColor!!, op.chromaKeySimilarity, cacheKey)
                                 }
                                 if (bitmap != null) {
                                     withContext(Dispatchers.Main) {
@@ -131,7 +127,6 @@ class ImageOverlayView @JvmOverloads constructor(
         bitmapCache.clear()
         reusableBitmaps.values.forEach { it.recycle() }
         reusableBitmaps.clear()
-        reusableIntArrays.clear()
         pendingFetches.clear()
     }
 
@@ -163,64 +158,6 @@ class ImageOverlayView @JvmOverloads constructor(
         return rect
     }
     
-    private fun applyChromaKey(bitmap: Bitmap, colorHex: String, similarity: Float, cacheKey: String): Bitmap {
-        try {
-            val color = android.graphics.Color.parseColor(colorHex)
-            val targetR = android.graphics.Color.red(color)
-            val targetG = android.graphics.Color.green(color)
-            val targetB = android.graphics.Color.blue(color)
-            
-            val width = bitmap.width
-            val height = bitmap.height
-            val pixelCount = width * height
-            
-            var pixels = reusableIntArrays[cacheKey]
-            if (pixels == null || pixels.size != pixelCount) {
-                pixels = IntArray(pixelCount)
-                reusableIntArrays[cacheKey] = pixels
-            }
-            bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
-            
-            val maxDistSq = 255f * 255f * 3f
-            val simSq = similarity * similarity * maxDistSq
-            val blendSq = 0.1f * 0.1f * maxDistSq
-            
-            for (i in 0 until pixelCount) {
-                val p = pixels[i]
-                val a = (p shr 24) and 0xFF
-                if (a == 0) continue
-                
-                val r = (p shr 16) and 0xFF
-                val g = (p shr 8) and 0xFF
-                val b = p and 0xFF
-                
-                val diffR = r - targetR
-                val diffG = g - targetG
-                val diffB = b - targetB
-                val distSq = (diffR * diffR + diffG * diffG + diffB * diffB).toFloat()
-                
-                if (distSq < simSq) {
-                    if (blendSq > 0 && distSq > simSq - blendSq) {
-                        val alphaMult = (distSq - (simSq - blendSq)) / blendSq
-                        val newA = (a * alphaMult).toInt().coerceIn(0, 255)
-                        pixels[i] = (newA shl 24) or (r shl 16) or (g shl 8) or b
-                    } else {
-                        pixels[i] = 0
-                    }
-                }
-            }
-            var keyed = reusableBitmaps["${cacheKey}_keyed"]
-            if (keyed == null || keyed.width != width || keyed.height != height) {
-                keyed = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-                reusableBitmaps["${cacheKey}_keyed"] = keyed
-            }
-            keyed.setPixels(pixels, 0, width, 0, 0, width, height)
-            return keyed
-        } catch (e: Exception) {
-            return bitmap
-        }
-    }
-
     private fun interpolateKeyframes(
         keyframes: List<EditOperation.KeyframePoint>,
         timeMs: Long,
@@ -385,9 +322,6 @@ class ImageOverlayView @JvmOverloads constructor(
                                 }
                             }
                             
-                            if (bitmap != null && op.chromaKeyColor != null) {
-                                bitmap = applyChromaKey(bitmap, op.chromaKeyColor!!, op.chromaKeySimilarity, cacheKey)
-                            }
                             
                             withContext(Dispatchers.Main) {
                                 if (bitmap != null) {
@@ -402,7 +336,7 @@ class ImageOverlayView @JvmOverloads constructor(
                     cached?.second?.let { drawBitmapOp(canvas, it, interpolatedOp, videoRect) }
                 }
             } else {
-                val staticCacheKey = "${op.imageUri}_${op.chromaKeyColor}_${op.chromaKeySimilarity}"
+                val staticCacheKey = op.imageUri.toString()
                 val bitmap = bitmapCache[staticCacheKey]
                 if (bitmap != null) {
                     drawBitmapOp(canvas, bitmap, interpolatedOp, videoRect)
@@ -430,9 +364,6 @@ class ImageOverlayView @JvmOverloads constructor(
         canvas.save()
         canvas.rotate(op.rotationAngle, centerX, centerY)
         
-        if (op.isMirrored) {
-            canvas.scale(-1f, 1f, centerX, centerY)
-        }
         canvas.drawBitmap(bitmap, null, dstRect, paint)
         canvas.restore()
         paint.alpha = oldAlpha
