@@ -17,26 +17,6 @@ fun VideoEditingViewModel.updateMainVideoSpeed(speed: Float, proxyUri: Uri?) {
 
 
 
-fun VideoEditingViewModel.addCropOperation(
-    aspectRatio: String, xFraction: Float = 0f, yFraction: Float = 0f,
-    wFraction: Float = 1f, hFraction: Float = 1f
-) {
-    executeCommand(ReplaceUniqueOperationCommand(
-        EditOperation.Crop(aspectRatio, xFraction, yFraction, wFraction, hFraction),
-        "Crop Video"
-    ))
-}
-
-fun VideoEditingViewModel.updateCanvasBackgroundOperation(
-    type: EditOperation.CanvasBackground.BackgroundType, colorHex: String = "#000000",
-    imageUri: Uri? = null, blurRadius: Int = 20
-) {
-    executeCommand(ReplaceUniqueOperationCommand(
-        EditOperation.CanvasBackground(type, colorHex, imageUri, blurRadius),
-        "Set Canvas Background"
-    ))
-}
-
 fun VideoEditingViewModel.addTextOperation(
     text: String, fontSize: Int, position: String, relativeX: Float? = null,
     relativeY: Float? = null, color: String = "#FFFFFF", startTimeMs: Long? = null,

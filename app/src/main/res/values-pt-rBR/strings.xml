@@ -26,7 +26,6 @@
     <string name="str_text">Texto</string>
     <string name="str_overlay">Sobreposição</string>
     <string name="str_audio">Áudio</string>
-    <string name="str_crop">Recortar</string>
     <string name="str_none">Nenhum</string>
     <string name="str_brightness_0">Brilho: 0</string>
     <string name="str_apply_to_all">Aplicar a todos</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">Beats</string>
     <string name="str_ducking">Esquivar-se</string>
     <string name="str_fade">Fade</string>
-    <string name="str_crop_aspect_ratio">Proporção da imagem recortada</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Personalizado</string>
     <string name="str_trim_video">Cortar Vídeo</string>
     <string name="str_transitions">Transições</string>
     <string name="str_new_project">NOVO PROJETO</string>

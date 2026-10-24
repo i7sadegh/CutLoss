@@ -40,20 +40,6 @@ sealed class EditOperation : Serializable {
      * Supported aspects: "16:9", "9:16", "1:1"
      * Uses FFmpeg's crop filter with video re-encoding.
      */
-    data class Crop(
-        val aspectRatio: String,
-        val xFraction: Float = 0f,
-        val yFraction: Float = 0f,
-        val wFraction: Float = 1f,
-        val hFraction: Float = 1f,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation() {
-        init {
-            require(aspectRatio in listOf("16:9", "9:16", "1:1", "Custom")) { 
-                "Unsupported aspect ratio: $aspectRatio" 
-            }
-        }
-    }
     
     /**
      * Text overlay operation: Adds customizable text to the video at specified position and size.
@@ -226,15 +212,6 @@ sealed class EditOperation : Serializable {
     /**
      * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.
      */
-    data class CanvasBackground(
-        @SerializedName("backgroundType") val type: BackgroundType = BackgroundType.COLOR,
-        val colorHex: String = "#000000",
-        val imageUri: Uri? = null,
-        val blurRadius: Int = 20,
-        val id: String = System.nanoTime().toString()
-    ) : EditOperation() {
-        enum class BackgroundType { COLOR, IMAGE, BLUR }
-    }
 }
 
 /**
@@ -288,7 +265,6 @@ val EditOperation.id: String
     get() = when (this) {
         is EditOperation.Trim -> id
         is EditOperation.SpeedMain -> id
-        is EditOperation.Crop -> id
         is EditOperation.AddText -> id
         is EditOperation.Merge -> id
         is EditOperation.MuteAudio -> id
@@ -296,5 +272,4 @@ val EditOperation.id: String
         is EditOperation.MuteClip -> id
         is EditOperation.AddBackgroundAudio -> id
         is EditOperation.AddImageOverlay -> id
-        is EditOperation.CanvasBackground -> id
     }

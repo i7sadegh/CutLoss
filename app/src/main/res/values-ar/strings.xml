@@ -26,7 +26,6 @@
     <string name="str_text">النص</string>
     <string name="str_overlay">الطبقة</string>
     <string name="str_audio">الصوت</string>
-    <string name="str_crop">الاقتصاص</string>
     <string name="str_none">لا شيء</string>
     <string name="str_brightness_0">السطوع: 0</string>
     <string name="str_apply_to_all">تطبيق على الكل</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">الإيقاعات</string>
     <string name="str_ducking">الخفض التلقائي</string>
     <string name="str_fade">التلاشي</string>
-    <string name="str_crop_aspect_ratio">نسبة أبعاد المحصول</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">مخصص</string>
     <string name="str_trim_video">قص الفيديو</string>
     <string name="str_transitions">التحولات</string>
     <string name="str_new_project">مشروع جديد</string>

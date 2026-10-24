@@ -26,7 +26,6 @@
     <string name="str_text">Текст</string>
     <string name="str_overlay">Оверлей</string>
     <string name="str_audio">Звук</string>
-    <string name="str_crop">Изменить размер</string>
     <string name="str_none">Ничего</string>
     <string name="str_brightness_0">Яркость: 0</string>
     <string name="str_apply_to_all">Применить ко всем</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">Ритм</string>
     <string name="str_ducking">Выделение голоса</string>
     <string name="str_fade">Приглушение</string>
-    <string name="str_crop_aspect_ratio">Изменить соотношение сторон</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Особое</string>
     <string name="str_trim_video">Обрезать видео</string>
     <string name="str_transitions">Переходы</string>
     <string name="str_new_project">НОВЫЙ ПРОЕКТ</string>

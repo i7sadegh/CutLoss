@@ -26,7 +26,6 @@
     <string name="str_text">टेक्स्ट</string>
     <string name="str_overlay">ओवरले</string>
     <string name="str_audio">ऑडियो</string>
-    <string name="str_crop">क्रॉप</string>
     <string name="str_none">कोई नहीं</string>
     <string name="str_brightness_0">चमक: 0</string>
     <string name="str_apply_to_all">सभी पर लागू करें</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">बीट्स</string>
     <string name="str_ducking">डकिंग</string>
     <string name="str_fade">फ़ेड</string>
-    <string name="str_crop_aspect_ratio">क्रॉप पक्षानुपात (Aspect Ratio)</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">कस्टम</string>
     <string name="str_trim_video">वीडियो ट्रिम करें</string>
     <string name="str_transitions">ट्रांज़िशन</string>
     <string name="str_new_project">नया प्रोजेक्ट</string>

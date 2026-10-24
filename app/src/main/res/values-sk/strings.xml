@@ -36,11 +36,6 @@
     <string name="str_beats">Rytmus</string>
     <string name="str_ducking">Čiastočné stlmenie zvuku</string>
     <string name="str_fade">Zatmievačka</string>
-    <string name="str_crop_aspect_ratio">Pomery strán snímky</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Vlastné</string>
     <string name="str_trim_video">Strih videa</string>
     <string name="str_transitions">Prechody</string>
     <string name="str_new_project">NOVÝ PROJEKT</string>
@@ -112,7 +107,6 @@
     <string name="str_encoder_software_desc">Maximálne kompatibilita pri exportovaní s využitím procesora (CPU)</string>
     <string name="str_brush_size">Veľkosť štetca</string>
     <string name="str_clear">Vyčistiť</string>
-    <string name="str_crop">Orezať</string>
     <string name="str_none">Žiadne</string>
     <string name="str_brightness_0">Jas: 0</string>
     <string name="str_apply_to_all">Použiť na všetko</string>

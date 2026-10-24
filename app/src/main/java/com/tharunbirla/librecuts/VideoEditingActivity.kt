@@ -171,9 +171,6 @@ class VideoEditingActivity : AppCompatActivity() {
     private var originalMainVideoDurationMs: Long = 0L
     private var primaryVideoAspectRatio: Float = 0f
     
-    private var bgPreviewImageView: ImageView? = null
-    private var lastActiveClipIndexForBlur: Int = 0
-    private var currentBlurJob: Job? = null
     
     private val activeExtractionUris = mutableSetOf<Uri>()
     private val frameExtractionSemaphore = kotlinx.coroutines.sync.Semaphore(2)
@@ -409,11 +406,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private var selectedVideoIndex: Int? = null
     private var videoEditingToolbar: View? = null
     private var audioEditingToolbar: View? = null
-    private var backgroundEditingToolbar: View? = null
     private var speedEditingToolbar: View? = null
-    private var cropEditingToolbar: View? = null
-    private var cropOverlayView: com.tharunbirla.librecuts.customviews.CropOverlayView? = null
-    private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null
 
     private var keyframeEditingToolbar: View? = null
     private var isKeyframeEditingMode = false
@@ -672,7 +665,6 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun initializeViews() {
         playerView = findViewById(R.id.playerView)
         playerContainer = findViewById(R.id.playerContainer)
-        bgPreviewImageView = findViewById(R.id.bgPreviewImageView)
         transitionPreviewOverlayView = findViewById(R.id.transitionPreviewOverlayView)
         canvasContainer = findViewById(R.id.canvasContainer)
 
@@ -1280,30 +1272,6 @@ class VideoEditingActivity : AppCompatActivity() {
             null
         }
 
-        cropOverlayView = try {
-            findViewById<com.tharunbirla.librecuts.customviews.CropOverlayView>(R.id.cropOverlayView)?.also { overlay ->
-                overlay.onCropBoundsChanged = { x, y, w, h ->
-                    val existing = viewModel.project.value?.operations
-                        ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-                        ?.lastOrNull()
-                    if (existing != null) {
-                        viewModel.updateOperation(existing.copy(
-                            aspectRatio = "Custom",
-                            xFraction = x,
-                            yFraction = y,
-                            wFraction = w,
-                            hFraction = h
-                        ))
-                    } else {
-                        viewModel.addCropOperation("Custom", x, y, w, h)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "CropOverlayView not found: ${e.message}")
-            null
-        }
-
         imageEditingToolbar = try {
             findViewById<View>(R.id.imageEditingToolbar)?.also { toolbar ->
                 toolbar.findViewById<ImageButton>(R.id.btnImageCancel)?.setBounceClickListener {
@@ -1632,115 +1600,6 @@ class VideoEditingActivity : AppCompatActivity() {
             null
         }
 
-        cropEditingToolbar = try {
-            findViewById<View>(R.id.cropEditingToolbar)?.also { toolbar ->
-                toolbar.findViewById<ImageButton>(R.id.btnCloseSheet)?.setBounceClickListener {
-                    val currentCrop = viewModel.project.value?.operations
-                        ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-                        ?.lastOrNull()
-                    if (currentCrop != null) {
-                        val init = initialCropOperation
-                        if (init == null) {
-                            viewModel.removeOperation(currentCrop.id)
-                        } else {
-                            viewModel.addCropOperation(
-                                aspectRatio = init.aspectRatio,
-                                xFraction = init.xFraction,
-                                yFraction = init.yFraction,
-                                wFraction = init.wFraction,
-                                hFraction = init.hFraction
-                            )
-                        }
-                    }
-                    exitCropEditingMode()
-                }
-                toolbar.findViewById<ImageButton>(R.id.btnCropDone)?.setBounceClickListener {
-                    exitCropEditingMode()
-                }
-                toolbar.findViewById<LinearLayout>(R.id.frameAspectRatio1)?.setBounceClickListener {
-                    cropOverlayView?.visibility = View.GONE
-                    val bounds = getPresetCropBounds("16:9")
-                    viewModel.addCropOperation("16:9", bounds.left, bounds.top, bounds.width(), bounds.height())
-                    updateCropUi("16:9")
-                }
-                toolbar.findViewById<LinearLayout>(R.id.frameAspectRatio2)?.setBounceClickListener {
-                    cropOverlayView?.visibility = View.GONE
-                    val bounds = getPresetCropBounds("9:16")
-                    viewModel.addCropOperation("9:16", bounds.left, bounds.top, bounds.width(), bounds.height())
-                    updateCropUi("9:16")
-                }
-                toolbar.findViewById<LinearLayout>(R.id.frameAspectRatio3)?.setBounceClickListener {
-                    cropOverlayView?.visibility = View.GONE
-                    val bounds = getPresetCropBounds("1:1")
-                    viewModel.addCropOperation("1:1", bounds.left, bounds.top, bounds.width(), bounds.height())
-                    updateCropUi("1:1")
-                }
-                toolbar.findViewById<LinearLayout>(R.id.frameAspectRatioCustom)?.setBounceClickListener {
-                    val existing = viewModel.project.value?.operations
-                        ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-                        ?.lastOrNull()
-                    
-                    val x: Float
-                    val y: Float
-                    val w: Float
-                    val h: Float
-                    if (existing != null) {
-                        x = existing.xFraction
-                        y = existing.yFraction
-                        w = existing.wFraction
-                        h = existing.hFraction
-                    } else {
-                        val bounds = getPresetCropBounds("16:9")
-                        x = bounds.left
-                        y = bounds.top
-                        w = bounds.width()
-                        h = bounds.height()
-                    }
-                    
-                    cropOverlayView?.setCropBounds(x, y, w, h)
-                    cropOverlayView?.visibility = View.VISIBLE
-                    viewModel.addCropOperation("Custom", x, y, w, h)
-                    updateCropUi("Custom")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Crop editing toolbar not found: ${e.message}")
-            null
-        }
-
-        backgroundEditingToolbar = try {
-            findViewById<View>(R.id.backgroundEditingToolbar)?.also { toolbar ->
-                toolbar.findViewById<View>(R.id.btnBackFromBackground)?.setBounceClickListener {
-                    exitCanvasBackgroundEditingMode()
-                }
-                toolbar.findViewById<View>(R.id.btnBackgroundDone)?.setBounceClickListener {
-                    exitCanvasBackgroundEditingMode()
-                }
-                toolbar.findViewById<View>(R.id.btnBackgroundColor)?.setBounceClickListener {
-                    showCustomColorPicker("#000000") { hexColor ->
-                        viewModel.updateCanvasBackgroundOperation(
-                            type = EditOperation.CanvasBackground.BackgroundType.COLOR,
-                            colorHex = hexColor
-                        )
-                        updateCanvasBackgroundPreview()
-                    }
-                }
-                toolbar.findViewById<View>(R.id.btnBackgroundBlur)?.setBounceClickListener {
-                    viewModel.updateCanvasBackgroundOperation(
-                        type = EditOperation.CanvasBackground.BackgroundType.BLUR,
-                        blurRadius = 25
-                    )
-                    updateCanvasBackgroundPreview()
-                }
-                toolbar.findViewById<View>(R.id.btnBackgroundImage)?.setBounceClickListener {
-                    pickBackgroundImage()
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Background editing toolbar not found: ${e.message}")
-            null
-        }
-
         keyframeEditingToolbar = try {
             findViewById<View>(R.id.keyframeEditingToolbar)?.also { toolbar ->
                 toolbar.findViewById<ImageButton>(R.id.btnKeyframeCancel)?.setBounceClickListener {
@@ -1800,16 +1659,6 @@ class VideoEditingActivity : AppCompatActivity() {
             setActiveToolButton(R.id.btnAudio)
             audioAction()
         }
-        findViewById<ImageButton>(R.id.btnCrop).setBounceClickListener {
-            setActiveToolButton(R.id.btnCrop)
-            cropAction()
-        }
-
-        findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {
-            setActiveToolButton(R.id.btnCanvasBackground)
-            canvasBackgroundAction()
-        }
-
         try {
             btnUndo = findViewById(R.id.btnUndo)
             btnRedo = findViewById(R.id.btnRedo)
@@ -1865,7 +1714,7 @@ class VideoEditingActivity : AppCompatActivity() {
         
         if (::btnPreview.isInitialized) {
             val hasPreviewableOps = viewModel.project.value?.operations?.any { 
-                it is EditOperation.Crop || it is EditOperation.AddText
+                it is EditOperation.AddText
             } == true
             btnPreview.isEnabled = !isBusy && hasPreviewableOps
             btnPreview.alpha = if (isBusy) 0.4f else if (hasPreviewableOps) 1.0f else 0.5f
@@ -1881,7 +1730,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     private fun setActiveToolButton(activeId: Int) {
         if (isShowingPreview) dismissPreview()
-        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnCanvasBackground)
+        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio)
         for (id in toolIds) {
             val btn = findViewById<ImageButton>(id) ?: continue
             btn.setBackgroundResource(if (id == activeId) R.drawable.tool_button_active else R.drawable.tool_button_inactive)
@@ -2018,14 +1867,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         overlay.setImageOperations(overlayOps)
                     }
 
-                    val cropOps = project.operations.filterIsInstance<EditOperation.Crop>()
-                    if (cropOps.isNotEmpty()) {
-                        applyCropPreview(cropOps.last().aspectRatio)
-                    } else {
-                        resetCropPreview()
-                    }
-                    
-                    updateCanvasBackgroundPreview()
+                    fitCanvasToVideo()
                     renderTracks(project)
                     updateLayerReorderButtons()
                 }
@@ -2070,131 +1912,8 @@ class VideoEditingActivity : AppCompatActivity() {
         btnMoveLayerDown.visibility = if (canMoveDown) View.VISIBLE else View.GONE
     }
 
-    private fun applyCropPreview(aspectRatio: String) {
-        val cropEditingActive = cropEditingToolbar?.visibility == View.VISIBLE
 
-        if (cropEditingActive) {
-            resetCropPreview()
-            return
-        }
-
-        val canvasContainer = findViewById<FrameLayout>(R.id.canvasContainer) ?: return
-        val cropOp = viewModel.project.value?.operations
-            ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-            ?.lastOrNull()
-
-        val bounds = when (aspectRatio) {
-            "16:9", "9:16", "1:1" -> {
-                if (cropOp != null && (cropOp.xFraction > 0f || cropOp.yFraction > 0f || cropOp.wFraction < 1f || cropOp.hFraction < 1f)) {
-                    android.graphics.RectF(
-                        cropOp.xFraction,
-                        cropOp.yFraction,
-                        cropOp.xFraction + cropOp.wFraction,
-                        cropOp.yFraction + cropOp.hFraction
-                    )
-                } else {
-                    getPresetCropBounds(aspectRatio)
-                }
-            }
-            "Custom" -> {
-                if (cropOp != null) {
-                    android.graphics.RectF(
-                        cropOp.xFraction,
-                        cropOp.yFraction,
-                        cropOp.xFraction + cropOp.wFraction,
-                        cropOp.yFraction + cropOp.hFraction
-                    )
-                } else {
-                    android.graphics.RectF(0f, 0f, 1f, 1f)
-                }
-            }
-            else -> {
-                resetCropPreview()
-                return
-            }
-        }
-
-        val xFrac = bounds.left.coerceIn(0f, 1f)
-        val yFrac = bounds.top.coerceIn(0f, 1f)
-        val wFrac = bounds.width().coerceIn(0.001f, 1f)
-        val hFrac = bounds.height().coerceIn(0.001f, 1f)
-
-        val activeParent = (canvasContainer.parent as? View) ?: playerContainer
-        activeParent.post {
-            val containerWidth = activeParent.width.toFloat()
-            val containerHeight = activeParent.height.toFloat()
-            if (containerWidth <= 0f || containerHeight <= 0f) return@post
-
-            val baseVideoRatio = if (primaryVideoAspectRatio > 0f) primaryVideoAspectRatio else {
-                val format = if (::player.isInitialized) player.videoFormat else null
-                if (format != null && format.width > 0 && format.height > 0) {
-                    val rot = format.rotationDegrees
-                    val vw = if (rot == 90 || rot == 270) format.height else format.width
-                    val vh = if (rot == 90 || rot == 270) format.width else format.height
-                    vw.toFloat() / vh.toFloat()
-                } else 16f / 9f
-            }
-
-            val croppedAspectRatio = (baseVideoRatio * wFrac) / hFrac
-            val containerRatio = containerWidth / containerHeight
-
-            val canvasW: Float
-            val canvasH: Float
-            if (croppedAspectRatio > containerRatio) {
-                canvasW = containerWidth
-                canvasH = containerWidth / croppedAspectRatio
-            } else {
-                canvasW = containerHeight * croppedAspectRatio
-                canvasH = containerHeight
-            }
-
-            // 1. Size canvasContainer to the cropped aspect ratio box
-            val canvasLp = canvasContainer.layoutParams as FrameLayout.LayoutParams
-            canvasLp.width = canvasW.toInt()
-            canvasLp.height = canvasH.toInt()
-            canvasLp.gravity = Gravity.CENTER
-            canvasContainer.layoutParams = canvasLp
-
-            // Enable clipping on canvasContainer
-            canvasContainer.clipChildren = true
-            canvasContainer.clipToPadding = true
-
-            // 2. Scale playerView so the crop box fills canvasContainer
-            val fullWidth = canvasW / wFrac
-            val fullHeight = canvasH / hFrac
-
-            val playerLp = playerView.layoutParams as FrameLayout.LayoutParams
-            playerLp.width = fullWidth.toInt()
-            playerLp.height = fullHeight.toInt()
-            playerLp.gravity = Gravity.TOP or Gravity.START
-            playerView.layoutParams = playerLp
-            playerView.resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FILL
-
-            playerView.translationX = -fullWidth * xFrac
-            playerView.translationY = -fullHeight * yFrac
-
-            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)
-            for (overlay in overlays) {
-                overlay?.let {
-                    val overlayParams = it.layoutParams as FrameLayout.LayoutParams
-                    overlayParams.width = FrameLayout.LayoutParams.MATCH_PARENT
-                    overlayParams.height = FrameLayout.LayoutParams.MATCH_PARENT
-                    overlayParams.gravity = Gravity.CENTER
-                    it.layoutParams = overlayParams
-                    it.translationX = 0f
-                    it.translationY = 0f
-                }
-            }
-
-            textOverlayView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
-            draggableTextOverlay?.setVideoSize(canvasW.toInt(), canvasH.toInt())
-            imageOverlayView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
-            draggableImageOverlay?.setVideoSize(canvasW.toInt(), canvasH.toInt())
-            cropOverlayView?.setVideoSize(canvasW.toInt(), canvasH.toInt())
-        }
-    }
-
-    private fun resetCropPreview() {
+    private fun fitCanvasToVideo() {
         val canvasContainer = findViewById<FrameLayout>(R.id.canvasContainer) ?: return
         val activeParent = (canvasContainer.parent as? View) ?: playerContainer
         activeParent.post {
@@ -2228,7 +1947,7 @@ class VideoEditingActivity : AppCompatActivity() {
             playerView.translationX = 0f
             playerView.translationY = 0f
 
-            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay, cropOverlayView)
+            val overlays = listOf(textOverlayView, draggableTextOverlay, imageOverlayView, draggableImageOverlay)
             for (overlay in overlays) {
                 overlay?.let {
                     val overlayParams = it.layoutParams as FrameLayout.LayoutParams
@@ -2245,7 +1964,6 @@ class VideoEditingActivity : AppCompatActivity() {
             draggableTextOverlay?.setVideoSize(finalWidth, finalHeight)
             imageOverlayView?.setVideoSize(finalWidth, finalHeight)
             draggableImageOverlay?.setVideoSize(finalWidth, finalHeight)
-            cropOverlayView?.setVideoSize(finalWidth, finalHeight)
         }
     }
 
@@ -2264,27 +1982,6 @@ class VideoEditingActivity : AppCompatActivity() {
             }
         }
         return null
-    }
-
-    @SuppressLint("InflateParams")
-    private fun cropAction() {
-        enterCropEditingMode()
-    }
-
-    private fun canvasBackgroundAction() {
-        enterCanvasBackgroundEditingMode()
-    }
-
-    private fun enterCanvasBackgroundEditingMode() {
-        closeActiveEditingModes()
-        editingControlsWrapper.visibility = View.GONE
-        backgroundEditingToolbar?.visibility = View.VISIBLE
-    }
-
-    private fun exitCanvasBackgroundEditingMode() {
-        backgroundEditingToolbar?.visibility = View.GONE
-        editingControlsWrapper.visibility = View.VISIBLE
-        setActiveToolButton(-1)
     }
 
     @SuppressLint("InflateParams")
@@ -2310,8 +2007,6 @@ class VideoEditingActivity : AppCompatActivity() {
         imageEditingToolbar?.visibility = View.GONE
         videoEditingToolbar?.visibility = View.GONE
         audioEditingToolbar?.visibility = View.GONE
-        cropEditingToolbar?.visibility = View.GONE
-        backgroundEditingToolbar?.visibility = View.GONE
     }
 
     private fun enterTextEditingMode(isReEditing: Boolean = false) {
@@ -2399,18 +2094,6 @@ class VideoEditingActivity : AppCompatActivity() {
         }
     }
 
-    private fun pickBackgroundImage() {
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            type = "image/*"
-            addCategory(Intent.CATEGORY_OPENABLE)
-            putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("image/jpeg", "image/png", "image/webp"))
-        }
-        try {
-            startActivityForResult(intent, PICK_BACKGROUND_IMAGE_REQUEST)
-        } catch (e: Exception) {
-            Toast.makeText(this, "No app found to handle image selection", Toast.LENGTH_SHORT).show()
-        }
-    }
 
     private fun mediaOverlayAction() {
         if (isImageEditingActive) {
@@ -2956,86 +2639,8 @@ class VideoEditingActivity : AppCompatActivity() {
         bottomSheet.show()
     }
 
-    private fun getPresetCropBounds(aspectRatio: String): android.graphics.RectF {
-        val rect = android.graphics.RectF(0f, 0f, 1f, 1f)
-        val format = if (::player.isInitialized) player.videoFormat else null
-        val videoRatio = if (format != null && format.width > 0 && format.height > 0) {
-            val rotation = format.rotationDegrees
-            val videoWidth = if (rotation == 90 || rotation == 270) format.height else format.width
-            val videoHeight = if (rotation == 90 || rotation == 270) format.width else format.height
-            videoWidth.toFloat() / videoHeight
-        } else if (primaryVideoAspectRatio > 0f) {
-            primaryVideoAspectRatio
-        } else {
-            16f / 9f
-        }
-        val targetRatio = when (aspectRatio) {
-            "16:9" -> 16f / 9f
-            "9:16" -> 9f / 16f
-            "1:1" -> 1f
-            else -> return rect
-        }
-        if (videoRatio > targetRatio) {
-            val w = targetRatio / videoRatio
-            val x = (1f - w) / 2f
-            rect.set(x, 0f, x + w, 1f)
-        } else {
-            val h = videoRatio / targetRatio
-            val y = (1f - h) / 2f
-            rect.set(0f, y, 1f, y + h)
-        }
-        return rect
-    }
 
-    private fun enterCropEditingMode() {
-        closeActiveEditingModes()
-        cropEditingToolbar?.visibility = View.VISIBLE
-        editingControlsWrapper.visibility = View.GONE
-        
-        val cropOp = viewModel.project.value?.operations
-            ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-            ?.lastOrNull()
 
-        initialCropOperation = cropOp
-        val currentRatio = cropOp?.aspectRatio ?: "Original"
-            
-        updateCropUi(currentRatio)
-        resetCropPreview()
-
-        if (currentRatio == "Custom" && cropOp != null) {
-            cropOverlayView?.setCropBounds(
-                cropOp.xFraction,
-                cropOp.yFraction,
-                cropOp.wFraction,
-                cropOp.hFraction
-            )
-            cropOverlayView?.visibility = View.VISIBLE
-        } else {
-            val bounds = getPresetCropBounds(currentRatio)
-            cropOverlayView?.setCropBounds(bounds.left, bounds.top, bounds.width(), bounds.height())
-            cropOverlayView?.visibility = View.GONE
-        }
-        
-        if (::player.isInitialized && player.isPlaying) {
-            player.pause()
-        }
-    }
-
-    private fun exitCropEditingMode() {
-        cropEditingToolbar?.visibility = View.GONE
-        cropOverlayView?.visibility = View.GONE
-        editingControlsWrapper.visibility = View.VISIBLE
-        setActiveToolButton(0)
-
-        val cropOp = viewModel.project.value?.operations
-            ?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-            ?.lastOrNull()
-        if (cropOp != null) {
-            applyCropPreview(cropOp.aspectRatio)
-        } else {
-            resetCropPreview()
-        }
-    }
 
     private fun showSpeedEditingToolbar(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
         closeActiveEditingModes()
@@ -3189,104 +2794,7 @@ class VideoEditingActivity : AppCompatActivity() {
         viewModel.project.value?.let { renderTracks(it) }
     }
     
-    private fun updateCanvasBackgroundPreview(activeClipIndex: Int = lastActiveClipIndexForBlur) {
-        val project = viewModel.project.value ?: return
-        val bgOp = project.operations.filterIsInstance<EditOperation.CanvasBackground>().lastOrNull()
-        
-        bgPreviewImageView?.setImageBitmap(null)
-        bgPreviewImageView?.background = null
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            bgPreviewImageView?.setRenderEffect(null)
-        }
-        
-        if (bgOp == null) {
-            bgPreviewImageView?.setBackgroundColor(android.graphics.Color.BLACK)
-            return
-        }
-        
-        when (bgOp.type) {
-            EditOperation.CanvasBackground.BackgroundType.COLOR -> {
-                try {
-                    val color = android.graphics.Color.parseColor(bgOp.colorHex)
-                    bgPreviewImageView?.setBackgroundColor(color)
-                } catch (e: Exception) {
-                    bgPreviewImageView?.setBackgroundColor(android.graphics.Color.BLACK)
-                }
-            }
-            EditOperation.CanvasBackground.BackgroundType.BLUR -> {
-                val clipUri = getSequenceItems().getOrNull(activeClipIndex)?.uri ?: return
-                currentBlurJob?.cancel()
-                currentBlurJob = lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    try {
-                        val path = getFilePathFromUri(clipUri)
-                        if (path != null) {
-                            val retriever = android.media.MediaMetadataRetriever()
-                            retriever.setDataSource(path)
-                            val bitmap = retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                            retriever.release()
-                            
-                            if (bitmap != null) {
-                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                                    bgPreviewImageView?.setImageBitmap(bitmap)
-                                    bgPreviewImageView?.scaleType = ImageView.ScaleType.CENTER_CROP
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                        val radius = bgOp.blurRadius.toFloat()
-                                        bgPreviewImageView?.setRenderEffect(
-                                            android.graphics.RenderEffect.createBlurEffect(radius, radius, android.graphics.Shader.TileMode.CLAMP)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-            EditOperation.CanvasBackground.BackgroundType.IMAGE -> {
-                bgOp.imageUri?.let { uri ->
-                    try {
-                        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                            val source = android.graphics.ImageDecoder.createSource(contentResolver, uri)
-                            android.graphics.ImageDecoder.decodeBitmap(source)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            android.provider.MediaStore.Images.Media.getBitmap(contentResolver, uri)
-                        }
-                        bgPreviewImageView?.setImageBitmap(bitmap)
-                    } catch (e: Exception) {
-                        e.printStackTrace()
-                    }
-                }
-            }
-        }
-    }
 
-    private fun updateCropUi(ratio: String) {
-        val toolbar = cropEditingToolbar ?: return
-        val ratios = mapOf(
-            "16:9" to Triple(R.id.bg16_9, R.id.ic16_9, R.id.txt16_9),
-            "9:16" to Triple(R.id.bg9_16, R.id.ic9_16, R.id.txt9_16),
-            "1:1" to Triple(R.id.bg1_1, R.id.ic1_1, R.id.txt1_1),
-            "Custom" to Triple(R.id.bgCustom, R.id.icCustom, R.id.txtCustom)
-        )
-
-        ratios.forEach { (key, views) ->
-            val isActive = key == ratio
-            toolbar.findViewById<View>(views.first)?.setBackgroundResource(
-                if (isActive) R.drawable.bg_aspect_ratio_selected else R.drawable.bg_aspect_ratio_item
-            )
-            toolbar.findViewById<ImageView>(views.second)?.setColorFilter(
-                resources.getColor(if (isActive) R.color.onPrimaryContainer else R.color.iconSecondary, null)
-            )
-            toolbar.findViewById<TextView>(views.third)?.apply {
-                setTextColor(resources.getColor(if (isActive) R.color.colorOnPrimary else R.color.toolTextInactive, null))
-                paint.isFakeBoldText = isActive
-            }
-        }
-
-        cropOverlayView?.visibility = if (ratio == "Custom") View.VISIBLE else View.GONE
-    }
 
     private fun splitSelectedVideo() {
         val index = selectedVideoIndex ?: return
@@ -3604,22 +3112,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 } catch (e: Exception) {
                     Log.e(TAG, "Error saving export directory: ${e.message}", e)
                     Toast.makeText(this, R.string.toast_failed_to_select_folder, Toast.LENGTH_SHORT).show()
-                }
-            }
-        } else if (requestCode == PICK_BACKGROUND_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {
-            data?.data?.let { imageUri ->
-                lifecycleScope.launch {
-                    val tempFile = withContext(Dispatchers.IO) { copyContentUriToTempFile(imageUri, "bg_image", ".png") }
-                    if (tempFile != null) {
-                        val tempUri = Uri.fromFile(tempFile)
-                        viewModel.updateCanvasBackgroundOperation(
-                            type = EditOperation.CanvasBackground.BackgroundType.IMAGE,
-                            imageUri = tempUri
-                        )
-                        updateCanvasBackgroundPreview()
-                    } else {
-                        Toast.makeText(this@VideoEditingActivity, "Failed to load image", Toast.LENGTH_SHORT).show()
-                    }
                 }
             }
         }
@@ -4329,11 +3821,6 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
             }
             
-            if (activeClipIndex != lastActiveClipIndexForBlur) {
-                lastActiveClipIndexForBlur = activeClipIndex
-                updateCanvasBackgroundPreview(activeClipIndex)
-            }
-
             
 
             // Real-time transition preview overlay update
@@ -6047,12 +5534,7 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     private fun triggerCanvasLayoutUpdate() {
-        val cropOps = viewModel.project.value?.operations?.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Crop>()
-        if (cropOps != null && cropOps.isNotEmpty() && cropEditingToolbar?.visibility != View.VISIBLE) {
-            applyCropPreview(cropOps.last().aspectRatio)
-        } else {
-            resetCropPreview()
-        }
+        fitCanvasToVideo()
     }
 
     private fun showFullscreenControlsTemporarily() {
@@ -7190,7 +6672,6 @@ class VideoEditingActivity : AppCompatActivity() {
         private const val PICK_AUDIO_REQUEST = 2
         private const val PICK_IMAGE_REQUEST = 3
         private const val PICK_DIRECTORY_REQUEST = 5
-        private const val PICK_BACKGROUND_IMAGE_REQUEST = 6
     }
 }
 

@@ -213,16 +213,6 @@ class FFmpegRenderEngine(private val context: Context) {
         return executeCommand(command)
     }
 
-    suspend fun renderCropPreview(
-        sourceFilePath: String,
-        aspectRatio: String,
-        outputFilePath: String
-    ): RenderResult {
-        val cropFilter = buildCropFilter(aspectRatio)
-            ?: return RenderResult.Failure("Invalid aspect ratio: $aspectRatio")
-        val command = "-i \"$sourceFilePath\" -vf \"$cropFilter\" -c:a copy \"$outputFilePath\""
-        return executeCommand(command)
-    }
 
     /**
      * Render a preview with a text overlay.
@@ -521,16 +511,6 @@ class FFmpegRenderEngine(private val context: Context) {
         return executeCommand(command)
     }
 
-    suspend fun cropVideo(
-        sourceFilePath: String,
-        aspectRatio: String,
-        outputFilePath: String
-    ): RenderResult {
-        val cropFilter = buildCropFilter(aspectRatio)
-            ?: return RenderResult.Failure("Invalid aspect ratio: $aspectRatio")
-        val command = "-i \"$sourceFilePath\" -vf \"$cropFilter\" -c:a copy \"$outputFilePath\""
-        return executeCommand(command)
-    }
 
     /**
      * Add a text overlay to a video.
@@ -617,13 +597,6 @@ class FFmpegRenderEngine(private val context: Context) {
         }
 
         return "drawtext=${fontPart}text='$escapedText':fontcolor=white:fontsize=$fontSize:$positionParam"
-    }
-
-    private fun buildCropFilter(aspectRatio: String): String? = when (aspectRatio) {
-        "16:9" -> "crop='trunc(min(iw\\,ih*16/9)/2)*2':'trunc(min(ih\\,iw*9/16)/2)*2',setsar=1"
-        "9:16" -> "crop='trunc(min(iw\\,ih*9/16)/2)*2':'trunc(min(ih\\,iw*16/9)/2)*2',setsar=1"
-        "1:1"  -> "crop='trunc(min(iw\\,ih)/2)*2':'trunc(min(iw\\,ih)/2)*2',setsar=1"
-        else   -> null
     }
 
     /**

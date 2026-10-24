@@ -26,7 +26,6 @@
     <string name="str_text">உரை</string>
     <string name="str_overlay">மேலடுக்கு</string>
     <string name="str_audio">ஆடியோ</string>
-    <string name="str_crop">செதுக்கு</string>
     <string name="str_none">எதுவுமில்லை</string>
     <string name="str_brightness_0">பிரகாசம்: 0</string>
     <string name="str_apply_to_all">அனைத்திற்கும் பயன்படுத்து</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">துடிப்புகள்</string>
     <string name="str_ducking">டக்கிங்</string>
     <string name="str_fade">மங்கல்</string>
-    <string name="str_crop_aspect_ratio">செதுக்கும் விகிதம்</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">தனிப்பயன்</string>
     <string name="str_trim_video">வீடியோவை நறுக்கு</string>
     <string name="str_transitions">நிலைமாற்றங்கள்</string>
     <string name="str_new_project">புதிய திட்டம்</string>

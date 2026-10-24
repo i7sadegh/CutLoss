@@ -49,15 +49,13 @@ object ProjectSerializer {
             var opTypeStr = jsonObject.get("operationType")?.asString
             if (opTypeStr == null) {
                 val typeVal = jsonObject.get("type")?.asString
-                val validClasses = setOf("Trim", "SpeedMain", "Crop", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay", "CanvasBackground")
+                val validClasses = setOf("Trim", "SpeedMain", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay")
                 
                 if (typeVal != null && validClasses.contains(typeVal)) {
                     opTypeStr = typeVal
                 } else {
                     if (jsonObject.has("durationMs") && jsonObject.has("index") && !jsonObject.has("items")) {
                         opTypeStr = "Transition"
-                    } else if (jsonObject.has("colorHex") && jsonObject.has("blurRadius")) {
-                        opTypeStr = "CanvasBackground"
                     } else {
                         opTypeStr = typeVal
                     }
@@ -73,19 +71,11 @@ object ProjectSerializer {
                 } else if (!jsonObject.has("transitionType")) {
                      jsonObject.addProperty("transitionType", "fade")
                 }
-            } else if (type == "CanvasBackground") {
-                val t = jsonObject.get("type")?.asString
-                if (t != null && t != "CanvasBackground") {
-                     jsonObject.addProperty("backgroundType", t)
-                } else if (!jsonObject.has("backgroundType")) {
-                     jsonObject.addProperty("backgroundType", "COLOR")
-                }
             }
             
             val clazz = when (type) {
                 "Trim" -> EditOperation.Trim::class.java
                 "SpeedMain" -> EditOperation.SpeedMain::class.java
-                "Crop" -> EditOperation.Crop::class.java
                 "AddText" -> EditOperation.AddText::class.java
                 "Merge" -> EditOperation.Merge::class.java
                 "MuteAudio" -> EditOperation.MuteAudio::class.java
@@ -93,7 +83,6 @@ object ProjectSerializer {
                 "MuteClip" -> EditOperation.MuteClip::class.java
                 "AddBackgroundAudio" -> EditOperation.AddBackgroundAudio::class.java
                 "AddImageOverlay" -> EditOperation.AddImageOverlay::class.java
-                "CanvasBackground" -> EditOperation.CanvasBackground::class.java
                 else -> null
             }
 

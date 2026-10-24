@@ -276,24 +276,6 @@ class VideoEditingViewModel : ViewModel() {
 
     // ── Private filter-building helpers ─────────────────────────────────────
 
-    /** Build a crop filter expression for an aspect ratio. */
-    private fun buildCropFilterExpr(op: EditOperation.Crop): String? {
-        val hasCustomBounds = op.aspectRatio == "Custom" || op.xFraction > 0f || op.yFraction > 0f || op.wFraction < 1f || op.hFraction < 1f
-        if (hasCustomBounds) {
-            val w = String.format(java.util.Locale.US, "trunc(iw*%.4f/2)*2", op.wFraction)
-            val h = String.format(java.util.Locale.US, "trunc(ih*%.4f/2)*2", op.hFraction)
-            val x = String.format(java.util.Locale.US, "trunc(iw*%.4f/2)*2", op.xFraction)
-            val y = String.format(java.util.Locale.US, "trunc(ih*%.4f/2)*2", op.yFraction)
-            return "crop=w=$w:h=$h:x='min($x\\,iw-($w))':y='min($y\\,ih-($h))',setsar=1"
-        }
-
-        return when (op.aspectRatio) {
-            "16:9" -> "crop='trunc(min(iw\\,ih*16/9)/2)*2':'trunc(min(ih\\,iw*9/16)/2)*2',setsar=1"
-            "9:16" -> "crop='trunc(min(iw\\,ih*9/16)/2)*2':'trunc(min(ih\\,iw*16/9)/2)*2',setsar=1"
-            "1:1"  -> "crop='trunc(min(iw\\,ih)/2)*2':'trunc(min(iw\\,ih)/2)*2',setsar=1"
-            else   -> null
-        }
-    }
 
     /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).
      *  Set by the Activity; when set, text overlays are composited with the
@@ -475,11 +457,7 @@ class VideoEditingViewModel : ViewModel() {
         var currentLabel = inputLabel
         var stageIndex = 0
 
-        // Process overlays first so their relative coordinates align with the uncropped original video, matching the UI.
-        val overlayOps = operations.filterNot { it is EditOperation.Crop }
-        val cropOps = operations.filterIsInstance<EditOperation.Crop>()
-
-        for (op in overlayOps) {
+        for (op in operations) {
             when (op) {
                 is EditOperation.AddText -> {
                     val textPngIndex = textInputIndices.find { it.second.id == op.id }?.first
@@ -632,17 +610,6 @@ class VideoEditingViewModel : ViewModel() {
             }
         }
 
-        // Process crop at the end so it crops the video and all overlays together, matching the preview.
-        for (op in cropOps) {
-            val filterExpr = buildCropFilterExpr(op)
-            if (filterExpr != null) {
-                val nextLabel = "[v$stageIndex]"
-                stages.add("$currentLabel$filterExpr$nextLabel")
-                currentLabel = nextLabel
-                stageIndex++
-            }
-        }
-
         return Pair(stages, currentLabel)
     }
 
@@ -729,7 +696,7 @@ class VideoEditingViewModel : ViewModel() {
         val trimOp = operations.filterIsInstance<EditOperation.Trim>().lastOrNull()
         val audioOps = operations.filterIsInstance<EditOperation.AddBackgroundAudio>()
         val audioMuted = operations.any { it is EditOperation.MuteAudio }
-        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay }
+        val videoOps = nonMergeOps.filter { it is EditOperation.AddText || it is EditOperation.AddImageOverlay }
         val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()
         // Render text overlay PNGs before inputs are indexed
         prepareTextPngInputs(operations)
@@ -859,18 +826,6 @@ class VideoEditingViewModel : ViewModel() {
             inputIndex++
         }
 
-        // 5. Canvas Background Image Input
-        val bgOp = operations.filterIsInstance<EditOperation.CanvasBackground>().lastOrNull()
-        var bgImageIndex = -1
-        if (bgOp != null && bgOp.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgOp.imageUri != null) {
-            val bgPath = resolveUriToPath(bgOp.imageUri)
-            if (bgPath != null) {
-                cmd.append(" -loop 1 -i \"$bgPath\"")
-                bgImageIndex = inputIndex
-                inputIndex++
-            }
-        }
-
         // ── MERGE PATH ────────────────────────────────────────────────────────
         if (mergeOp != null) {
             val inputCount = 1 + mergeOp.videoUris.size
@@ -974,31 +929,11 @@ class VideoEditingViewModel : ViewModel() {
                 
                 filterParts.add("[$i:v]$preFilters[pre$i]")
 
-                // 2. Apply background/padding
-                if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.BLUR) {
-                    val blur = bgOp.blurRadius
-                    val bgScale = "format=yuv420p,scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight,boxblur=$blur"
-                    val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
-                    filterParts.add("[pre$i]split=2[bg_orig$i][fg_orig$i]")
-                    filterParts.add("[bg_orig$i]$bgScale[bg$i]")
-                    filterParts.add("[fg_orig$i]$fgScale[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2,setsar=1,fps=30,format=yuv420p[norm$i]")
-                } else if (bgOp?.type == EditOperation.CanvasBackground.BackgroundType.IMAGE && bgImageIndex != -1) {
-                    val bgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=increase,crop=$mainWidth:$mainHeight"
-                    val fgScale = "scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease"
-                    filterParts.add("[$bgImageIndex:v]$bgScale[bg$i]")
-                    filterParts.add("[pre$i]$fgScale[fg$i]")
-                    // Use shortest=1 in case the loop goes on forever, but we specified -loop 1 which creates an infinite stream for image
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
-                } else {
-                    // Default COLOR
-                    val color = bgOp?.colorHex ?: "black"
-                    val padColor = if (color.startsWith("#")) color else "black"
-                    // Create a solid color background of mainWidth x mainHeight
-                    filterParts.add("color=c=$padColor:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
-                    filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
-                    filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
-                }
+                // 2. Pad every clip onto a black canvas of the main dimensions
+                //    (uniform frame sizes are required for concat/xfade)
+                filterParts.add("color=c=black:s=${mainWidth}x${mainHeight}:r=30[bg$i]")
+                filterParts.add("[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]")
+                filterParts.add("[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]")
 
                 val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false
                 if (hasAudioArray[i] && !isClipMuted) {
@@ -1521,11 +1456,11 @@ class VideoEditingViewModel : ViewModel() {
         val operations = currentProject.operations
             .filterNot { it is EditOperation.Merge } // Skip merge for preview
 
-        if (operations.none { it is EditOperation.Crop || it is EditOperation.AddText }) {
+        if (operations.none { it is EditOperation.AddText }) {
             return null // No visual operations to preview
         }
 
-        val videoOps = operations.filter { it is EditOperation.Crop || it is EditOperation.AddText }
+        val videoOps = operations.filter { it is EditOperation.AddText }
         val trimOp = operations.filterIsInstance<EditOperation.Trim>().lastOrNull()
 
         val cmd = StringBuilder()

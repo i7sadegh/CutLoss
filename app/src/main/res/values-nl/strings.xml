@@ -24,7 +24,6 @@
     <string name="str_import_video">Importeer Video</string>
     <string name="str_text">Tekst</string>
     <string name="str_audio">Geluid</string>
-    <string name="str_crop">Bijsnijden</string>
     <string name="str_none">Geen</string>
     <string name="str_brightness_0">Helderheid: 0</string>
     <string name="str_apply_to_all">Op alles toepassen</string>
@@ -52,11 +51,6 @@
     <string name="str_audio_segment">Geluid segment</string>
     <string name="str_0_0s_0_0s">0.0s - 0.0s</string>
     <string name="str_beats">Beats</string>
-    <string name="str_crop_aspect_ratio">Beeldverhouding</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Anders</string>
     <string name="str_trim_video">Video bijsnijden</string>
     <string name="str_transitions">Overgangen</string>
     <string name="str_new_project">NIEUW PROJECT</string>

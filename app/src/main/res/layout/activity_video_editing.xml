@@ -129,14 +129,8 @@
                 android:id="@+id/canvasContainer"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
-                android:layout_gravity="center">
-
-                <ImageView
-                    android:id="@+id/bgPreviewImageView"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:scaleType="centerCrop"
-                    android:background="@color/cinemaBlack" />
+                android:layout_gravity="center"
+                android:background="@color/cinemaBlack">
 
                 <FrameLayout
                     android:layout_width="match_parent"
@@ -185,12 +179,6 @@
 
             <com.tharunbirla.librecuts.customviews.DraggableImageOverlayView
                 android:id="@+id/draggableImageOverlay"
-                android:layout_width="match_parent"
-                android:layout_height="match_parent"
-                android:visibility="gone" />
-
-            <com.tharunbirla.librecuts.customviews.CropOverlayView
-                android:id="@+id/cropOverlayView"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:visibility="gone" />
@@ -536,28 +524,10 @@
             android:layout_marginTop="8dp"
             android:visibility="gone" />
 
-        <!-- Crop Editing Toolbar (inline mode, hidden by default) -->
-        <include
-            android:id="@+id/cropEditingToolbar"
-            layout="@layout/crop_editing_toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:visibility="gone" />
-
         <!-- Speed Editing Toolbar (inline mode, hidden by default) -->
         <include
             android:id="@+id/speedEditingToolbar"
             layout="@layout/speed_editing_toolbar"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:visibility="gone" />
-
-        <!-- Background Editing Toolbar (inline mode, hidden by default) -->
-        <include
-            android:id="@+id/backgroundEditingToolbar"
-            layout="@layout/background_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
@@ -666,53 +636,6 @@
                         android:textColor="@color/toolTextInactive"/>
                 </LinearLayout>
 
-                <LinearLayout
-                    android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center">
-                    <ImageButton
-                        android:id="@+id/btnCrop"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:background="@drawable/tool_button_inactive"
-                        android:src="@drawable/ic_crop_24"
-                        android:padding="8dp"
-                        android:scaleType="fitCenter"
-                        app:tint="@color/toolTextInactive" />
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="@string/str_crop"
-                        android:textSize="11sp"
-                        android:fontFamily="sans-serif-medium"
-                        android:textColor="@color/toolTextInactive"/>
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="60dp"
-                    android:layout_height="wrap_content"
-                    android:orientation="vertical"
-                    android:gravity="center">
-                    <ImageButton
-                        android:id="@+id/btnCanvasBackground"
-                        android:layout_width="40dp"
-                        android:layout_height="40dp"
-                        android:background="@drawable/tool_button_inactive"
-                        android:src="@drawable/ic_canvas_24"
-                        android:padding="8dp"
-                        android:scaleType="fitCenter"
-                        app:tint="@color/toolTextInactive" />
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:layout_marginTop="4dp"
-                        android:text="Canvas"
-                        android:textSize="11sp"
-                        android:fontFamily="sans-serif-medium"
-                        android:textColor="@color/toolTextInactive"/>
-                </LinearLayout>
 
             </LinearLayout>
         </HorizontalScrollView>

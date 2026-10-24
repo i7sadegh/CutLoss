@@ -25,7 +25,6 @@
     <string name="str_text">文本</string>
     <string name="str_overlay">叠加层</string>
     <string name="str_audio">音频</string>
-    <string name="str_crop">裁剪</string>
     <string name="str_none">无</string>
     <string name="str_brightness_0">亮度：0</string>
     <string name="str_apply_to_all">应用到全部</string>
@@ -56,11 +55,6 @@
     <string name="str_beats">节拍</string>
     <string name="str_ducking">闪避 (降低背景音量)</string>
     <string name="str_fade">淡入淡出</string>
-    <string name="str_crop_aspect_ratio">裁剪宽高比</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">自定义</string>
     <string name="str_trim_video">修剪视频</string>
     <string name="str_transitions">转场效果</string>
     <string name="str_new_project">新建项目</string>

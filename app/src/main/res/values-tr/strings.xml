@@ -23,7 +23,6 @@
     <string name="str_text">Metin</string>
     <string name="str_overlay">Kaplama</string>
     <string name="str_audio">Ses</string>
-    <string name="str_crop">Kırp</string>
     <string name="str_none">Yok</string>
     <string name="trim">Kes</string>
     <string name="str_brightness_0">Parlaklık: 0</string>
@@ -59,11 +58,6 @@
     <string name="str_beats">Ritim</string>
     <string name="str_ducking">Ducking</string>
     <string name="str_fade">Solma</string>
-    <string name="str_crop_aspect_ratio">Kırpma En-Boy Oranı</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Özel</string>
     <string name="str_trim_video">Videoyu Kes</string>
     <string name="str_transitions">Geçişler</string>
     <string name="str_free_open_source_nlimitless_cr">ücretsiz. açık kaynak.\n sınırsız yaratıcılık.</string>

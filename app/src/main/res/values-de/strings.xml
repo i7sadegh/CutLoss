@@ -35,7 +35,6 @@
     <string name="str_new_project">NEUES PROJEKT</string>
     <string name="str_apply_to_all">Für alle anwenden</string>
     <string name="str_beats">Takte</string>
-    <string name="str_crop">Format</string>
     <string name="str_keyboard">Tastatur</string>
     <string name="str_audio_segment">Audioabschnitt</string>
     <string name="str_settings">Einstellungen</string>
@@ -75,7 +74,6 @@
     <string name="str_export_as_an_mp3_audio_file">Exportiere als mp3-Audiodatei</string>
     <string name="str_export_format_set_to_audio_only">Exportformat auf Nur-Audio gesetzt</string>
     <string name="str_general">Allgemein</string>
-    <string name="str_crop_aspect_ratio">Seitenverhältnis zuschneiden</string>
     <string name="str_if_you_encounter_any_export_is">Falls Probleme beim Export oder der Darstellung auftreten, tippe hier um unsere Wiki-Anleitung zur Fehlerbehebung und zu Fehlercodes zu lesen.</string>
     <string name="str_github_sponsors">GitHub Sponsoren</string>
     <string name="str_show_your_appreciation_by_star">Zeige deine Wertschätzung, indem du dem Repo einen Stern gibst</string>
@@ -89,7 +87,6 @@
     <string name="str_support_our_open_source_develo">Unterstütze unsere Open-Source-Entwicklung direkt</string>
     <string name="str_community_amp_support">COMMUNITY &amp; SUPPORT</string>
     <string name="str_custom_speed">Eigene Geschwindigkeit</string>
-    <string name="str_custom">Eigen</string>
     <string name="str_troubleshooting_amp_wiki_guide">Fehlerbehebung &amp; Wiki-Anleitung</string>
     <string name="str_0_5x">0.5x</string>
     <string name="str_1x">1x</string>
@@ -98,9 +95,6 @@
     <string name="str_0_1">0°</string>
     <string name="str_100">100%</string>
     <string name="str_0_0s_0_0s">0.0s - 0.0s</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
     <string name="str_default_movies_librecuts">Standard (Movies/Cutloss)</string>
     <string name="toast_snapping_enabled">Einrasten ein</string>
     <string name="toast_snapping_disabled">Einrasten aus</string>

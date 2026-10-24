@@ -26,7 +26,6 @@
     <string name="str_text">Testo</string>
     <string name="str_overlay">Sovrapposizione</string>
     <string name="str_audio">Audio</string>
-    <string name="str_crop">Ritaglia</string>
     <string name="str_none">Nessuno</string>
     <string name="str_brightness_0">Luminosità: 0</string>
     <string name="str_apply_to_all">Applica a Tutti</string>
@@ -57,11 +56,6 @@
     <string name="str_beats">Beat</string>
     <string name="str_ducking">Ducking audio</string>
     <string name="str_fade">Dissolvenza</string>
-    <string name="str_crop_aspect_ratio">Ritaglia Rapporto d\'Aspetto</string>
-    <string name="str_16_9">16:9</string>
-    <string name="str_9_16">9:16</string>
-    <string name="str_1_1">1:1</string>
-    <string name="str_custom">Personalizzato</string>
     <string name="str_trim_video">Taglia Video</string>
     <string name="str_transitions">Transizioni</string>
     <string name="str_new_project">NUOVO PROGETTO</string>
