@@ -1,1361 +1,1686 @@
 #!/usr/bin/env bash
-# ==========================================================================
-#  Cutloss simplification pipeline -- scripts/apply-changes.sh
-#  PHASE 10 -- overlay toolbar: drop Duplicate / Mirror / Chroma Key,
-#             add a Scale slider for the overlay size
+###############################################################################
+# CutLoss phase 8 -- remove the Text, Overlay, Crop and Canvas tools from the
+# video editor bottom tool row, together with ALL related code:
+#   * Text system    : AddText op, text editing toolbar + settings sheets,
+#                      font manager, TextOverlayView, DraggableTextOverlayView,
+#                      TextRenderUtils, bundled Roboto font asset
+#   * Overlay system : AddImageOverlay op (image/GIF/video PIP), image editing
+#                      toolbar, chroma key, ImageOverlayView,
+#                      DraggableImageOverlayView, layer reorder buttons
+#   * Crop system    : Crop op, crop toolbar + CropOverlayView, crop preview
+#   * Canvas system  : CanvasBackground op, background toolbar, blur preview,
+#                      background image picker
+#   * Keyframes      : KeyframePoint model + whole keyframe editing UI
+#                      (only served text/image overlays)
+#   * Preview render : segmented preview button + pipeline (crop/text only)
+# Audio, video toolbar (trim/split/mute/speed/freeze/delete), transitions,
+# magnet snapping and export are untouched.
 #
-#  This file is 100% pure ASCII on purpose (paste-safe through mobile
-#  browsers into the GitHub web editor).
-#
-#  What this phase does:
-#    1. Overlay (image/video overlay) editing toolbar:
-#       removes the Duplicate, Mirror and Chroma Key buttons and every
-#       line of their feature code (activity wiring, chroma bottom
-#       sheet, chroma bitmap processing in both overlay views, the
-#       hflip / colorkey FFmpeg stages, and the chromaKeyColor /
-#       chromaKeySimilarity / isMirrored model fields).
-#       The Text tool keeps its own Duplicate button (it shares the
-#       duplicateSelectedOverlay helper, which becomes text-only).
-#    2. New Scale control, built exactly like the Opacity control:
-#       a "Scale" button in the overlay toolbar opens a slider row
-#       (5..500 percent of the video width) that grows / shrinks the
-#       overlay item live, same range as the two-finger pinch zoom.
-#       A new ic_resize_24 drawable (Material open-in-full arrows)
-#       is added for the button.
-#    3. Version bump (intentionally NOT idempotent): every run
-#       advances the default versionCode by +1 and the versionName
-#       beta number by +1 in app/build.gradle, so each CI build
-#       installs over the previous one (phase-9 debug key stays).
-#    4. Defensive carry-overs from phase 9: stable debug keystore +
-#       signingConfigs are verified present; the workflow push
-#       trigger is verified ("branches: [main]") and the known typo
-#       variant is repaired if it ever reappears.
-#
-#  Verification gate (fails BEFORE the workflow commits anything):
-#    leftover scan (no chroma / mirror / hflip / colorkey / image
-#    duplicate references anywhere), survival + new-feature asserts
-#    (opacity, rotation, loop, keyframes, delete, done, cancel, text
-#    duplicate, custom color picker all intact; scale wiring present),
-#    XML parse of the touched layout + new icon, brace + paren
-#    balance for all six touched Kotlin files, R.id cross-check
-#    against every layout/xml resource, gradle version + signing
-#    asserts, scope gate, untracked-file policy, ASCII self-check.
-#
-#  Idempotent: every step checks its own post-state first -- EXCEPT
-#  the version bump, which advances by exactly 1 on every run by
-#  design (each pipeline run produces one installable-over APK).
-# ==========================================================================
-set -uo pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT" || exit 1
+# Invariants: pure ASCII, idempotent (2nd run = all [skip], zero diff),
+# hard verification gate exits 1 BEFORE anything can be committed.
+###############################################################################
+set -euo pipefail
 
-IET="app/src/main/res/layout/image_editing_toolbar.xml"
-TET="app/src/main/res/layout/text_editing_toolbar.xml"
-RESIZE="app/src/main/res/drawable/ic_resize_24.xml"
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$ROOT"
+
+log()  { echo "[phase8] $*"; }
+fail() { echo "[phase8][ERROR] $*" >&2; exit 1; }
+
 VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-DIOV="app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt"
-IOV="app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt"
-EO="app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
 VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
-VMX="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
-GRADLE="app/build.gradle"
-YML=".github/workflows/apply-and-build.yml"
-CHROMA_LAYOUT="app/src/main/res/layout/chroma_key_bottom_sheet_dialog.xml"
-ICMIRROR="app/src/main/res/drawable/ic_mirror.xml"
-ICLENS="app/src/main/res/drawable/ic_color_lens_24.xml"
-SELF="scripts/apply-changes.sh"
-FAILED=0
-NEW_VC=""
-NEW_BETA=""
+EXT="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
+ENGINE="app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
+EO="app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
+SER="app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt"
+PIA="app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
+ESD="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+AVEXML="app/src/main/res/layout/activity_video_editing.xml"
 
-# ---------------------------------------------------------------------------
-#  STEP 0 -- preconditions
-# ---------------------------------------------------------------------------
-step0_preconditions() {
-    echo "== step 0: preconditions"
-    local ok=1 f t
-    for f in "$IET" "$TET" "$VEA" "$DIOV" "$IOV" "$EO" "$VM" "$VMX" \
-             "$GRADLE" "$YML"; do
-        if [ ! -f "$f" ]; then
-            echo " [FAIL] missing file: $f"
-            ok=0
-        fi
-    done
-    if ! git rev-parse --git-dir >/dev/null 2>&1; then
-        echo " [FAIL] not inside a git repository"
-        ok=0
-    fi
-    for t in python3 sed grep git; do
-        if ! command -v "$t" >/dev/null 2>&1; then
-            echo " [FAIL] required tool missing: $t"
-            ok=0
-        fi
-    done
-    # phase-9 base markers: committed debug key + signing + new icon
-    if [ ! -f app/debug.keystore ]; then
-        echo " [FAIL] app/debug.keystore missing -- phase 9 not applied (wrong base)"
-        ok=0
-    fi
-    if ! grep -q 'signingConfigs {' "$GRADLE"; then
-        echo " [FAIL] signingConfigs missing from build.gradle -- phase 9 not applied"
-        ok=0
-    fi
-    if ! grep -q 'M 265,215 L 265,297 L 335,256 Z' app/src/main/res/drawable/ic_launcher_foreground.xml 2>/dev/null; then
-        echo " [FAIL] phase-9 launcher icon not present -- wrong base"
-        ok=0
-    fi
-    # the overlay toolbar must be fresh phase-9 or already phase-10
-    if grep -q 'btnImageScale' "$IET" 2>/dev/null; then
-        echo " [ok] phase-10 toolbar detected (re-run)"
-    elif grep -q 'btnImageDuplicate' "$IET" 2>/dev/null; then
-        echo " [ok] fresh phase-9 toolbar detected"
+CV="app/src/main/java/com/tharunbirla/librecuts/customviews"
+UT="app/src/main/java/com/tharunbirla/librecuts/utils"
+LAY="app/src/main/res/layout"
+DRW="app/src/main/res/drawable"
+
+###############################################################################
+# Step 0 -- preconditions (phase 7 must already be applied)
+###############################################################################
+log "step0: checking preconditions"
+[ -f "$VEA" ] || fail "VideoEditingActivity.kt not found"
+[ -f "$LAY/video_editing_toolbar.xml" ] || fail "video_editing_toolbar.xml not found"
+grep -q "btnVideoFreezeFrame" "$LAY/video_editing_toolbar.xml" \
+  || fail "phase-7 marker missing (btnVideoFreezeFrame)"
+[ ! -f "$LAY/bottom_sheet_mask.xml" ] || fail "phase-7 not applied (bottom_sheet_mask.xml still present)"
+[ ! -f "$LAY/dialog_adjustments.xml" ] || fail "phase-7 not applied (dialog_adjustments.xml still present)"
+[ ! -f "$CV/MaskedFrameLayout.kt" ] || fail "phase-7 not applied (MaskedFrameLayout.kt still present)"
+log "step0: [ok] phase-7 base confirmed"
+
+###############################################################################
+# Step 1 -- delete feature files (Kotlin views/utils, layouts, font, drawables)
+###############################################################################
+DELETE_FILES="
+$CV/TextOverlayView.kt
+$CV/DraggableTextOverlayView.kt
+$CV/ImageOverlayView.kt
+$CV/DraggableImageOverlayView.kt
+$CV/CropOverlayView.kt
+$CV/HSVColorPickerView.kt
+$UT/TextRenderUtils.kt
+$UT/FontManager.kt
+$LAY/text_editing_toolbar.xml
+$LAY/text_background_settings.xml
+$LAY/text_format_settings.xml
+$LAY/text_shadow_settings.xml
+$LAY/text_stroke_settings.xml
+$LAY/image_editing_toolbar.xml
+$LAY/crop_editing_toolbar.xml
+$LAY/background_editing_toolbar.xml
+$LAY/keyframe_editing_toolbar.xml
+$LAY/chroma_key_bottom_sheet_dialog.xml
+$LAY/dialog_custom_color_picker.xml
+$LAY/dialog_font_manager.xml
+$LAY/item_font_manager.xml
+app/src/main/assets/fonts/Roboto-Regular.ttf
+$DRW/ic_canvas_24.xml
+$DRW/ic_canvas_color_24.xml
+$DRW/ic_color_lens_24.xml
+$DRW/ic_color_picker_24.xml
+$DRW/ic_crop_24.xml
+$DRW/ic_crop_16_9_24.xml
+$DRW/ic_crop_portrait_24.xml
+$DRW/ic_crop_square_24.xml
+$DRW/ic_format_24.xml
+$DRW/ic_keyboard_24.xml
+$DRW/ic_keyframe_add.xml
+$DRW/ic_keyframe_main.xml
+$DRW/ic_keyframe_remove.xml
+$DRW/ic_loop_24.xml
+$DRW/ic_mirror.xml
+$DRW/ic_opacity_24.xml
+$DRW/ic_palette_24.xml
+$DRW/ic_preview_24.xml
+$DRW/ic_rotate_right_24.xml
+$DRW/ic_arrow_drop_down_24.xml
+$DRW/ic_text_24.xml
+$DRW/ic_text_bg_24.xml
+$DRW/ic_text_shadow_24.xml
+$DRW/ic_text_stroke_24.xml
+$DRW/ic_align_center_24.xml
+$DRW/ic_align_left_24.xml
+$DRW/ic_align_right_24.xml
+$DRW/bg_layer_selected.xml
+"
+
+ND=0; NS=0
+for f in $DELETE_FILES; do
+    if [ -f "$f" ]; then
+        rm -f "$f"
+        ND=$((ND+1))
     else
-        echo " [FAIL] $IET is neither fresh phase-9 nor phase-10 state"
-        ok=0
+        NS=$((NS+1))
     fi
-    # the chroma dialog must exist on a fresh base (it gets deleted)
-    if grep -q 'btnImageScale' "$IET" 2>/dev/null; then
-        : # phase-10 re-run: dialog already gone
-    elif [ ! -f "$CHROMA_LAYOUT" ]; then
-        echo " [FAIL] $CHROMA_LAYOUT missing on a fresh base -- unexpected"
-        ok=0
-    fi
-    [ "$ok" -eq 1 ] && echo " [ok] repo state matches the expected phase-9 base"
-    [ "$ok" -eq 1 ] || return 1
-    return 0
-}
+done
+# remove the fonts dir when it became empty
+if [ -d app/src/main/assets/fonts ] && [ -z "$(ls -A app/src/main/assets/fonts 2>/dev/null)" ]; then
+    rmdir app/src/main/assets/fonts 2>/dev/null || true
+fi
+log "step1: deleted=$ND skipped=$NS"
 
-# ---------------------------------------------------------------------------
-#  STEP 1 -- image_editing_toolbar.xml: drop 3 buttons, add Scale controls
-# ---------------------------------------------------------------------------
-step1_toolbar_layout() {
-    echo "== step 1: overlay toolbar -- remove Duplicate/Mirror/Chroma Key, add Scale"
-    if grep -q 'btnImageScale' "$IET" 2>/dev/null; then
-        echo " [skip] toolbar already carries the Scale controls"
-        return 0
-    fi
-    python3 - <<'P10A' || return 1
-import sys
-p = 'app/src/main/res/layout/image_editing_toolbar.xml'
-t = open(p, encoding='utf-8').read()
-if 'btnImageScale' in t:
-    print(' [skip] already applied')
-    sys.exit(0)
-for tok in ('btnImageDuplicate', 'btnImageMirrorContainer', 'btnImageChromaKeyContainer'):
-    if tok not in t:
-        print(' [FAIL] fresh-base marker missing: ' + tok)
-        sys.exit(1)
-
-# 1) cut the Duplicate / Mirror / Chroma Key button blocks
-dup = t.find('        <!-- Duplicate -->')
-opa = t.find('        <!-- Opacity -->')
-if dup < 0 or opa < 0 or opa < dup:
-    print(' [FAIL] button-block anchors not found')
-    sys.exit(1)
-t = t[:dup] + t[opa:]
-
-# 2) insert the Scale slider row right after the opacity slider row
-anchor_row = (
-    '        <TextView\n'
-    '            android:id="@+id/tvImageOpacityValue"\n'
-    '            android:layout_width="40dp"\n'
-    '            android:layout_height="wrap_content"\n'
-    '            android:gravity="end"\n'
-    '            android:text="@string/str_100"\n'
-    '            android:textColor="@color/textColor"\n'
-    '            android:textSize="14sp"\n'
-    '            android:fontFamily="sans-serif-medium" />\n'
-    '    </LinearLayout>\n'
-)
-scale_row = (
-    '\n'
-    '    <!-- Scale Slider Row -->\n'
-    '    <LinearLayout\n'
-    '        android:id="@+id/imageScaleSliderRow"\n'
-    '        android:layout_width="match_parent"\n'
-    '        android:layout_height="56dp"\n'
-    '        android:layout_marginHorizontal="16dp"\n'
-    '        android:layout_marginTop="8dp"\n'
-    '        android:layout_marginBottom="8dp"\n'
-    '        android:orientation="horizontal"\n'
-    '        android:gravity="center_vertical"\n'
-    '        android:background="@drawable/bg_bottom_nav_floating"\n'
-    '        android:paddingHorizontal="16dp"\n'
-    '        android:elevation="12dp"\n'
-    '        android:visibility="gone">\n'
-    '\n'
-    '        <ImageView\n'
-    '            android:layout_width="24dp"\n'
-    '            android:layout_height="24dp"\n'
-    '            android:src="@drawable/ic_resize_24"\n'
-    '            app:tint="@color/iconSecondary" />\n'
-    '\n'
-    '        <com.google.android.material.slider.Slider\n'
-    '            android:id="@+id/imageScaleSlider"\n'
-    '            android:layout_width="0dp"\n'
-    '            android:layout_height="wrap_content"\n'
-    '            android:layout_weight="1"\n'
-    '            android:valueFrom="5.0"\n'
-    '            android:valueTo="500.0"\n'
-    '            android:value="30.0"\n'
-    '            android:stepSize="1.0"\n'
-    '            app:thumbColor="@color/colorPrimary"\n'
-    '            app:trackColorActive="@color/colorPrimary" />\n'
-    '\n'
-    '        <TextView\n'
-    '            android:id="@+id/tvImageScaleValue"\n'
-    '            android:layout_width="48dp"\n'
-    '            android:layout_height="wrap_content"\n'
-    '            android:gravity="end"\n'
-    '            android:text="30%"\n'
-    '            android:textColor="@color/textColor"\n'
-    '            android:textSize="14sp"\n'
-    '            android:fontFamily="sans-serif-medium" />\n'
-    '    </LinearLayout>\n'
-)
-if t.count(anchor_row) != 1:
-    print(' [FAIL] opacity slider row anchor not found exactly once')
-    sys.exit(1)
-t = t.replace(anchor_row, anchor_row + scale_row, 1)
-
-# 3) insert the Scale button right after the Opacity button
-anchor_btn = (
-    '            <TextView\n'
-    '                android:id="@+id/tvImageOpacity"\n'
-    '                android:layout_width="wrap_content"\n'
-    '                android:layout_height="wrap_content"\n'
-    '                android:layout_marginTop="4dp"\n'
-    '                android:text="@string/str_opacity"\n'
-    '                android:textSize="11sp"\n'
-    '                android:fontFamily="sans-serif-medium"\n'
-    '                android:textColor="@color/toolTextInactive"/>\n'
-    '        </LinearLayout>\n'
-)
-scale_btn = (
-    '\n'
-    '        <!-- Scale -->\n'
-    '        <LinearLayout\n'
-    '            android:id="@+id/btnImageScaleContainer"\n'
-    '            android:layout_width="60dp"\n'
-    '            android:layout_height="wrap_content"\n'
-    '            android:orientation="vertical"\n'
-    '            android:gravity="center">\n'
-    '            <ImageButton\n'
-    '                android:id="@+id/btnImageScale"\n'
-    '                android:layout_width="40dp"\n'
-    '                android:layout_height="40dp"\n'
-    '                android:background="@drawable/tool_button_inactive"\n'
-    '                android:src="@drawable/ic_resize_24"\n'
-    '                android:padding="8dp"\n'
-    '                android:scaleType="fitCenter"\n'
-    '                app:tint="@color/toolTextInactive" />\n'
-    '            <TextView\n'
-    '                android:id="@+id/tvImageScale"\n'
-    '                android:layout_width="wrap_content"\n'
-    '                android:layout_height="wrap_content"\n'
-    '                android:layout_marginTop="4dp"\n'
-    '                android:text="Scale"\n'
-    '                android:textSize="11sp"\n'
-    '                android:fontFamily="sans-serif-medium"\n'
-    '                android:textColor="@color/toolTextInactive"/>\n'
-    '        </LinearLayout>\n'
-)
-if t.count(anchor_btn) != 1:
-    print(' [FAIL] opacity button anchor not found exactly once')
-    sys.exit(1)
-t = t.replace(anchor_btn, anchor_btn + scale_btn, 1)
-
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('btnImageScale', 'imageScaleSliderRow', 'imageScaleSlider',
-            'tvImageScaleValue', 'ic_resize_24', 'valueTo="500.0"'):
-    if tok not in t:
-        print(' [FAIL] post-state token missing: ' + tok)
-        sys.exit(1)
-for tok in ('btnImageDuplicate', 'btnImageMirror', 'btnImageChromaKey',
-            'tvImageMirror', 'tvImageChromaKey', 'str_duplicate',
-            'ic_copy_24', 'ic_mirror', 'ic_color_lens_24'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-print(' [ok] toolbar: 3 buttons removed, Scale slider + button added')
-P10A
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 2 -- new drawable: ic_resize_24 (Material open-in-full arrows)
-# ---------------------------------------------------------------------------
-step2_resize_icon() {
-    echo "== step 2: create drawable/ic_resize_24.xml"
-    if [ -f "$RESIZE" ]; then
-        echo " [skip] ic_resize_24.xml already exists"
-        return 0
-    fi
-    cat > "$RESIZE" <<'ICONXML'
-<?xml version="1.0" encoding="utf-8"?>
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="@android:color/white"
-        android:pathData="M21,11V3h-8l3.29,3.29-10,10L3,13v8h8l-3.29-3.29,10-10z"/>
-</vector>
-ICONXML
-    if grep -q 'M21,11V3h-8l3.29,3.29-10,10L3,13v8h8l-3.29-3.29,10-10z' "$RESIZE"; then
-        echo " [ok] ic_resize_24.xml written (two diagonal outward arrows)"
-        return 0
-    fi
-    echo " [FAIL] ic_resize_24.xml write did not land"
-    return 1
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 3 -- VideoEditingActivity.kt: rewire toolbar, drop feature code
-# ---------------------------------------------------------------------------
-step3_activity() {
-    echo "== step 3: VideoEditingActivity.kt -- scale wiring + feature removal"
-    python3 - <<'P10B' || return 1
-import sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt'
-t = open(p, encoding='utf-8').read()
-if 'R.id.btnImageScale' in t and 'showChromaKeyDialog' not in t:
-    print(' [skip] activity already carries phase-10 wiring')
-    sys.exit(0)
-fresh = ('R.id.btnImageDuplicate' in t and 'showChromaKeyDialog' in t
-         and 'toggleMirror' in t and 'chromaKeyColor' in t)
-if not fresh:
-    print(' [FAIL] activity is neither fresh phase-9 nor phase-10 state')
-    sys.exit(1)
-
-def rep(old, new, name, cnt=1):
-    global t
-    c = t.count(old)
-    if c != cnt:
-        print(' [FAIL] %s: expected %d match(es), found %d' % (name, cnt, c))
-        sys.exit(1)
-    t = t.replace(old, new)
-
-# 3.1 replace the Duplicate / Mirror / Chroma Key wirings with the Scale toggle
-old = (
-    '                toolbar.findViewById<View>(R.id.btnImageDuplicate)?.setBounceClickListener {\n'
-    '                    duplicateSelectedOverlay()\n'
-    '                }\n'
-    '                toolbar.findViewById<View>(R.id.btnImageMirror)?.setBounceClickListener {\n'
-    '                    draggableImageOverlay?.toggleMirror()\n'
-    '                }\n'
-    '                toolbar.findViewById<View>(R.id.btnImageChromaKey)?.setBounceClickListener {\n'
-    '                    showChromaKeyDialog()\n'
-    '                }\n'
-)
-new = (
-    '                toolbar.findViewById<View>(R.id.btnImageScale)?.setBounceClickListener {\n'
-    '                    val scaleRow = toolbar.findViewById<View>(R.id.imageScaleSliderRow)\n'
-    '                    val opacityRow = toolbar.findViewById<View>(R.id.imageOpacitySliderRow)\n'
-    '                    val rotationRow = toolbar.findViewById<View>(R.id.imageRotationSliderRow)\n'
-    '                    if (scaleRow?.visibility == View.VISIBLE) {\n'
-    '                        scaleRow.visibility = View.GONE\n'
-    '                        rotationRow?.visibility = View.VISIBLE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.toolTextInactive))\n'
-    '                    } else {\n'
-    '                        scaleRow?.visibility = View.VISIBLE\n'
-    '                        opacityRow?.visibility = View.GONE\n'
-    '                        rotationRow?.visibility = View.GONE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))\n'
-    '                    }\n'
-    '                }\n'
-)
-rep(old, new, 'scale toggle wiring replaces the 3 removed wirings')
-
-# 3.2 opacity toggle: also hide the scale row when opening
-old = (
-    '                toolbar.findViewById<View>(R.id.btnImageOpacity)?.setBounceClickListener {\n'
-    '                    val opacityRow = toolbar.findViewById<View>(R.id.imageOpacitySliderRow)\n'
-    '                    val rotationRow = toolbar.findViewById<View>(R.id.imageRotationSliderRow)\n'
-    '                    if (opacityRow?.visibility == View.VISIBLE) {\n'
-    '                        opacityRow.visibility = View.GONE\n'
-    '                        rotationRow?.visibility = View.VISIBLE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.toolTextInactive))\n'
-    '                    } else {\n'
-    '                        opacityRow?.visibility = View.VISIBLE\n'
-    '                        rotationRow?.visibility = View.GONE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))\n'
-    '                    }\n'
-    '                }\n'
-)
-new = (
-    '                toolbar.findViewById<View>(R.id.btnImageOpacity)?.setBounceClickListener {\n'
-    '                    val opacityRow = toolbar.findViewById<View>(R.id.imageOpacitySliderRow)\n'
-    '                    val rotationRow = toolbar.findViewById<View>(R.id.imageRotationSliderRow)\n'
-    '                    val scaleRow = toolbar.findViewById<View>(R.id.imageScaleSliderRow)\n'
-    '                    if (opacityRow?.visibility == View.VISIBLE) {\n'
-    '                        opacityRow.visibility = View.GONE\n'
-    '                        rotationRow?.visibility = View.VISIBLE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.toolTextInactive))\n'
-    '                    } else {\n'
-    '                        opacityRow?.visibility = View.VISIBLE\n'
-    '                        rotationRow?.visibility = View.GONE\n'
-    '                        scaleRow?.visibility = View.GONE\n'
-    '                        toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this@VideoEditingActivity, R.color.colorPrimary))\n'
-    '                    }\n'
-    '                }\n'
-)
-rep(old, new, 'opacity toggle also hides the scale row')
-
-# 3.3 scale slider listener, modeled on the opacity slider listener
-anchor = (
-    '                val opacitySlider = toolbar.findViewById<Slider>(R.id.imageOpacitySlider)\n'
-    '                val tvOpacityValue = toolbar.findViewById<TextView>(R.id.tvImageOpacityValue)\n'
-    '                opacitySlider?.addOnChangeListener { _, value, _ ->\n'
-    '                    tvOpacityValue?.text = "${value.toInt()}%"\n'
-    '                    draggableImageOverlay?.setOpacity(value / 100f)\n'
-    '                }\n'
-)
-insert = (
-    '\n'
-    '                val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)\n'
-    '                val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)\n'
-    '                scaleSlider?.addOnChangeListener { _, value, _ ->\n'
-    '                    tvScaleValue?.text = "${value.toInt()}%"\n'
-    '                    draggableImageOverlay?.setScaleWidth(value / 100f)\n'
-    '                }\n'
-)
-rep(anchor, anchor + insert, 'scale slider listener inserted')
-
-# 3.4 onImageCommitted: drop the isMirrored lambda parameter
-rep('overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity, isMirrored ->',
-    'overlay.onImageCommitted = { uri, relX, relY, relW, relH, rotationAngle, opacity ->',
-    'onImageCommitted lambda signature')
-
-# 3.5 drop isMirrored from the updateOperation copy
-rep('rotationAngle = rotationAngle, opacity = opacity, isMirrored = isMirrored\n',
-    'rotationAngle = rotationAngle, opacity = opacity\n',
-    'updateOperation copy without isMirrored')
-
-# 3.6 drop the chroma capture lines before addImageOverlayOperation
-rep('                            val chromaColor = draggableImageOverlay?.currentChromaColor\n'
-    '                            val chromaSim = draggableImageOverlay?.currentChromaSimilarity ?: 0.1f\n',
-    '',
-    'chroma capture lines removed')
-
-# 3.7 drop chroma + mirror args from the addImageOverlayOperation call
-rep('                                chromaKeyColor = chromaColor,\n'
-    '                                chromaKeySimilarity = chromaSim,\n'
-    '                                opacity = opacity,\n'
-    '                                isMirrored = isMirrored\n',
-    '                                opacity = opacity\n',
-    'addImageOverlayOperation call slimmed')
-
-# 3.8 duplicateSelectedOverlay becomes text-only (text toolbar keeps it)
-old = (
-    '    private fun duplicateSelectedOverlay() {\n'
-    '        val selectedId = viewModel.selectedOperationId.value ?: return\n'
-    '        val currentProject = viewModel.project.value ?: return\n'
-    '        val op = currentProject.operations.find {\n'
-    '            when (it) {\n'
-    '                is EditOperation.AddText -> it.id == selectedId\n'
-    '                is EditOperation.AddImageOverlay -> it.id == selectedId\n'
-    '                else -> false\n'
-    '            }\n'
-    '        } ?: return\n'
-    '\n'
-    '        val newOp = when (op) {\n'
-    '            is EditOperation.AddText -> {\n'
-    '                val newX = ((op.relativeX ?: 0.5f) + 0.05f).coerceIn(0f, 1f)\n'
-    '                val newY = ((op.relativeY ?: 0.5f) + 0.05f).coerceIn(0f, 1f)\n'
-    '                op.copy(\n'
-    '                    id = System.nanoTime().toString(),\n'
-    '                    relativeX = newX,\n'
-    '                    relativeY = newY\n'
-    '                )\n'
-    '            }\n'
-    '            is EditOperation.AddImageOverlay -> {\n'
-    '                val newX = (op.relativeX + 0.05f).coerceIn(0f, 1f)\n'
-    '                val newY = (op.relativeY + 0.05f).coerceIn(0f, 1f)\n'
-    '                op.copy(\n'
-    '                    id = System.nanoTime().toString(),\n'
-    '                    relativeX = newX,\n'
-    '                    relativeY = newY\n'
-    '                )\n'
-    '            }\n'
-    '            else -> null\n'
-    '        }\n'
-    '\n'
-    '        val newOpId = when (newOp) {\n'
-    '            is EditOperation.AddText -> newOp.id\n'
-    '            is EditOperation.AddImageOverlay -> newOp.id\n'
-    '            else -> null\n'
-    '        }\n'
-    '\n'
-    '        if (newOp != null && newOpId != null) {\n'
-    '            viewModel.addOperation(newOp)\n'
-    '            viewModel.selectOperation(newOpId)\n'
-    '        }\n'
-    '    }\n'
-)
-new = (
-    '    private fun duplicateSelectedOverlay() {\n'
-    '        val selectedId = viewModel.selectedOperationId.value ?: return\n'
-    '        val currentProject = viewModel.project.value ?: return\n'
-    '        val textOp = currentProject.operations.find {\n'
-    '            (it as? EditOperation.AddText)?.id == selectedId\n'
-    '        } as? EditOperation.AddText ?: return\n'
-    '\n'
-    '        val newX = ((textOp.relativeX ?: 0.5f) + 0.05f).coerceIn(0f, 1f)\n'
-    '        val newY = ((textOp.relativeY ?: 0.5f) + 0.05f).coerceIn(0f, 1f)\n'
-    '        val newOp = textOp.copy(\n'
-    '            id = System.nanoTime().toString(),\n'
-    '            relativeX = newX,\n'
-    '            relativeY = newY\n'
-    '        )\n'
-    '        viewModel.addOperation(newOp)\n'
-    '        viewModel.selectOperation(newOp.id)\n'
-    '    }\n'
-)
-rep(old, new, 'duplicateSelectedOverlay is now text-only')
-
-# 3.9 remove showChromaKeyDialog entirely
-a = t.find('    private fun showChromaKeyDialog() {')
-b = t.find('    private fun showCustomColorPicker(')
-if a < 0 or b < 0 or b < a:
-    print(' [FAIL] showChromaKeyDialog cut anchors not found')
-    sys.exit(1)
-t = t[:a] + t[b:]
-
-# 3.10 keyframe tick: setProperties without the mirror argument
-rep('                        interpolatedOpacity,\n'
-    '                        op.isMirrored\n'
-    '                    )\n',
-    '                        interpolatedOpacity\n'
-    '                    )\n',
-    'keyframe setProperties call without mirror')
-
-# 3.11 enterImageEditingMode: reset the scale slider (fresh overlay)
-anchor = (
-    '            val opacitySlider = toolbar.findViewById<Slider>(R.id.imageOpacitySlider)\n'
-    '            val tvOpacityValue = toolbar.findViewById<TextView>(R.id.tvImageOpacityValue)\n'
-    '            opacitySlider?.value = 100f\n'
-    '            tvOpacityValue?.text = "100%"\n'
-)
-insert = (
-    '\n'
-    '            val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)\n'
-    '            val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)\n'
-    '            scaleSlider?.value = 30f\n'
-    '            tvScaleValue?.text = "30%"\n'
-)
-rep(anchor, anchor + insert, 'enterImageEditingMode scale reset')
-
-# 3.12 enterImageEditingModeForEdit: scale slider from the stored width
-anchor = (
-    '            val opacitySlider = toolbar.findViewById<Slider>(R.id.imageOpacitySlider)\n'
-    '            val tvOpacityValue = toolbar.findViewById<TextView>(R.id.tvImageOpacityValue)\n'
-    '            val currentOpacity = ((op?.opacity ?: 1.0f) * 100f).coerceIn(0f, 100f)\n'
-    '            opacitySlider?.value = currentOpacity\n'
-    '            tvOpacityValue?.text = "${currentOpacity.toInt()}%"\n'
-)
-insert = (
-    '\n'
-    '            val scaleSlider = toolbar.findViewById<Slider>(R.id.imageScaleSlider)\n'
-    '            val tvScaleValue = toolbar.findViewById<TextView>(R.id.tvImageScaleValue)\n'
-    '            val currentScale = Math.round(((op?.relativeWidth ?: 0.3f) * 100f).coerceIn(5f, 500f))\n'
-    '            scaleSlider?.value = currentScale.toFloat()\n'
-    '            tvScaleValue?.text = "$currentScale%"\n'
-)
-rep(anchor, anchor + insert, 'enterImageEditingModeForEdit scale init')
-
-# 3.13 both enter modes: hide the scale row + reset its button tint
-anchor = (
-    '            toolbar.findViewById<View>(R.id.imageOpacitySliderRow)?.visibility = View.GONE\n'
-    '            toolbar.findViewById<View>(R.id.imageRotationSliderRow)?.visibility = View.VISIBLE\n'
-    '            toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageOpacity)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))\n'
-)
-insert = (
-    '            toolbar.findViewById<View>(R.id.imageScaleSliderRow)?.visibility = View.GONE\n'
-    '            toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))\n'
-)
-rep(anchor, anchor + insert, 'enter modes reset the scale row', cnt=2)
-
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('R.id.btnImageScale', 'R.id.imageScaleSlider', 'R.id.tvImageScaleValue',
-            'setScaleWidth', 'duplicateSelectedOverlay', 'showCustomColorPicker'):
-    if tok not in t:
-        print(' [FAIL] post-state token missing: ' + tok)
-        sys.exit(1)
-for tok in ('btnImageDuplicate', 'btnImageMirror', 'btnImageChromaKey',
-            'showChromaKeyDialog', 'toggleMirror', 'chromaKeyColor',
-            'chromaKeySimilarity', 'isMirrored', 'currentChromaColor'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-print(' [ok] activity: scale wired in, duplicate/mirror/chroma code gone')
-P10B
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 4 -- DraggableImageOverlayView.kt: setScaleWidth + feature removal
-# ---------------------------------------------------------------------------
-step4_draggable_view() {
-    echo "== step 4: DraggableImageOverlayView.kt -- setScaleWidth, no mirror/chroma"
-    python3 - <<'P10C' || return 1
+###############################################################################
+# Step 2 -- EditOperation.kt: drop Crop / KeyframePoint / AddText /
+#           AddImageOverlay / CanvasBackground models + TextPosition enum
+###############################################################################
+python3 <<'CUTPY'
 import re, sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt'
-t = open(p, encoding='utf-8').read()
-if 'fun setScaleWidth' in t:
-    print(' [skip] overlay view already carries setScaleWidth')
-    sys.exit(0)
-if 'fun toggleMirror' not in t or 'applyChromaKey' not in t:
-    print(' [FAIL] overlay view is neither fresh phase-9 nor phase-10 state')
+
+def die(m):
+    print("[phase8][ERROR] " + m)
     sys.exit(1)
-
-def rep(old, new, name, cnt=1):
-    global t
-    c = t.count(old)
-    if c != cnt:
-        print(' [FAIL] %s: expected %d match(es), found %d' % (name, cnt, c))
-        sys.exit(1)
-    t = t.replace(old, new)
-
-# 4.1 imports: Bitmap + coroutines were chroma-only
-rep('import android.graphics.Bitmap\n', '', 'Bitmap import removed')
-rep('import kotlinx.coroutines.CoroutineScope\n'
-    'import kotlinx.coroutines.Dispatchers\n'
-    'import kotlinx.coroutines.Job\n'
-    'import kotlinx.coroutines.SupervisorJob\n'
-    'import kotlinx.coroutines.launch\n'
-    'import kotlinx.coroutines.withContext\n',
-    '', 'coroutine imports removed')
-
-# 4.2 onImageCommitted type: drop isMirrored
-rep('rotationAngle: Float, opacity: Float, isMirrored: Boolean) -> Unit)? = null',
-    'rotationAngle: Float, opacity: Float) -> Unit)? = null',
-    'onImageCommitted type without mirror')
-
-# 4.3 state: drop isMirrored
-rep('    private var isMirrored = false\n', '', 'isMirrored state removed')
-
-# 4.4 chroma picker state block (comment line uses unicode dashes: regex)
-pat = re.compile(
-    r'    //[^\n]*Chroma Key Picker State[^\n]*\n'
-    r'    var isColorPickingMode = false\n'
-    r'    var onColorPicked: \(\(colorHex: String\) -> Unit\)\? = null\n'
-    r'[ \t]*\n'
-    r'    private val scope = CoroutineScope\(Dispatchers\.Main \+ SupervisorJob\(\)\)\n'
-    r'    private var originalBitmapForChroma: Bitmap\? = null\n'
-    r'    var currentChromaColor: String\? = null\n'
-    r'        private set\n'
-    r'    var currentChromaSimilarity: Float = 0\.1f\n'
-    r'        private set\n'
-    r'    private var chromaJob: Job\? = null\n'
-    r'[ \t]*\n'
-)
-t2, n = pat.subn('', t, count=1)
-if n != 1:
-    print(' [FAIL] chroma picker state block not matched')
-    sys.exit(1)
-t = t2
-
-# 4.5 activate(): chroma reset lines
-rep('        originalBitmapForChroma?.recycle()\n'
-    '        originalBitmapForChroma = null\n'
-    '        currentChromaColor = null\n',
-    '', 'activate chroma reset removed')
-
-# 4.6 activate(): opacity trio without mirror
-rep('        isMirrored = false\n'
-    '        imageView.alpha = opacity\n'
-    '        imageView.scaleX = if (isMirrored) -1f else 1f\n',
-    '        imageView.alpha = opacity\n',
-    'activate mirror lines removed')
-
-# 4.7 activateForEdit(): chroma state init
-rep('        originalBitmapForChroma?.recycle()\n'
-    '        originalBitmapForChroma = null\n'
-    '        currentChromaColor = op.chromaKeyColor\n'
-    '        currentChromaSimilarity = op.chromaKeySimilarity\n',
-    '', 'activateForEdit chroma init removed')
-
-# 4.8 activateForEdit(): mirror assignment + chroma apply in the post block
-rep('        isMirrored = op.isMirrored\n', '', 'activateForEdit mirror assignment removed')
-rep('        imageView.rotation = rotationAngle\n'
-    '        imageView.alpha = opacity\n'
-    '        imageView.scaleX = if (isMirrored) -1f else 1f\n'
-    '        visibility = VISIBLE\n'
-    '        post {\n'
-    '            updateImageViewSizeAndPosition()\n'
-    '            if (currentChromaColor != null) {\n'
-    '                applyChromaKey()\n'
-    '            }\n'
-    '        }\n',
-    '        imageView.rotation = rotationAngle\n'
-    '        imageView.alpha = opacity\n'
-    '        visibility = VISIBLE\n'
-    '        post {\n'
-    '            updateImageViewSizeAndPosition()\n'
-    '        }\n',
-    'activateForEdit mirror/chroma removed')
-
-# 4.9 toggleMirror becomes setScaleWidth (same pinch math as the scale detector)
-rep('    fun toggleMirror() {\n'
-    '        isMirrored = !isMirrored\n'
-    '        imageView.scaleX = if (isMirrored) -1f else 1f\n'
-    '        invalidate()\n'
-    '    }\n',
-    '    fun setScaleWidth(w: Float) {\n'
-    '        relativeWidth = w.coerceIn(0.05f, 5.0f)\n'
-    '        val videoRatio = if (videoHeight > 0) videoWidth.toFloat() / videoHeight else 1.0f\n'
-    '        relativeHeight = relativeWidth * videoRatio / imageAspectRatio\n'
-    '        syncRelativePositionFromVisual()\n'
-    '        updateImageViewSizeAndPosition()\n'
-    '    }\n',
-    'setScaleWidth replaces toggleMirror')
-
-# 4.10 commitImage: drop isMirrored arg
-rep('rotationAngle, opacity, isMirrored)\n', 'rotationAngle, opacity)\n',
-    'commitImage invoke without mirror')
-
-# 4.11 touch handlers: drop the color-picking branches
-rep('                    if (isColorPickingMode) {\n'
-    '                        return true\n'
-    '                    }\n',
-    '', 'onInterceptTouchEvent color-pick branch removed')
-rep('                if (isColorPickingMode) {\n'
-    '                    pickColorAt(event.x, event.y)\n'
-    '                    return true\n'
-    '                }\n',
-    '', 'onTouchEvent color-pick branch removed')
-
-# 4.12 cut pickColorAt / setChromaKey / applyChromaKey (up to the Drawing section)
-a = t.find('    private fun pickColorAt(x: Float, y: Float) {')
-m = re.search(r'    //[^\n]*Drawing[^\n]*\n', t)
-if a < 0 or m is None or m.start() <= a:
-    print(' [FAIL] pickColorAt cut anchors not found')
-    sys.exit(1)
-t = t[:a] + t[m.start():]
-
-# 4.13 getters + setProperties without mirror
-rep('    fun getIsMirrored(): Boolean = isMirrored\n', '', 'getIsMirrored removed')
-rep('    fun setProperties(rx: Float, ry: Float, rw: Float, rh: Float, rot: Float, op: Float, mir: Boolean) {',
-    '    fun setProperties(rx: Float, ry: Float, rw: Float, rh: Float, rot: Float, op: Float) {',
-    'setProperties signature without mirror')
-rep('        setOpacity(op)\n        isMirrored = mir\n', '        setOpacity(op)\n',
-    'setProperties body without mirror')
-
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('fun setScaleWidth', 'fun setOpacity', 'fun setRotationAngle',
-            'fun commitImage', 'fun setProperties', 'fun activateForEdit'):
-    if tok not in t:
-        print(' [FAIL] post-state token missing: ' + tok)
-        sys.exit(1)
-for tok in ('toggleMirror', 'getIsMirrored', 'isMirrored', 'isColorPickingMode',
-            'pickColorAt', 'applyChromaKey', 'setChromaKey', 'currentChromaColor',
-            'currentChromaSimilarity', 'originalBitmapForChroma', 'chromaJob',
-            'onColorPicked', 'CoroutineScope', 'import android.graphics.Bitmap\n'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-print(' [ok] overlay view: setScaleWidth added, mirror + chroma removed')
-P10C
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 5 -- EditOperation.kt: drop the 3 model fields
-# ---------------------------------------------------------------------------
-step5_operation_model() {
-    echo "== step 5: EditOperation.kt -- drop chroma + mirror fields"
-    python3 - <<'P10D' || return 1
-import sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt'
-t = open(p, encoding='utf-8').read()
-if 'chromaKeyColor' not in t:
-    print(' [skip] AddImageOverlay already slim')
-    sys.exit(0)
-old = (
-    '        val isLooping: Boolean = true,\n'
-    '        val chromaKeyColor: String? = null,\n'
-    '        val chromaKeySimilarity: Float = 0.1f,\n'
-    '        val opacity: Float = 1.0f,\n'
-    '        val isMirrored: Boolean = false,\n'
-)
-new = (
-    '        val isLooping: Boolean = true,\n'
-    '        val opacity: Float = 1.0f,\n'
-)
-if t.count(old) != 1:
-    print(' [FAIL] AddImageOverlay field block not found exactly once')
-    sys.exit(1)
-t = t.replace(old, new)
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('chromaKeyColor', 'chromaKeySimilarity', 'isMirrored'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-if 'data class AddImageOverlay(' not in t or 'val opacity: Float = 1.0f,' not in t:
-    print(' [FAIL] AddImageOverlay damaged')
-    sys.exit(1)
-print(' [ok] AddImageOverlay: chroma + mirror fields removed')
-P10D
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 6 -- VideoEditingViewModelExt.kt: slim addImageOverlayOperation
-# ---------------------------------------------------------------------------
-step6_viewmodel_ext() {
-    echo "== step 6: VideoEditingViewModelExt.kt -- slim overlay factory"
-    python3 - <<'P10E' || return 1
-import sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt'
-t = open(p, encoding='utf-8').read()
-if 'chromaKeyColor' not in t:
-    print(' [skip] addImageOverlayOperation already slim')
-    sys.exit(0)
-old = (
-    'fun VideoEditingViewModel.addImageOverlayOperation(\n'
-    '    imageUri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float,\n'
-    '    rotationAngle: Float, startTimeMs: Long? = null, endTimeMs: Long? = null, fileDurationMs: Long? = null,\n'
-    '    isLooping: Boolean = true, chromaKeyColor: String? = null, chromaKeySimilarity: Float = 0.1f,\n'
-    '    opacity: Float = 1.0f, isMirrored: Boolean = false\n'
-    ') {\n'
-    '    executeCommand(AddOperationCommand(EditOperation.AddImageOverlay(\n'
-    '        imageUri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, startTimeMs,\n'
-    '        endTimeMs, id = System.nanoTime().toString(), fileDurationMs, isLooping, chromaKeyColor,\n'
-    '        chromaKeySimilarity, opacity, isMirrored\n'
-    '    ), "Add Image Overlay"))\n'
-    '}\n'
-)
-new = (
-    'fun VideoEditingViewModel.addImageOverlayOperation(\n'
-    '    imageUri: Uri, relativeX: Float, relativeY: Float, relativeWidth: Float, relativeHeight: Float,\n'
-    '    rotationAngle: Float, startTimeMs: Long? = null, endTimeMs: Long? = null, fileDurationMs: Long? = null,\n'
-    '    isLooping: Boolean = true,\n'
-    '    opacity: Float = 1.0f\n'
-    ') {\n'
-    '    executeCommand(AddOperationCommand(EditOperation.AddImageOverlay(\n'
-    '        imageUri, relativeX, relativeY, relativeWidth, relativeHeight, rotationAngle, startTimeMs,\n'
-    '        endTimeMs, id = System.nanoTime().toString(), fileDurationMs, isLooping,\n'
-    '        opacity\n'
-    '    ), "Add Image Overlay"))\n'
-    '}\n'
-)
-if t.count(old) != 1:
-    print(' [FAIL] addImageOverlayOperation block not found exactly once')
-    sys.exit(1)
-t = t.replace(old, new)
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('chromaKeyColor', 'chromaKeySimilarity', 'isMirrored'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-if 'fun VideoEditingViewModel.addImageOverlayOperation(' not in t:
-    print(' [FAIL] addImageOverlayOperation damaged')
-    sys.exit(1)
-print(' [ok] addImageOverlayOperation: chroma + mirror params removed')
-P10E
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 7 -- VideoEditingViewModel.kt: drop hflip + colorkey FFmpeg stages
-# ---------------------------------------------------------------------------
-step7_viewmodel_ffmpeg() {
-    echo "== step 7: VideoEditingViewModel.kt -- no hflip / colorkey stages"
-    python3 - <<'P10F' || return 1
-import sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt'
-t = open(p, encoding='utf-8').read()
-if 'mirrorStr' not in t and 'chromaKeyColor' not in t:
-    print(' [skip] FFmpeg stages already slim')
-    sys.exit(0)
-if 'mirrorStr' not in t or 'chromaKeyColor' not in t:
-    print(' [FAIL] viewmodel is neither fresh phase-9 nor phase-10 state')
-    sys.exit(1)
-
-def rep(old, new, name, cnt=1):
-    global t
-    c = t.count(old)
-    if c != cnt:
-        print(' [FAIL] %s: expected %d match(es), found %d' % (name, cnt, c))
-        sys.exit(1)
-    t = t.replace(old, new)
-
-# both mirrorStr declarations are identical -> remove both lines
-rep('                            val mirrorStr = if (op.isMirrored) ",hflip" else ""\n',
-    '', 'mirrorStr declarations removed', cnt=2)
-
-# the three filter chains that referenced $mirrorStr
-rep("format=rgba$mirrorStr$ptsLabel\")", "format=rgba$ptsLabel\")",
-    'video overlay chain without hflip')
-rep("format=rgba$mirrorStr,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel\")",
-    "format=rgba,loop=loop=-1:size=1:start=0,fps=25$rgbaImgLabel\")",
-    'keyframed static overlay chain without hflip')
-rep("format=rgba$mirrorStr$rgbaImgLabel\")", "format=rgba$rgbaImgLabel\")",
-    'static overlay chain without hflip')
-
-# the colorkey stage block
-old = (
-    '                        var currentOverlayLabel = scaledImgLabel\n'
-    '                        if (op.chromaKeyColor != null) {\n'
-    '                            val colorkeyLabel = "[colorkey_$stageIndex]"\n'
-    '                            val color = formatColorForFFmpeg(op.chromaKeyColor)\n'
-    '                            // colorkey=color=0xRRGGBB:similarity=0.1:blend=0.1\n'
-    '                            stages.add("${currentOverlayLabel}colorkey=${color}:${op.chromaKeySimilarity}:0.1${colorkeyLabel}")\n'
-    '                            currentOverlayLabel = colorkeyLabel\n'
-    '                        }\n'
-)
-new = (
-    '                        var currentOverlayLabel = scaledImgLabel\n'
-)
-rep(old, new, 'colorkey stage removed')
-
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('formatColorForFFmpeg', 'scale2ref', 'buildFFmpegInterpolationExpr'):
-    if tok not in t:
-        print(' [FAIL] survivor token missing: ' + tok)
-        sys.exit(1)
-for tok in ('mirrorStr', 'hflip', 'colorkey', 'chromaKeyColor', 'chromaKeySimilarity',
-            'isMirrored'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-print(' [ok] render engine: hflip + colorkey stages removed')
-P10F
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 8 -- ImageOverlayView.kt: preview without chroma + mirror
-# ---------------------------------------------------------------------------
-step8_preview_view() {
-    echo "== step 8: ImageOverlayView.kt -- preview rendering cleanup"
-    python3 - <<'P10G' || return 1
-import sys
-p = 'app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt'
-t = open(p, encoding='utf-8').read()
-if 'applyChromaKey' not in t:
-    print(' [skip] preview view already slim')
-    sys.exit(0)
-
-def rep(old, new, name, cnt=1):
-    global t
-    c = t.count(old)
-    if c != cnt:
-        print(' [FAIL] %s: expected %d match(es), found %d' % (name, cnt, c))
-        sys.exit(1)
-    t = t.replace(old, new)
-
-rep('        // Cache static images with their chroma key properties considered\n',
-    '        // Cache static images for preview rendering\n',
-    'caching comment updated')
-rep('                    val cacheKey = "${op.imageUri}_${op.chromaKeyColor}_${op.chromaKeySimilarity}"\n',
-    '                    val cacheKey = op.imageUri.toString()\n',
-    'static cache key simplified')
-rep('                                if (bitmap != null && op.chromaKeyColor != null) {\n'
-    '                                    bitmap = applyChromaKey(bitmap, op.chromaKeyColor!!, op.chromaKeySimilarity, cacheKey)\n'
-    '                                }\n',
-    '', 'static-image chroma application removed')
-rep('                            if (bitmap != null && op.chromaKeyColor != null) {\n'
-    '                                bitmap = applyChromaKey(bitmap, op.chromaKeyColor!!, op.chromaKeySimilarity, cacheKey)\n'
-    '                            }\n',
-    '', 'video-frame chroma application removed')
-rep('                val staticCacheKey = "${op.imageUri}_${op.chromaKeyColor}_${op.chromaKeySimilarity}"\n',
-    '                val staticCacheKey = op.imageUri.toString()\n',
-    'onDraw cache key simplified')
-rep('        if (op.isMirrored) {\n'
-    '            canvas.scale(-1f, 1f, centerX, centerY)\n'
-    '        }\n',
-    '', 'mirror preview draw removed')
-rep('    private val reusableIntArrays = mutableMapOf<String, IntArray>()\n',
-    '', 'reusableIntArrays pool removed')
-rep('        reusableIntArrays.clear()\n', '', 'reusableIntArrays clear removed')
-
-# cut the applyChromaKey function itself
-a = t.find('    private fun applyChromaKey(bitmap: Bitmap, colorHex: String, similarity: Float, cacheKey: String): Bitmap {')
-b = t.find('    private fun interpolateKeyframes(')
-if a < 0 or b < 0 or b < a:
-    print(' [FAIL] applyChromaKey cut anchors not found')
-    sys.exit(1)
-t = t[:a] + t[b:]
-
-open(p, 'w', encoding='utf-8').write(t)
-for tok in ('fun drawBitmapOp', 'reusableBitmaps', 'interpolateKeyframes'):
-    if tok not in t:
-        print(' [FAIL] survivor token missing: ' + tok)
-        sys.exit(1)
-for tok in ('chroma', 'Chroma', 'isMirrored', 'reusableIntArrays'):
-    if tok in t:
-        print(' [FAIL] leftover token still present: ' + tok)
-        sys.exit(1)
-print(' [ok] preview view: chroma + mirror rendering removed')
-P10G
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 9 -- delete orphaned chroma/mirror resources
-# ---------------------------------------------------------------------------
-step9_delete_files() {
-    echo "== step 9: delete chroma dialog + mirror/chroma icons"
-    local f n=0
-    for f in "$CHROMA_LAYOUT" "$ICMIRROR" "$ICLENS"; do
-        if [ -f "$f" ]; then
-            rm -f "$f"
-            n=$((n + 1))
-        fi
-    done
-    if [ "$n" -eq 0 ]; then
-        echo " [skip] no chroma/mirror resources left"
-    else
-        echo " [ok] deleted $n orphaned resource file(s)"
-    fi
-    return 0
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 10 -- version bump (advances by exactly 1 on EVERY run, by design)
-# ---------------------------------------------------------------------------
-step10_version_bump() {
-    echo "== step 10: version bump"
-    local old_vc old_beta
-    old_vc=$(grep -oE "toInteger\(\) : [0-9]+" "$GRADLE" | head -1 | grep -oE "[0-9]+$" || true)
-    if ! echo "$old_vc" | grep -qE '^[0-9]+$'; then
-        echo " [FAIL] cannot read the default versionCode from build.gradle"
-        return 1
-    fi
-    NEW_VC=$((old_vc + 1))
-    if ! sed -i "s/toInteger() : ${old_vc}\$/toInteger() : ${NEW_VC}/" "$GRADLE"; then
-        echo " [FAIL] versionCode sed failed"
-        return 1
-    fi
-    old_beta=$(grep -oE 'versionName "1\.0-beta[0-9]+"' "$GRADLE" | head -1 | grep -oE 'beta[0-9]+' | grep -oE '[0-9]+' || true)
-    if ! echo "$old_beta" | grep -qE '^[0-9]+$'; then
-        echo " [FAIL] cannot read the versionName beta number from build.gradle"
-        return 1
-    fi
-    NEW_BETA=$((old_beta + 1))
-    sed -i "s/versionName \"1\.0-beta${old_beta}\"/versionName \"1.0-beta${NEW_BETA}\"/" "$GRADLE"
-    if grep -q "toInteger() : ${NEW_VC}\$" "$GRADLE" \
-       && grep -qF "versionName \"1.0-beta${NEW_BETA}\"" "$GRADLE"; then
-        echo " [ok] version bumped: versionCode ${old_vc} -> ${NEW_VC}, versionName 1.0-beta${old_beta} -> 1.0-beta${NEW_BETA}"
-        return 0
-    fi
-    echo " [FAIL] version bump did not land"
-    return 1
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 11 -- verify the workflow push trigger (defensive carry-over)
-# ---------------------------------------------------------------------------
-step11_workflow_trigger() {
-    echo "== step 11: verify the workflow push trigger"
-    if grep -q 'branches: \[main\]' "$YML"; then
-        echo " [skip] push trigger intact (branches: [main])"
-        return 0
-    fi
-    if ! grep -q 'branches: ain\]' "$YML"; then
-        echo " [FAIL] neither 'branches: [main]' nor the typo 'branches: ain]' found -- unexpected workflow file"
-        return 1
-    fi
-    sed -i 's/branches: ain\]/branches: [main]/' "$YML"
-    if grep -q 'branches: \[main\]' "$YML" && ! grep -q 'branches: ain\]' "$YML"; then
-        echo " [ok] push trigger repaired"
-        return 0
-    fi
-    echo " [FAIL] workflow trigger repair did not land"
-    return 1
-}
-
-# ---------------------------------------------------------------------------
-#  STEP 12 -- verification gate
-# ---------------------------------------------------------------------------
-step12_verify() {
-    echo "== step 12: verification gate"
-
-    # 12a: leftover scan -- zero chroma / mirror / image-duplicate references
-    python3 - <<'P10H' || return 1
-import os, sys
-bad = []
-gone_tokens = (
-    'chroma', 'Chroma', 'isMirrored', 'toggleMirror', 'getIsMirrored',
-    'hflip', 'colorkey', 'mirrorStr', 'btnImageDuplicate', 'btnImageMirror',
-    'btnImageChromaKey', 'tvImageMirror', 'tvImageChromaKey', 'ic_mirror',
-    'ic_color_lens_24', 'showChromaKeyDialog', 'isColorPickingMode',
-    'pickColorAt', 'chromaKey',
-)
-for root, dirs, files in os.walk('app/src/main'):
-    for fn in files:
-        if not (fn.endswith('.kt') or fn.endswith('.xml')):
-            continue
-        p = os.path.join(root, fn)
-        try:
-            t = open(p, encoding='utf-8').read()
-        except Exception as e:
-            bad.append('%s: unreadable (%s)' % (p, e))
-            continue
-        for tok in gone_tokens:
-            if tok in t:
-                bad.append('%s: still contains %r' % (p, tok))
-if bad:
-    for b in bad[:20]:
-        print(' [FAIL] leftover: ' + b)
-    if len(bad) > 20:
-        print(' ... and %d more' % (len(bad) - 20))
-    sys.exit(1)
-print(' [ok] zero chroma / mirror / image-duplicate references remain')
-P10H
-
-    # 12b: survival + new-feature asserts
-    python3 - <<'P10I' || return 1
-import os, sys
-errs = []
 
 def rd(p):
-    return open(p, encoding='utf-8').read()
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
-iet = rd('app/src/main/res/layout/image_editing_toolbar.xml')
-for tok in ('btnImageCancel', 'btnImageOpacity', 'btnImageOpacityContainer',
-            'imageOpacitySlider', 'imageOpacitySliderRow', 'tvImageOpacityValue',
-            'imageRotationSlider', 'imageRotationSliderRow', 'tvImageRotationValue',
-            'btnImageLoop', 'btnImageLoopContainer', 'btnImageKeyframe',
-            'btnImageKeyframeContainer', 'btnImageDelete', 'btnImageDone',
-            '@string/str_opacity', '@string/str_loop', '@drawable/ic_opacity_24',
-            '@drawable/ic_rotate_right_24', '@drawable/ic_loop_24',
-            '@drawable/ic_keyframe_main'):
-    if tok not in iet:
-        errs.append('toolbar: missing survivor %r' % tok)
-for tok in ('btnImageScale', 'btnImageScaleContainer', 'imageScaleSlider',
-            'imageScaleSliderRow', 'tvImageScaleValue', 'tvImageScale',
-            '@drawable/ic_resize_24', 'android:valueFrom="5.0"',
-            'android:valueTo="500.0"', 'android:text="Scale"', 'android:text="30%"'):
-    if tok not in iet:
-        errs.append('toolbar: missing new Scale token %r' % tok)
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
 
-vea = rd('app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt')
-for tok in ('R.id.btnImageScale', 'R.id.imageScaleSlider', 'R.id.tvImageScaleValue',
-            'R.id.imageScaleSliderRow', 'setScaleWidth', 'duplicateSelectedOverlay',
-            'showCustomColorPicker', 'R.id.btnTextDuplicate', 'R.id.btnImageOpacity',
-            'R.id.btnImageLoop', 'R.id.btnImageKeyframe', 'R.id.btnImageDone',
-            'R.id.btnImageDelete', 'R.id.btnImageCancel'):
-    if tok not in vea:
-        errs.append('activity: missing survivor/new token %r' % tok)
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
 
-diov = rd('app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt')
-for tok in ('fun setScaleWidth', 'fun setOpacity', 'fun setRotationAngle',
-            'fun commitImage', 'fun setProperties', 'fun activateForEdit',
-            'coerceIn(0.05f, 5.0f)'):
-    if tok not in diov:
-        errs.append('overlay view: missing token %r' % tok)
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
 
-vm = rd('app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt')
-for tok in ('formatColorForFFmpeg', 'scale2ref', 'buildFFmpegInterpolationExpr'):
-    if tok not in vm:
-        errs.append('viewmodel: missing survivor %r' % tok)
+P = "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
+s = rd(P)
 
-tet = rd('app/src/main/res/layout/text_editing_toolbar.xml')
-if 'btnTextDuplicate' not in tet or '@string/str_duplicate' not in tet:
-    errs.append('text toolbar: duplicate button must survive')
-if not os.path.isfile('app/src/main/java/com/tharunbirla/librecuts/customviews/HSVColorPickerView.kt'):
-    errs.append('HSVColorPickerView.kt must survive (custom color picker)')
-if not os.path.isfile('app/src/main/res/layout/dialog_custom_color_picker.xml'):
-    errs.append('dialog_custom_color_picker.xml must survive')
-if not os.path.isfile('app/src/main/res/drawable/ic_copy_24.xml'):
-    errs.append('ic_copy_24.xml must survive (text toolbar duplicate)')
-if not os.path.isfile('app/src/main/res/drawable/ic_resize_24.xml'):
-    errs.append('ic_resize_24.xml must exist (new scale icon)')
-strs = rd('app/src/main/res/values/strings.xml')
-for tok in ('str_duplicate', 'str_opacity', 'str_loop', 'str_freeze', 'str_overlay'):
-    if tok not in strs:
-        errs.append('strings.xml: missing %r' % tok)
-if errs:
-    for e in errs:
-        print(' [FAIL] survival: ' + e)
-    sys.exit(1)
-print(' [ok] survivors intact + Scale controls present')
-P10I
+if "data class AddText" not in s:
+    print("[phase8] step2: [skip] EditOperation already trimmed")
+    sys.exit(0)
 
-    # 12c: XML parse of the touched layout + new icon
-    python3 - <<'P10J' || return 1
-import xml.dom.minidom as md
-for f in ('app/src/main/res/layout/image_editing_toolbar.xml',
-          'app/src/main/res/drawable/ic_resize_24.xml'):
-    md.parse(f)
-print(' [ok] touched XML files parse cleanly')
-P10J
+# --- Crop data class (with doc comment) ---
+s = cut_between(s,
+    "    /**\n     * Crop operation: Crops video to a specified aspect ratio.\n",
+    "    /**\n     * Text overlay operation: Adds customizable text to the video at specified position and size.\n")
 
-    # 12d: brace + paren delta check for the six touched Kotlin files
-    #      (VideoEditingActivity.kt carries a pre-existing +3 paren skew
-    #      from string literals, so we compare deltas against HEAD)
-    python3 - <<'P10K' || return 1
-import subprocess, sys
-files = [
-    'app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt',
-    'app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt',
-    'app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView.kt',
-    'app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt',
-    'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt',
-    'app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt',
-]
-errs = []
-for p in files:
-    cur = open(p, encoding='utf-8').read()
-    try:
-        base = subprocess.run(['git', 'show', 'HEAD:' + p],
-                              capture_output=True, text=True,
-                              check=True).stdout
-    except subprocess.CalledProcessError:
-        base = cur  # not tracked yet -> compare against itself
-    for a, b in (('{', '}'), ('(', ')')):
-        d_open = cur.count(a) - base.count(a)
-        d_close = cur.count(b) - base.count(b)
-        if d_open != d_close:
-            errs.append('%s: %s%s delta skew (%+d vs %+d)'
-                        % (p.split('/')[-1], a, b, d_open, d_close))
-    if cur.count('{') != cur.count('}') and base.count('{') == base.count('}'):
-        errs.append('%s: brace balance broken by this phase (%d vs %d)'
-                    % (p.split('/')[-1], cur.count('{'), cur.count('}')))
-if errs:
-    for e in errs:
-        print(' [FAIL] balance: ' + e)
-    sys.exit(1)
-print(' [ok] all six touched Kotlin files keep matched brace/paren deltas')
-P10K
+# --- KeyframePoint + AddText (with doc comment) ---
+s = cut_between(s,
+    "    /**\n     * Text overlay operation: Adds customizable text to the video at specified position and size.\n",
+    "    data class MergeItem(\n")
 
-    # 12e: R.id cross-check -- every R.id.X in Kotlin exists in some res xml
-    python3 - <<'P10L' || return 1
-import os, re, sys
-defined = set()
-for root, dirs, files in os.walk('app/src/main/res'):
-    for fn in files:
-        if not fn.endswith('.xml'):
-            continue
-        p = os.path.join(root, fn)
-        try:
-            t = open(p, encoding='utf-8').read()
-        except Exception:
-            continue
-        for m in re.finditer(r'@\+id/(\w+)', t):
-            defined.add(m.group(1))
-refs = {}
-for root, dirs, files in os.walk('app/src/main/java'):
-    for fn in files:
-        if not fn.endswith('.kt'):
-            continue
-        p = os.path.join(root, fn)
-        t = open(p, encoding='utf-8').read()
-        for m in re.finditer(r'(?<!android\.)R\.id\.(\w+)', t):
-            refs.setdefault(m.group(1), set()).add(p.split('/')[-1])
-missing = {k: v for k, v in refs.items() if k not in defined}
-if missing:
-    for k, v in sorted(missing.items()):
-        print(' [FAIL] R.id.%s referenced in %s but defined nowhere' % (k, ', '.join(sorted(v))))
-    sys.exit(1)
-print(' [ok] all %d referenced R.id tokens resolve to resource ids' % len(refs))
-P10L
+# --- AddImageOverlay (with doc comment) ---
+s = cut_between(s,
+    "    /**\n     * Image overlay operation: Adds an image to the video at specified position, size, and rotation angle.\n",
+    "    /**\n     * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.\n")
 
-    # 12f: gradle -- exact version values + phase-9 signing intact
-    if [ -z "$NEW_VC" ] || [ -z "$NEW_BETA" ]; then
-        echo " [FAIL] version bump did not run -- cannot verify build.gradle"
-        return 1
-    fi
-    python3 - "$NEW_VC" "$NEW_BETA" <<'P10M' || return 1
+# --- CanvasBackground (with doc comment + nested enum) ---
+s = cut_between(s,
+    "    /**\n     * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.\n",
+    "}\n\n/**\n * Enum for text positioning options in video overlays.\n")
+
+# --- TextPosition enum ---
+s = cut_between(s,
+    "/**\n * Enum for text positioning options in video overlays.\n",
+    "val EditOperation.id: String\n")
+
+# --- id extension: drop removed branches ---
+s = rep(s, "        is EditOperation.Crop -> id\n", "")
+s = rep(s, "        is EditOperation.AddText -> id\n", "")
+s = rep(s, "        is EditOperation.AddImageOverlay -> id\n", "")
+s = rep(s, "        is EditOperation.CanvasBackground -> id\n", "")
+
+wr(P, s)
+print("[phase8] step2: [ok] EditOperation.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 3 -- VideoEditingActivity.kt surgery (the big one)
+###############################################################################
+python3 <<'CUTPY'
 import re, sys
-new_vc, new_beta = sys.argv[1], sys.argv[2]
-t = open('app/build.gradle', encoding='utf-8').read()
-errs = []
-if not re.search(r"toInteger\(\) : %s$" % re.escape(new_vc), t, re.M):
-    errs.append('versionCode default is not %s' % new_vc)
-if 'versionName "1.0-beta%s"' % new_beta not in t:
-    errs.append('versionName is not 1.0-beta%s' % new_beta)
-for tok in ('signingConfigs {', "storeFile file('debug.keystore')",
-            "storePassword 'android'", "keyAlias 'androiddebugkey'",
-            "keyPassword 'android'"):
-    if tok not in t:
-        errs.append('build.gradle missing %r' % tok)
-if t.count('{') != t.count('}'):
-    errs.append('build.gradle brace balance broken (%d vs %d)'
-                % (t.count('{'), t.count('}')))
-if errs:
-    for e in errs:
-        print(' [FAIL] gradle: ' + e)
+
+def die(m):
+    print("[phase8][ERROR] " + m)
     sys.exit(1)
-print(' [ok] build.gradle: versionCode %s / 1.0-beta%s + stable debug signing intact'
-      % (new_vc, new_beta))
-P10M
-    if ! keytool -list -keystore app/debug.keystore -storepass android >/dev/null 2>&1; then
-        echo " [FAIL] app/debug.keystore not resolvable"
-        return 1
-    fi
-    if git check-ignore -q app/debug.keystore; then
-        echo " [FAIL] app/debug.keystore is gitignored"
-        return 1
-    fi
-    echo " [ok] app/debug.keystore valid and git-tracked"
 
-    # 12g: scope gate -- only the expected file set may appear in the diff
-    local bad
-    bad=$(git status --porcelain 2>/dev/null | cut -c4- | grep -Ev \
-'^(scripts/apply-changes\.sh|app/src/main/res/layout/image_editing_toolbar\.xml|app/src/main/res/drawable/ic_resize_24\.xml|app/src/main/res/layout/chroma_key_bottom_sheet_dialog\.xml|app/src/main/res/drawable/ic_mirror\.xml|app/src/main/res/drawable/ic_color_lens_24\.xml|app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity\.kt|app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView\.kt|app/src/main/java/com/tharunbirla/librecuts/customviews/ImageOverlayView\.kt|app/src/main/java/com/tharunbirla/librecuts/models/EditOperation\.kt|app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel\.kt|app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt\.kt|app/build\.gradle|\.github/workflows/apply-and-build\.yml|app/debug\.keystore)$' || true)
-    if [ -n "$bad" ]; then
-        echo " [FAIL] unexpected files in the working diff:"
-        echo "$bad"
-        return 1
-    fi
-    local untracked
-    untracked=$(git status --porcelain 2>/dev/null | grep '^??' | cut -c4- \
-                | grep -Ev '^(app/debug\.keystore|app/src/main/res/drawable/ic_resize_24\.xml)$' || true)
-    if [ -n "$untracked" ]; then
-        echo " [FAIL] unexpected untracked files (only ic_resize_24.xml / debug.keystore may be new):"
-        echo "$untracked"
-        return 1
-    fi
-    echo " [ok] change scope is exactly the expected file set"
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
 
-    # 12h: ASCII self-check
-    local ascii
-    ascii=$(LC_ALL=C grep -cP '[^\x00-\x7F]' "$SELF" 2>/dev/null || true)
-    if [ "${ascii:-0}" -ne 0 ]; then
-        echo " [FAIL] $SELF contains non-ASCII characters"
-        return 1
-    fi
-    echo " [ok] script is 100% pure ASCII"
-    return 0
-}
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
 
-# ---------------------------------------------------------------------------
-#  MAIN
-# ---------------------------------------------------------------------------
-echo "=========================================================="
-echo " Cutloss phase 10 -- overlay toolbar: remove Duplicate,"
-echo " Mirror and Chroma Key; add a Scale slider (5-500%) for"
-echo " the overlay size; version bump for in-place installs"
-echo "=========================================================="
-step0_preconditions || FAILED=1
-if [ "$FAILED" -eq 0 ]; then
-    step1_toolbar_layout    || FAILED=1
-    step2_resize_icon       || FAILED=1
-    step3_activity          || FAILED=1
-    step4_draggable_view    || FAILED=1
-    step5_operation_model   || FAILED=1
-    step6_viewmodel_ext     || FAILED=1
-    step7_viewmodel_ffmpeg  || FAILED=1
-    step8_preview_view      || FAILED=1
-    step9_delete_files      || FAILED=1
-    step10_version_bump     || FAILED=1
-    step11_workflow_trigger || FAILED=1
-else
-    echo " preconditions failed -- skipping the mutation steps"
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
+
+def sub(s, pat, new, n=1):
+    r, c = re.subn(pat, new, s)
+    if c != n:
+        die("sub count=%d expected=%d for: %s" % (c, n, pat[:90]))
+    return r
+
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
+
+def cut_between_re(s, a, b):
+    ma = re.search(a, s)
+    if not ma:
+        die("cut_between_re start miss: %s" % a[:70])
+    mb = re.compile(b).search(s, ma.end())
+    if not mb:
+        die("cut_between_re end miss: %s" % b[:70])
+    return s[:ma.start()] + s[mb.start():]
+
+def cut_fun(s, header):
+    i = s.find("    " + header)
+    if i < 0:
+        die("cut_fun miss: " + header)
+    j = s.find("{", i)
+    d = 0
+    k = j
+    while k < len(s):
+        if s[k] == "{":
+            d += 1
+        elif s[k] == "}":
+            d -= 1
+            if d == 0:
+                break
+        k += 1
+    if d != 0 or k >= len(s):
+        die("cut_fun unbalanced: " + header)
+    end = k + 1
+    if s[end:end + 1] == "\n":
+        end += 1
+        if s[end:end + 1] == "\n":
+            end += 1
+    start = i
+    if start >= 2 and s[start - 2:start] == "\n\n":
+        start -= 1
+    return s[:start] + s[end:]
+
+P = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+s = rd(P)
+
+if "R.id.btnText" not in s:
+    print("[phase8] step3: [skip] VEA already trimmed")
+    sys.exit(0)
+
+# ---------------- imports ----------------
+s = rep(s, "import com.tharunbirla.librecuts.customviews.DraggableTextOverlayView\n"
+           "import com.tharunbirla.librecuts.customviews.DraggableImageOverlayView\n"
+           "import com.tharunbirla.librecuts.customviews.ImageOverlayView\n", "")
+s = rep(s, "import com.tharunbirla.librecuts.models.TextPosition\n", "")
+
+# ---------------- fields ----------------
+s = rep(s, "    private lateinit var textTrackContainer: LinearLayout\n"
+           "    private lateinit var imageTrackContainer: LinearLayout\n", "")
+s = rep(s, "    private lateinit var btnMoveLayerUp: ImageButton\n"
+           "    private lateinit var btnMoveLayerDown: ImageButton\n", "")
+s = rep(s, "    private lateinit var previewLoadingOverlay: View\n", "")
+s = rep(s, "    private lateinit var btnPreview: ImageButton\n", "")
+s = rep(s, "    private var tvPreviewBadge: TextView? = null\n"
+           "    private var textOverlayView: com.tharunbirla.librecuts.customviews.TextOverlayView? = null\n", "")
+s = cut_between(s, "    private var bgPreviewImageView: ImageView? = null\n",
+                "    private val activeExtractionUris = mutableSetOf<Uri>()\n")
+# font field block (comment line contains non-ASCII dash -- use wildcards)
+s = sub(s, r"\n\n    // [^\n]*FONT: cached absolute path[^\n]*\n"
+            r"    // Populated in onCreate via ffmpegEngine\.copyFontToCache\(\)\.\n"
+            r"    // Passed to buildConsolidatedFFmpegCommand\(\) so drawtext can find the font\.\n"
+            r"    private var fontFilePath: String\? = null\n", "")
+# text/image editing state fields (keep isMagnetEnabled)
+s = rep(s, "    // Inline text editing state\n"
+           "    private var draggableTextOverlay: DraggableTextOverlayView? = null\n"
+           "    private var textEditingToolbar: View? = null\n"
+           "    private var isTextEditingActive = false\n"
+           "\n"
+           "    // Inline image overlay editing state\n"
+           "    private var draggableImageOverlay: DraggableImageOverlayView? = null\n"
+           "    private var imageOverlayView: ImageOverlayView? = null\n"
+           "    private var imageEditingToolbar: View? = null\n"
+           "    private var isImageEditingActive = false\n"
+           "    private var isMagnetEnabled = true\n",
+           "    private var isMagnetEnabled = true\n")
+s = rep(s, "    private var backgroundEditingToolbar: View? = null\n", "")
+s = rep(s, "    private var cropEditingToolbar: View? = null\n"
+           "    private var cropOverlayView: com.tharunbirla.librecuts.customviews.CropOverlayView? = null\n"
+           "    private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null\n\n", "")
+s = rep(s, "    private var keyframeEditingToolbar: View? = null\n"
+           "    private var isKeyframeEditingMode = false\n"
+           "    private var activeKeyframeProperty = \"Position\" // \"Position\", \"Opacity\", or \"Speed\"\n\n", "")
+s = sub(s, r"\n    // Segmented preview state\n"
+            r"    private var previewJob: Job\? = null\n"
+            r"    private var isShowingPreview = false\n"
+            r"    private var isRenderingPreview = false\n"
+            r"    private var previewFile: File\? = null\n"
+            r"    \n", "\n")
+s = cut_between(s, "    private var activeFontSelectionCallback: ((com.tharunbirla.librecuts.utils.FontItem) -> Unit)? = null\n",
+                "    private var photoSequencePreviewImageView: ImageView? = null\n")
+
+# ---------------- onCreate: font copy + text PNG renderer wiring ----------------
+s = cut_between_re(s,
+    r"        // [^\n]*Copy the bundled font from assets[^\n]*\n",
+    "        // Initialize UI components\n")
+
+# ---------------- initializeViews ----------------
+s = rep(s, "        bgPreviewImageView = findViewById(R.id.bgPreviewImageView)\n", "")
+s = rep(s, "        val canvasLayoutListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {\n"
+           "            triggerCanvasLayoutUpdate()\n"
+           "        }\n"
+           "        playerContainer.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n"
+           "        pipPlayerContainer.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n"
+           "        fullscreenCanvasHolder.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n\n", "")
+s = rep(s, "        previewLoadingOverlay = findViewById(R.id.previewLoadingOverlay)\n", "")
+s = rep(s, "        textTrackContainer = findViewById(R.id.textTrackContainer)\n"
+           "        imageTrackContainer = findViewById(R.id.imageTrackContainer)\n", "")
+# magnet listener: drop overlay snapping lines
+s = rep(s, "            draggableTextOverlay?.isSnappingEnabled = isMagnetEnabled\n"
+           "            draggableImageOverlay?.isSnappingEnabled = isMagnetEnabled\n", "")
+# layer reorder buttons
+s = rep(s, "        btnMoveLayerUp = findViewById(R.id.btnMoveLayerUp)\n"
+           "        btnMoveLayerDown = findViewById(R.id.btnMoveLayerDown)\n"
+           "        btnMoveLayerUp.setBounceClickListener {\n"
+           "            viewModel.selectedOperationId.value?.let { id ->\n"
+           "                viewModel.moveOverlayOperation(id, moveUp = true)\n"
+           "            }\n"
+           "        }\n"
+           "        btnMoveLayerDown.setBounceClickListener {\n"
+           "            viewModel.selectedOperationId.value?.let { id ->\n"
+           "                viewModel.moveOverlayOperation(id, moveUp = false)\n"
+           "            }\n"
+           "        }\n\n", "")
+# text/image overlay views + text toolbar + draggable image overlay + crop overlay (contiguous)
+s = cut_between(s, "        textOverlayView = try {\n", "        imageEditingToolbar = try {\n")
+# image editing toolbar setup
+s = cut_between(s, "        imageEditingToolbar = try {\n", "        videoEditingToolbar = try {\n")
+# crop + background + keyframe toolbar setups (contiguous)
+s = cut_between(s, "        cropEditingToolbar = try {\n",
+                "        findViewById<ImageButton>(R.id.btnHome)?.setBounceClickListener {\n")
+# tvPreviewBadge init
+s = rep(s, "        tvPreviewBadge = findViewById(R.id.tvPreviewBadge)\n\n", "")
+# tool button wirings: keep btnAudio only
+s = rep(s, "        // Tool Buttons with proper scoping\n"
+           "        findViewById<ImageButton>(R.id.btnText).setBounceClickListener {\n"
+           "            setActiveToolButton(R.id.btnText)\n"
+           "            textAction()\n"
+           "        }\n"
+           "        findViewById<ImageButton>(R.id.btnMediaOverlay)?.setBounceClickListener {\n"
+           "            setActiveToolButton(R.id.btnMediaOverlay)\n"
+           "            mediaOverlayAction()\n"
+           "        }\n"
+           "\n"
+           "        findViewById<ImageButton>(R.id.btnAudio).setBounceClickListener {\n",
+           "        // Tool Buttons with proper scoping\n"
+           "        findViewById<ImageButton>(R.id.btnAudio).setBounceClickListener {\n")
+s = rep(s, "        findViewById<ImageButton>(R.id.btnCrop).setBounceClickListener {\n"
+           "            setActiveToolButton(R.id.btnCrop)\n"
+           "            cropAction()\n"
+           "        }\n"
+           "\n"
+           "        findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {\n"
+           "            setActiveToolButton(R.id.btnCanvasBackground)\n"
+           "            canvasBackgroundAction()\n"
+           "        }\n\n", "")
+# undo/redo/preview block: drop btnPreview
+s = rep(s, "        try {\n"
+           "            btnUndo = findViewById(R.id.btnUndo)\n"
+           "            btnRedo = findViewById(R.id.btnRedo)\n"
+           "            btnPreview = findViewById(R.id.btnPreview)\n"
+           "            btnUndo.setBounceClickListener {\n"
+           "                if (isShowingPreview) dismissPreview()\n"
+           "                viewModel.undo()\n"
+           "            }\n"
+           "            btnRedo.setBounceClickListener {\n"
+           "                if (isShowingPreview) dismissPreview()\n"
+           "                viewModel.redo()\n"
+           "            }\n"
+           "            btnPreview.setBounceClickListener {\n"
+           "                if (isShowingPreview) {\n"
+           "                    dismissPreview()\n"
+           "                } else {\n"
+           "                    renderSegmentedPreview()\n"
+           "                }\n"
+           "            }\n"
+           "        } catch (e: Exception) {\n"
+           "            Log.d(TAG, \"Undo/Redo/Preview buttons not found in layout (optional)\")\n"
+           "        }\n",
+           "        try {\n"
+           "            btnUndo = findViewById(R.id.btnUndo)\n"
+           "            btnRedo = findViewById(R.id.btnRedo)\n"
+           "            btnUndo.setBounceClickListener {\n"
+           "                viewModel.undo()\n"
+           "            }\n"
+           "            btnRedo.setBounceClickListener {\n"
+           "                viewModel.redo()\n"
+           "            }\n"
+           "        } catch (e: Exception) {\n"
+           "            Log.d(TAG, \"Undo/Redo buttons not found in layout (optional)\")\n"
+           "        }\n")
+
+# ---------------- updateUIInteractionState ----------------
+s = rep(s, "        val isBusy = uiState.isExporting || isRenderingPreview\n"
+           "        \n"
+           "        if (::previewLoadingOverlay.isInitialized) {\n"
+           "            previewLoadingOverlay.visibility = if (isRenderingPreview) View.VISIBLE else View.GONE\n"
+           "        }\n"
+           "        \n",
+           "        val isBusy = uiState.isExporting\n")
+s = cut_between(s, "        if (::btnPreview.isInitialized) {\n",
+                "        customVideoSeeker.isEnabled = !isBusy\n")
+
+# ---------------- setActiveToolButton ----------------
+s = rep(s, "    private fun setActiveToolButton(activeId: Int) {\n"
+           "        if (isShowingPreview) dismissPreview()\n"
+           "        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnCanvasBackground)\n",
+           "    private fun setActiveToolButton(activeId: Int) {\n"
+           "        val toolIds = listOf(R.id.btnAudio)\n")
+
+# ---------------- observeViewModelState ----------------
+s = rep(s,
+    "            viewModel.selectedOperationId.collect { selectedId ->\n"
+    "                if (selectedId != null && isShowingPreview) dismissPreview()\n"
+    "                textOverlayView?.hiddenOperationId = selectedId\n"
+    "                imageOverlayView?.hiddenOperationId = selectedId\n"
+    "                \n"
+    "                if (selectedId != null) {\n"
+    "                    if (isKeyframeEditingMode) {\n"
+    "                        exitKeyframeEditingMode()\n"
+    "                    }\n"
+    "\n"
+    "                    // Reset editing modes to prevent multiple active editing toolbars/states\n"
+    "                    draggableTextOverlay?.deactivate()\n"
+    "                    draggableImageOverlay?.deactivate()\n"
+    "                    exitTextEditingMode()\n"
+    "                    exitImageEditingMode()\n"
+    "\n"
+    "                    val op = viewModel.project.value?.operations?.find {\n"
+    "                        when (it) {\n"
+    "                            is EditOperation.AddText -> it.id == selectedId\n"
+    "                            is EditOperation.AddImageOverlay -> it.id == selectedId\n"
+    "                            is EditOperation.AddBackgroundAudio -> it.id == selectedId\n"
+    "                            else -> false\n"
+    "                        }\n"
+    "                    }\n"
+    "                    when (op) {\n"
+    "                        is EditOperation.AddText -> {\n"
+    "                            draggableTextOverlay?.activateForEdit(op)\n"
+    "                            enterTextEditingMode(isReEditing = true)\n"
+    "                        }\n"
+    "                        is EditOperation.AddImageOverlay -> {\n"
+    "                            draggableImageOverlay?.activateForEdit(op)\n"
+    "                            enterImageEditingModeForEdit(op.rotationAngle)\n"
+    "                        }\n"
+    "                        is EditOperation.AddBackgroundAudio -> {\n"
+    "                            enterAudioEditingMode(op)\n"
+    "                        }\n"
+    "                        else -> {}\n"
+    "                    }\n"
+    "                } else {\n"
+    "                    draggableTextOverlay?.deactivate()\n"
+    "                    draggableImageOverlay?.deactivate()\n"
+    "                    exitTextEditingMode()\n"
+    "                    exitImageEditingMode()\n"
+    "                    exitAudioEditingMode()\n"
+    "                }\n"
+    "                \n"
+    "                // Re-render tracks so the selection highlight updates\n"
+    "                viewModel.project.value?.let { renderTracks(it) }\n"
+    "                updateLayerReorderButtons()\n"
+    "            }\n",
+    "            viewModel.selectedOperationId.collect { selectedId ->\n"
+    "                if (selectedId != null) {\n"
+    "                    val op = viewModel.project.value?.operations?.find {\n"
+    "                        when (it) {\n"
+    "                            is EditOperation.AddBackgroundAudio -> it.id == selectedId\n"
+    "                            else -> false\n"
+    "                        }\n"
+    "                    }\n"
+    "                    when (op) {\n"
+    "                        is EditOperation.AddBackgroundAudio -> {\n"
+    "                            enterAudioEditingMode(op)\n"
+    "                        }\n"
+    "                        else -> {}\n"
+    "                    }\n"
+    "                } else {\n"
+    "                    exitAudioEditingMode()\n"
+    "                }\n"
+    "                \n"
+    "                // Re-render tracks so the selection highlight updates\n"
+    "                viewModel.project.value?.let { renderTracks(it) }\n"
+    "            }\n")
+# project collector: text/image/crop/canvas blocks
+s = cut_between(s, "                    textOverlayView?.let { overlay ->\n",
+                "                    renderTracks(project)\n")
+s = rep(s, "                    renderTracks(project)\n                    updateLayerReorderButtons()\n",
+           "                    renderTracks(project)\n")
+
+# ---------------- whole function cuts ----------------
+# setupTextFontSelector + showFontManagerBottomSheet (contiguous, before saveProjectLauncher)
+s = cut_between(s, "    private fun setupTextFontSelector(formatContainer: View?) {\n",
+                "    private val saveProjectLauncher = registerForActivityResult(\n")
+for h in [
+    "private fun updateLayerReorderButtons(",
+    "private fun applyCropPreview(",
+    "private fun resetCropPreview(",
+    "private fun cropAction(",
+    "private fun canvasBackgroundAction(",
+    "private fun enterCanvasBackgroundEditingMode(",
+    "private fun exitCanvasBackgroundEditingMode(",
+    "private fun textAction(",
+    "private fun enterTextEditingMode(",
+    "private fun exitTextEditingMode(",
+    "private fun duplicateSelectedOverlay(",
+    "private fun pickBackgroundImage(",
+    "private fun mediaOverlayAction(",
+    "private fun openImagePicker(",
+    "private fun showImageOverlayConfig(",
+    "private fun getExtensionFromUri(",
+    "private fun getOverlayFileDurationMs(",
+    "private fun enterImageEditingMode(",
+    "private fun enterImageEditingModeForEdit(",
+    "private fun exitImageEditingMode(",
+    "private fun getPresetCropBounds(",
+    "private fun enterCropEditingMode(",
+    "private fun exitCropEditingMode(",
+    "private fun updateCanvasBackgroundPreview(",
+    "private fun updateCropUi(",
+]:
+    s = cut_fun(s, h)
+
+# closeActiveEditingModes: keep video/audio toolbars only
+s = rep(s,
+    "    private fun closeActiveEditingModes() {\n"
+    "        if (isTextEditingActive) {\n"
+    "            draggableTextOverlay?.commitText()\n"
+    "            isTextEditingActive = false\n"
+    "        }\n"
+    "        if (isImageEditingActive) {\n"
+    "            draggableImageOverlay?.commitImage()\n"
+    "            isImageEditingActive = false\n"
+    "        }\n"
+    "        textEditingToolbar?.visibility = View.GONE\n"
+    "        imageEditingToolbar?.visibility = View.GONE\n"
+    "        videoEditingToolbar?.visibility = View.GONE\n"
+    "        audioEditingToolbar?.visibility = View.GONE\n"
+    "        cropEditingToolbar?.visibility = View.GONE\n"
+    "        backgroundEditingToolbar?.visibility = View.GONE\n"
+    "    }\n",
+    "    private fun closeActiveEditingModes() {\n"
+    "        videoEditingToolbar?.visibility = View.GONE\n"
+    "        audioEditingToolbar?.visibility = View.GONE\n"
+    "    }\n")
+
+# clearProjectAndShowImportScreen: drop text/image mode exits
+s = rep(s, "        // Hide toolbars\n"
+           "        exitVideoEditingMode()\n"
+           "        exitAudioEditingMode()\n"
+           "        exitImageEditingMode()\n"
+           "        exitTextEditingMode()\n",
+           "        // Hide toolbars\n"
+           "        exitVideoEditingMode()\n"
+           "        exitAudioEditingMode()\n")
+
+# onActivityResult: drop PICK_IMAGE + PICK_BACKGROUND_IMAGE branches
+s = rep(s, "        } else if (requestCode == PICK_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {\n"
+           "            data?.data?.let { imageUri ->\n"
+           "                showImageOverlayConfig(imageUri)\n"
+           "            }\n", "")
+s = cut_between(s, " else if (requestCode == PICK_BACKGROUND_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {\n",
+                "\n    }\n\n    private fun audioAction() {")
+
+# saveAction: commit/preview/font plumbing
+s = rep(s, "    /**\n"
+           "     * SAVE/EXPORT: Consolidates all pending operations into a single FFmpeg command and runs it.\n"
+           "     *\n"
+           "     * KEY FIX: fontFilePath (populated in onCreate from assets/fonts/Roboto-Regular.ttf)\n"
+           "     * is now passed to buildConsolidatedFFmpegCommand so drawtext gets a valid fontfile= path.\n"
+           "     */\n",
+           "    /**\n"
+           "     * SAVE/EXPORT: Consolidates all pending operations into a single FFmpeg command and runs it.\n"
+           "     */\n")
+s = rep(s, "        commitActiveEditsIfAny()\n"
+           "        if (isShowingPreview) dismissPreview()\n"
+           "        val project = viewModel.project.value\n",
+           "        val project = viewModel.project.value\n")
+s = sub(s, r"\n        // Warn but don[^\n]*\n"
+            r"        if \(fontFilePath == null\) \{\n"
+            r"            Log\.w\(TAG, \"fontFilePath is null[^\n]*\n"
+            r"                    \"Check that assets/fonts/Roboto-Regular\.ttf exists[^\n]*\n"
+            r"        \}\n", "")
+s = rep(s, "                    fontFilePath = fontFilePath,\n", "")
+
+# export dialogs
+s = rep(s, "        commitActiveEditsIfAny()\n"
+           "        if (isShowingPreview) dismissPreview()\n"
+           "\n"
+           "        ExportSettingsDialog(\n",
+           "        ExportSettingsDialog(\n")
+s = rep(s, "            fontPath = fontFilePath,\n", "")
+s = rep(s, "    private fun showQualitySettingsDialog() {\n"
+           "        commitActiveEditsIfAny()\n"
+           "        if (isShowingPreview) dismissPreview()\n"
+           "        val bottomSheetDialog = BottomSheetDialog(this)\n",
+           "    private fun showQualitySettingsDialog() {\n"
+           "        val bottomSheetDialog = BottomSheetDialog(this)\n")
+
+# setupExoPlayer STATE_ENDED guard
+s = rep(s, "                        stopProgressUpdater()\n"
+           "                        if (isShowingPreview) dismissPreview()\n",
+           "                        stopProgressUpdater()\n")
+
+# syncUiWithPlayer: overlay positions + keyframes + canvas blur
+s = rep(s, "            textOverlayView?.currentPositionMs = currentGlobalPos\n"
+           "            imageOverlayView?.currentPositionMs = currentGlobalPos\n"
+           "\n"
+           "            if (isKeyframeEditingMode) {\n"
+           "                updateDraggableOverlayFromKeyframes(currentGlobalPos)\n"
+           "            }\n\n", "")
+s = cut_between(s, "            if (activeClipIndex != lastActiveClipIndexForBlur) {\n",
+                "            // Real-time transition preview overlay update\n")
+
+# seekToGlobalPosition: overlay positions + keyframes
+s = rep(s, "        textOverlayView?.currentPositionMs = globalPos\n"
+           "        imageOverlayView?.currentPositionMs = globalPos\n"
+           "\n"
+           "        if (isKeyframeEditingMode) {\n"
+           "            updateDraggableOverlayFromKeyframes(globalPos)\n"
+           "        }\n", "")
+
+# performRenderTracks: track container widths + overlay tracks + keyframe cues
+s = rep(s, "        textTrackContainer.layoutParams = textTrackContainer.layoutParams.apply {\n"
+           "            width = timelineWidth\n"
+           "        }\n"
+           "        imageTrackContainer.layoutParams = imageTrackContainer.layoutParams.apply {\n"
+           "            width = timelineWidth\n"
+           "        }\n", "")
+s = cut_between(s, "        // Combined Text and Image tracks (Overlays) in Z-order stack\n",
+                "        // Audio tracks\n")
+s = cut_between(s, "        // Keyframe cues tracks\n",
+                "        if (activeExtractionCount == 0 && isImportLoading) {\n")
+
+# trim dialog + custom seeker preview guards
+s = rep(s, "    private fun showVideoSegmentTrimDialog(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {\n"
+           "        if (isShowingPreview) dismissPreview()\n",
+           "    private fun showVideoSegmentTrimDialog(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {\n")
+s = rep(s, "        customVideoSeeker.onSeekListener = { seekPosition ->\n"
+           "            // Dismiss preview when user manually seeks\n"
+           "            if (isShowingPreview) dismissPreview()\n",
+           "        customVideoSeeker.onSeekListener = { seekPosition ->\n")
+# setupCustomSeeker: overlay time sync
+s = rep(s, "                updateDurationDisplay(newSeekTime.toInt(), totalDuration.toInt())\n"
+           "                \n"
+           "                textOverlayView?.currentPositionMs = newSeekTime\n"
+           "                imageOverlayView?.currentPositionMs = newSeekTime\n",
+           "                updateDurationDisplay(newSeekTime.toInt(), totalDuration.toInt())\n")
+
+# fullscreen canvas: drop crop-aware layout trigger
+s = rep(s, "        }\n"
+           "        targetContainer.post {\n"
+           "            triggerCanvasLayoutUpdate()\n"
+           "        }\n"
+           "    }\n",
+           "        }\n"
+           "    }\n")
+s = cut_fun(s, "private fun triggerCanvasLayoutUpdate(")
+
+# segmented preview rendering block (comment + renderSegmentedPreview + dismissPreview)
+def cut_re_lit(s, a, b):
+    ma = re.search(a, s)
+    if not ma:
+        die("cut_re_lit start miss: %s" % a[:70])
+    j = s.find(b, ma.end())
+    if j < 0:
+        die("cut_re_lit end miss: %r" % b[:70])
+    return s[:ma.start()] + s[j:]
+s = cut_re_lit(s, r"    // [^\n]*Segmented Preview Rendering[^\n]*\n",
+               "    override fun onPause() {\n")
+
+# onPause / onDestroy preview + overlay cleanup
+s = rep(s, "        frameExtractionJob?.cancel()\n"
+           "        previewJob?.cancel()\n"
+           "    }\n"
+           "\n"
+           "    override fun onDestroy() {\n",
+           "        frameExtractionJob?.cancel()\n"
+           "    }\n"
+           "\n"
+           "    override fun onDestroy() {\n")
+s = rep(s, "        frameExtractionJob?.cancel()\n"
+           "        previewJob?.cancel()\n"
+           "        clearFrameCache()\n"
+           "        extractedFrames.forEach { if (!it.isRecycled) it.recycle() }\n"
+           "        draggableTextOverlay?.deactivate()\n"
+           "        draggableImageOverlay?.deactivate()\n"
+           "        previewFile?.delete()\n"
+           "        super.onDestroy()\n",
+           "        frameExtractionJob?.cancel()\n"
+           "        clearFrameCache()\n"
+           "        extractedFrames.forEach { if (!it.isRecycled) it.recycle() }\n"
+           "        super.onDestroy()\n")
+
+# palette fields + functions
+s = cut_between(s, "    private val textPalettePresets = listOf(\n",
+                "    private fun markPaletteSelection(container: LinearLayout, selectedTag: String?) {\n")
+for h in [
+    "private fun markPaletteSelection(",
+    "private fun buildTextPaletteRow(",
+    "private fun setupColorPicker(",
+    "private fun setupBgColorPicker(",
+    "private fun setupStrokeColorPicker(",
+    "private fun setupShadowColorPicker(",
+    "private fun updateActiveBoundaries(",
+    "private fun showChromaKeyDialog(",
+    "private fun showCustomColorPicker(",
+    "private fun commitActiveEditsIfAny(",
+    "private fun enterKeyframeEditingMode(",
+    "private fun exitKeyframeEditingMode(",
+    "private fun showKeyframePropertyMenu(",
+    "private fun handleKeyframeActionClick(",
+    "private fun handleKeyframeSliderChange(",
+    "private fun updateKeyframeActionButtonState(",
+    "private fun updateDraggableOverlayFromKeyframes(",
+    "private fun interpolateKeyframes(",
+    "private fun interpolateKeyframePosition(",
+]:
+    s = cut_fun(s, h)
+
+# getSnapTargetsMs: drop text/image overlay snap targets
+s = rep(s, "                is EditOperation.AddText -> {\n"
+           "                    op.startTimeMs?.let { targets.add(it) }\n"
+           "                    op.endTimeMs?.let { targets.add(it) }\n"
+           "                }\n"
+           "                is EditOperation.AddImageOverlay -> {\n"
+           "                    op.startTimeMs?.let { targets.add(it) }\n"
+           "                    op.endTimeMs?.let { targets.add(it) }\n"
+           "                }\n", "")
+
+# companion constants
+s = rep(s, "        private const val PICK_AUDIO_REQUEST = 2\n"
+           "        private const val PICK_IMAGE_REQUEST = 3\n"
+           "        private const val PICK_DIRECTORY_REQUEST = 5\n"
+           "        private const val PICK_BACKGROUND_IMAGE_REQUEST = 6\n",
+           "        private const val PICK_AUDIO_REQUEST = 2\n"
+           "        private const val PICK_DIRECTORY_REQUEST = 5\n")
+
+wr(P, s)
+print("[phase8] step3: [ok] VideoEditingActivity.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 4 -- VideoEditingViewModel.kt surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
+
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
+
+def cut_between_re(s, a, b):
+    ma = re.search(a, s)
+    if not ma:
+        die("cut_between_re start miss: %s" % a[:70])
+    mb = re.compile(b).search(s, ma.end())
+    if not mb:
+        die("cut_between_re end miss: %s" % b[:70])
+    return s[:ma.start()] + s[mb.start():]
+
+P = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
+s = rd(P)
+
+if "buildVideoFilterStages" not in s:
+    print("[phase8] step4: [skip] ViewModel already trimmed")
+    sys.exit(0)
+
+# import
+s = rep(s, "import com.tharunbirla.librecuts.models.TextPosition\n", "")
+
+# filter helper block: buildCropFilterExpr (with doc)
+s = cut_between(s, "    /** Build a crop filter expression for an aspect ratio. */\n",
+                "    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).\n")
+# textPng fields + prepare + overlayPosExpr + drawtext + interpolation + color + enable + buildVideoFilterStages
+s = cut_between(s, "    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).\n",
+                "    /**\n     * Build the consolidated FFmpeg command for final export.\n")
+
+# buildConsolidatedFFmpegCommand signature + doc
+s = rep(s, "     * Uses -filter_complex with explicit stream labels so each filter stage\n"
+           "     * receives the correct input dimensions (e.g., drawtext after crop uses\n"
+           "     * post-crop resolution).\n",
+           "     * Uses -filter_complex with explicit stream labels so each filter stage\n"
+           "     * receives the correct input dimensions.\n")
+s = rep(s, "     * @param outputFilePath  Absolute path for the exported video.\n"
+           "     * @param fontFilePath    Absolute path to a TTF font file (from assets via copyFontToCache).\n"
+           "     *                        Required for text overlays to render on Android.\n",
+           "     * @param outputFilePath  Absolute path for the exported video.\n")
+s = rep(s, "    fun buildConsolidatedFFmpegCommand(\n"
+           "        sourceFilePath: String,\n"
+           "        outputFilePath: String,\n"
+           "        fontFilePath: String? = null,\n"
+           "        context: Context? = null\n",
+           "    fun buildConsolidatedFFmpegCommand(\n"
+           "        sourceFilePath: String,\n"
+           "        outputFilePath: String,\n"
+           "        context: Context? = null\n")
+# density + source dimensions block
+s = cut_between(s, "        val density = context?.resources?.displayMetrics?.density ?: 1.0f\n",
+                "        if (currentProject.operations.isEmpty()) {\n")
+# op collection: drop nonMergeOps/videoOps/imageOps/prepareTextPngInputs
+s = rep(s, "        val nonMergeOps = operations.filterNot { it is EditOperation.Merge }\n", "")
+s = rep(s, "        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay }\n"
+           "        val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()\n"
+           "        // Render text overlay PNGs before inputs are indexed\n"
+           "        prepareTextPngInputs(operations)\n", "")
+# input indexing: image overlays + text PNGs + canvas background image
+s = cut_between_re(s, r"        // 4\. Image Overlay Inputs[^\n]*\n",
+                   r"\n        // [^\n]*MERGE PATH")
+# merge path: background/padding block -> plain black padding
+s = cut_between_re(s, r"                // 2\. Apply background/padding\n",
+                   r"                val isClipMuted = operations\.filterIsInstance<EditOperation\.MuteClip>\(\)\.find \{ it\.index == i \}\?\.isMuted \?: false\n")
+s = rep(s, "                val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false\n",
+           "                // 2. Apply background/padding (solid black behind letterboxed clips)\n"
+           "                filterParts.add(\"color=c=black:s=${mainWidth}x${mainHeight}:r=30[bg$i]\")\n"
+           "                filterParts.add(\"[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]\")\n"
+           "                filterParts.add(\"[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]\")\n"
+           "\n"
+           "                val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false\n")
+# merge path: buildVideoFilterStages call -> direct output scale
+s = rep(s, "            val (sourceVideoStages, tempVideoLabel) = buildVideoFilterStages(\n"
+           "                operations = videoOps,\n"
+           "                fontFilePath = fontFilePath,\n"
+           "                inputLabel = currentVideoLabel,\n"
+           "                imageInputIndices = imageInputIndices,\n"
+           "                textInputIndices = textInputIndices,\n"
+           "                density = density,\n"
+           "                sourceVideoHeight = sourceVideoHeight\n"
+           "            )\n"
+           "            filterParts.addAll(sourceVideoStages)\n"
+           "            val finalVideoLabel = \"[fmtv]\"\n"
+           "            filterParts.add(buildOutputScaleFilter(tempVideoLabel, finalVideoLabel))\n",
+           "            val finalVideoLabel = \"[fmtv]\"\n"
+           "            filterParts.add(buildOutputScaleFilter(currentVideoLabel, finalVideoLabel))\n")
+# non-merge path: label + video filter stages call
+s = cut_between_re(s, r"        var currentInputVideoLabel = \"\[0:v\]\"\n",
+                   r"\n        // [^\n]*Audio filter stages")
+# non-merge assembly: hasVideoFilters always false now
+s = rep(s, "        val hasVideoFilters = videoStages.isNotEmpty()\n"
+           "        val hasAudioFilters = finalAudioLabel != null\n"
+           "\n"
+           "        if (hasVideoFilters || hasAudioFilters) {\n"
+           "            var mappedVideoLabel = finalVideoLabel\n"
+           "            if (hasVideoFilters) {\n"
+           "                val fmtLabel = \"[fmtv]\"\n"
+           "                filterComplexParts.add(buildOutputScaleFilter(finalVideoLabel, fmtLabel))\n"
+           "                mappedVideoLabel = fmtLabel\n"
+           "            }\n"
+           "            \n"
+           "            if (_exportAudioOnly.value && hasVideoFilters) {\n"
+           "                filterComplexParts.add(\"${mappedVideoLabel}nullsink\")\n"
+           "            }\n"
+           "            \n"
+           "            cmd.append(\" -filter_complex \\\"${filterComplexParts.joinToString(\";\")}\\\"\")\n"
+           "\n"
+           "            if (!_exportAudioOnly.value) {\n"
+           "                if (hasVideoFilters) {\n"
+           "                    cmd.append(\" -map \\\"$mappedVideoLabel\\\"\")\n"
+           "                } else {\n"
+           "                    cmd.append(\" -map 0:v\")\n"
+           "                }\n"
+           "            }\n"
+           "\n"
+           "            if (effectiveAudioMuted) {\n"
+           "                cmd.append(\" -an\")\n"
+           "            } else if (hasAudioFilters) {\n"
+           "                cmd.append(\" -map \\\"$finalAudioLabel\\\"\")\n"
+           "            } else {\n"
+           "                cmd.append(\" -map 0:a?\")\n"
+           "            }\n"
+           "        } else {\n",
+           "        val hasAudioFilters = finalAudioLabel != null\n"
+           "\n"
+           "        if (hasAudioFilters) {\n"
+           "            cmd.append(\" -filter_complex \\\"${filterComplexParts.joinToString(\";\")}\\\"\")\n"
+           "\n"
+           "            if (!_exportAudioOnly.value) {\n"
+           "                cmd.append(\" -map 0:v\")\n"
+           "            }\n"
+           "\n"
+           "            if (effectiveAudioMuted) {\n"
+           "                cmd.append(\" -an\")\n"
+           "            } else {\n"
+           "                cmd.append(\" -map \\\"$finalAudioLabel\\\"\")\n"
+           "            }\n"
+           "        } else {\n")
+# codec section: hasVideoFilters branch
+s = rep(s, "            if (!hasVideoFilters) {\n"
+           "                val vfArgs = buildOutputVfArgs()\n"
+           "                cmd.append(\" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}\")\n"
+           "                if (vfArgs.isNotEmpty()) cmd.append(\" $vfArgs\")\n"
+           "            } else {\n"
+           "                cmd.append(\" ${buildVideoCodecArgs(defaultEncoder)}\")\n"
+           "            }\n",
+           "            val vfArgs = buildOutputVfArgs()\n"
+           "            cmd.append(\" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}\")\n"
+           "            if (vfArgs.isNotEmpty()) cmd.append(\" $vfArgs\")\n")
+
+# buildPreviewCommand (with doc)
+s = cut_between(s, "    /**\n     * Build an FFmpeg command for a fast 3-second preview around the playhead.\n",
+                "    private fun copyContentUriToTempFile(context: Context, uri: Uri): String? {\n")
+
+wr(P, s)
+print("[phase8] step4: [ok] VideoEditingViewModel.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 5 -- VideoEditingViewModelExt.kt surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
+
+P = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
+s = rd(P)
+
+if "addTextOperation" not in s:
+    print("[phase8] step5: [skip] Ext already trimmed")
+    sys.exit(0)
+
+# import
+s = s.replace("import com.tharunbirla.librecuts.models.TextPosition\n", "")
+# addCropOperation + updateCanvasBackgroundOperation + addTextOperation (contiguous)
+s = cut_between(s, "fun VideoEditingViewModel.addCropOperation(\n",
+                "fun VideoEditingViewModel.updateMergeItemTrim(index: Int, startMs: Long, endMs: Long) {\n")
+# addImageOverlayOperation
+s = cut_between(s, "fun VideoEditingViewModel.addImageOverlayOperation(\n",
+                "fun VideoEditingViewModel.addOperation(operation: EditOperation) {\n")
+# moveOverlayOperation
+s = cut_between(s, "fun VideoEditingViewModel.moveOverlayOperation(id: String, moveUp: Boolean) {\n",
+                "fun VideoEditingViewModel.setScrubProxyUri(dependencyId: String, proxyUri: Uri) {\n")
+
+wr(P, s)
+print("[phase8] step5: [ok] VideoEditingViewModelExt.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 6 -- FFmpegRenderEngine.kt surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
+
+def cut_between_re(s, a, b):
+    ma = re.search(a, s)
+    if not ma:
+        die("cut_between_re start miss: %s" % a[:70])
+    mb = re.compile(b).search(s, ma.end())
+    if not mb:
+        die("cut_between_re end miss: %s" % b[:70])
+    return s[:ma.start()] + s[mb.start():]
+
+P = "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
+s = rd(P)
+
+if "copyFontToCache" not in s:
+    print("[phase8] step6: [skip] Engine already trimmed")
+    sys.exit(0)
+
+# class doc: drop FONT NOTE section (comment contains non-ASCII dash -> regex)
+s = cut_between_re(s, r" \*\n \* FONT NOTE:\n", r" \*/\n")
+# init block: system font directory probing
+s = cut_between_re(s,
+    r"        // System fonts as a last-resort fallback[^\n]*\n"
+    r"        // Always supply an explicit fontFilePath[^\n]*\n"
+    r"        // Probe multiple vendor font directories[^\n]*\n"
+    r"        val fontDir = listOf\(",
+    r"        // Register a global log callback")
+# font helper section (section comment + doc + copyFontToCache)
+s = cut_between_re(s, r"    // [^\n]*Font helper[^\n]*\n", r"    // [^\n]*Core execution")
+# renderCropPreview + renderTextPreview (with doc); section marker has non-ASCII dashes -> regex end
+def cut_lit_re(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_lit_re start miss: %r" % a[:70])
+    mb = re.compile(b).search(s, i + len(a))
+    if not mb:
+        die("cut_lit_re end miss: %s" % b[:70])
+    return s[:i] + s[mb.start():]
+s = cut_lit_re(s, "    suspend fun renderCropPreview(\n", r"    // [^\n]*Full-quality operations")
+# cropVideo + addTextOverlay (with doc)
+s = cut_between(s, "    suspend fun cropVideo(\n",
+                "    suspend fun addBackgroundAudio(\n")
+# buildDrawtextFilter (with doc) + buildCropFilter
+s = cut_between(s, "    /**\n     * Build a drawtext filter string.\n",
+                "    /**\n     * Extract the output file path from an FFmpeg command.\n")
+# misplaced extractOutputPath doc + generateVideoFromImage + generateVideoFromGif
+s = cut_between(s, "    /**\n     * Extract the output file path from an FFmpeg command.\n",
+                "    /**\n     * Resolve any URI to a plain file-system path that FFmpeg can read.\n")
+
+wr(P, s)
+print("[phase8] step6: [ok] FFmpegRenderEngine.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 7 -- ProjectSerializer.kt surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
+
+P = "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt"
+s = rd(P)
+
+if '"AddText" -> EditOperation.AddText::class.java' not in s:
+    print("[phase8] step7: [skip] Serializer already trimmed")
+    sys.exit(0)
+
+# valid classes
+s = rep(s, 'val validClasses = setOf("Trim", "SpeedMain", "Crop", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay", "CanvasBackground")\n',
+           'val validClasses = setOf("Trim", "SpeedMain", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio")\n')
+# drop the colorHex/blurRadius heuristic
+s = rep(s, "                    if (jsonObject.has(\"durationMs\") && jsonObject.has(\"index\") && !jsonObject.has(\"items\")) {\n"
+           "                        opTypeStr = \"Transition\"\n"
+           "                    } else if (jsonObject.has(\"colorHex\") && jsonObject.has(\"blurRadius\")) {\n"
+           "                        opTypeStr = \"CanvasBackground\"\n"
+           "                    } else {\n"
+           "                        opTypeStr = typeVal\n"
+           "                    }\n",
+           "                    if (jsonObject.has(\"durationMs\") && jsonObject.has(\"index\") && !jsonObject.has(\"items\")) {\n"
+           "                        opTypeStr = \"Transition\"\n"
+           "                    } else {\n"
+           "                        opTypeStr = typeVal\n"
+           "                    }\n")
+# soften missing-type into graceful skip instead of throwing
+s = rep(s, "            val type = opTypeStr ?: throw JsonParseException(\"Missing type property in EditOperation\")\n",
+           "            val type = opTypeStr\n"
+           "            if (type == null) {\n"
+           "                android.util.Log.w(\"ProjectSerializer\", \"Skipping EditOperation with missing type property\")\n"
+           "                return EditOperation.MuteAudio(\"skipped_unknown_null\")\n"
+           "            }\n")
+# drop CanvasBackground backgroundType remap
+s = rep(s, "            } else if (type == \"CanvasBackground\") {\n"
+           "                val t = jsonObject.get(\"type\")?.asString\n"
+           "                if (t != null && t != \"CanvasBackground\") {\n"
+           "                     jsonObject.addProperty(\"backgroundType\", t)\n"
+           "                } else if (!jsonObject.has(\"backgroundType\")) {\n"
+           "                     jsonObject.addProperty(\"backgroundType\", \"COLOR\")\n"
+           "                }\n"
+           "            }\n",
+           "            }\n")
+# class mapping branches
+s = rep(s, '                "Crop" -> EditOperation.Crop::class.java\n', "")
+s = rep(s, '                "AddText" -> EditOperation.AddText::class.java\n', "")
+s = rep(s, '                "AddImageOverlay" -> EditOperation.AddImageOverlay::class.java\n', "")
+s = rep(s, '                "CanvasBackground" -> EditOperation.CanvasBackground::class.java\n', "")
+# JsonParseException import now unused
+s = rep(s, "import com.google.gson.JsonParseException\n", "")
+
+wr(P, s)
+print("[phase8] step7: [ok] ProjectSerializer.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 8 -- ProjectImportActivity.kt surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
+
+def cut_between(s, a, b):
+    i = s.find(a)
+    if i < 0:
+        die("cut_between start miss: %r" % a[:70])
+    j = s.find(b, i + len(a))
+    if j < 0:
+        die("cut_between end miss: %r" % b[:70])
+    return s[:i] + s[j:]
+
+P = "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
+s = rd(P)
+
+if "AddImageOverlay" not in s:
+    print("[phase8] step8: [skip] ProjectImportActivity already trimmed")
+    sys.exit(0)
+
+# dependency scan branch
+s = cut_between(s, "                is EditOperation.AddImageOverlay -> {\n",
+                "                else -> {}\n")
+# remap branch
+s = rep(s, "                    is EditOperation.AddImageOverlay -> {\n"
+           "                        val dep = dependencies.find { it.operationId == op.id }\n"
+           "                        if (dep != null && dep.currentUri != null) op.copy(imageUri = dep.currentUri!!) else op\n"
+           "                    }\n", "")
+
+wr(P, s)
+print("[phase8] step8: [ok] ProjectImportActivity.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 9 -- ExportSettingsDialog.kt: drop fontPath plumbing
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def wr(p, s):
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def rep(s, old, new, n=1):
+    c = s.count(old)
+    if c != n:
+        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
+    return s.replace(old, new)
+
+P = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+s = rd(P)
+
+if "fontPath" not in s:
+    print("[phase8] step9: [skip] ExportSettingsDialog already trimmed")
+    sys.exit(0)
+
+s = rep(s, "    private val fontPath: String?,\n", "")
+s = rep(s, "            viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, fontPath, activity)\n",
+           "            viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, activity)\n")
+
+wr(P, s)
+print("[phase8] step9: [ok] ExportSettingsDialog.kt trimmed")
+CUTPY
+
+###############################################################################
+# Step 10 -- activity_video_editing.xml surgery
+###############################################################################
+python3 <<'CUTPY'
+import re, sys
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+P = "app/src/main/res/layout/activity_video_editing.xml"
+with open(P, encoding="utf-8") as f:
+    s = f.read()
+
+if 'android:id="@+id/btnText"' not in s:
+    print("[phase8] step10: [skip] layout already trimmed")
+    sys.exit(0)
+
+def elem_bounds(s, id_attr):
+    m = re.search(r'android:id="@\+id/%s"' % re.escape(id_attr), s)
+    if not m:
+        die("xml id miss: " + id_attr)
+    i = s.rfind("<", 0, m.start())
+    tag = re.compile(r"<([A-Za-z][A-Za-z0-9._]*)").match(s, i).group(1)
+    depth = 0
+    end = -1
+    for mt in re.compile(r"<%s(?:\s[^<>]*)?/?>|</%s\s*>" % (re.escape(tag), re.escape(tag))).finditer(s, i):
+        tok = mt.group(0)
+        if tok.startswith("</"):
+            depth -= 1
+            if depth == 0:
+                end = mt.end()
+                break
+        elif tok.endswith("/>"):
+            if depth == 0:
+                end = mt.end()
+                break
+        else:
+            depth += 1
+    if end < 0:
+        die("xml walk fail: " + id_attr)
+    return i, end
+
+def swallow_comment(s, i):
+    before = s[:i]
+    stripped = before.rstrip()
+    if not stripped.endswith("-->"):
+        return i
+    cstart = before.rfind("<!--")
+    if cstart < 0:
+        return i
+    between = before[before.find("-->", cstart) + 3:i]
+    if between.strip() != "":
+        return i
+    return cstart
+
+def cut_elem(s, id_attr):
+    i, end = elem_bounds(s, id_attr)
+    i = swallow_comment(s, i)
+    if s[end:end + 1] == "\n":
+        end += 1
+    if s[:i].endswith("\n\n") and s[end:end + 1] == "\n":
+        end += 1
+    return s[:i] + s[end:]
+
+def wrapper_start(s, id_attr):
+    m = re.search(r'android:id="@\+id/%s"' % re.escape(id_attr), s)
+    if not m:
+        die("wrapper id miss: " + id_attr)
+    return s.rfind("<LinearLayout", 0, m.start())
+
+for eid in [
+    "bgPreviewImageView",
+    "btnPreview",
+    "textOverlayView",
+    "draggableTextOverlay",
+    "imageOverlayView",
+    "draggableImageOverlay",
+    "cropOverlayView",
+    "tvPreviewBadge",
+    "btnMoveLayerUp",
+    "btnMoveLayerDown",
+    "textTrackContainer",
+    "imageTrackContainer",
+    "keyframeTrackContainer",
+    "textEditingToolbar",
+    "imageEditingToolbar",
+    "cropEditingToolbar",
+    "backgroundEditingToolbar",
+    "keyframeEditingToolbar",
+    "previewLoadingOverlay",
+]:
+    s = cut_elem(s, eid)
+
+# tool row: remove btnText + btnMediaOverlay wrappers (up to btnAudio wrapper)
+i = wrapper_start(s, "btnText")
+j = wrapper_start(s, "btnAudio")
+if i < 0 or j < 0 or i >= j:
+    die("tool row span A failed")
+s = s[:i] + s[j:]
+
+# tool row: remove btnCrop + btnCanvasBackground wrappers (up to wrapper close)
+i = wrapper_start(s, "btnCrop")
+j = s.find("            </LinearLayout>\n        </HorizontalScrollView>")
+if i < 0 or j < 0 or i >= j:
+    die("tool row span B failed")
+s = s[:i] + s[j:]
+
+# validate XML + normalize blank-line runs created by the cuts
+s = re.sub(r"\n{4,}", "\n\n\n", s)
+import xml.dom.minidom as md
+md.parseString(s)
+
+with open(P, "w", encoding="utf-8") as f:
+    f.write(s)
+print("[phase8] step10: [ok] activity_video_editing.xml trimmed")
+CUTPY
+
+###############################################################################
+# Step 11 -- strings sweep (all locales)
+###############################################################################
+python3 <<'CUTPY'
+import re, sys, glob
+
+def die(m):
+    print("[phase8][ERROR] " + m)
+    sys.exit(1)
+
+KEYS = [
+    "str_text", "str_overlay", "str_crop", "str_crop_aspect_ratio",
+    "toast_failed_to_load_overlay_file",
+    "str_0_1", "str_16_9", "str_1_1", "str_9_16", "str_color",
+    "str_color_filters",
+    "str_custom", "str_duplicate", "str_keyboard", "str_loop", "str_opacity",
+]
+
+import xml.dom.minidom as md
+touched = 0
+for f in sorted(glob.glob("app/src/main/res/values*/strings.xml")):
+    with open(f, encoding="utf-8") as fh:
+        s = fh.read()
+    orig = s
+    for k in KEYS:
+        s = re.sub(r'[ \t]*<string name="%s">[^<]*</string>\n' % k, "", s)
+    if s != orig:
+        try:
+            md.parseString(s)
+        except Exception as e:
+            die("strings XML invalid after sweep: %s (%s)" % (f, e))
+        with open(f, "w", encoding="utf-8") as fh:
+            fh.write(s)
+        touched += 1
+print("[phase8] step11: [ok] strings swept in %d locale files" % touched)
+CUTPY
+
+###############################################################################
+# Step 12 -- hard verification gate (exits 1 BEFORE anything gets committed)
+###############################################################################
+log "step12: verification gate"
+
+python3 <<'CUTPY'
+import re, subprocess, sys
+
+def die(m):
+    print("[phase8][GATE-FAIL] " + m)
+    sys.exit(1)
+
+def rd(p):
+    with open(p, encoding="utf-8") as f:
+        return f.read()
+
+def head(p):
+    return subprocess.run(["git", "show", "HEAD:" + p],
+                          capture_output=True, text=True).stdout
+
+def fun_names(src):
+    names = set()
+    for m in re.finditer(r"\bfun\s+([A-Za-z0-9_]+)\s*\(", src):
+        names.add(m.group(1))
+    for m in re.finditer(r"\bfun\s+[A-Za-z0-9_.]+\.([A-Za-z0-9_]+)\s*\(", src):
+        names.add(m.group(1))
+    return names
+
+def check_inventory(path, expected_removed):
+    old = fun_names(head(path))
+    new = fun_names(rd(path))
+    removed = old - new
+    added = new - old
+    exp = set(expected_removed)
+    if removed == exp and not added:
+        return
+    if not removed and not added:
+        return  # already committed at HEAD (RUN 3)
+    die("function inventory mismatch for %s:\n  unexpected removals: %s\n  unexpected additions: %s\n  missing removals: %s"
+        % (path, sorted(removed - exp), sorted(added), sorted(exp - removed)))
+
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+VM = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
+EXT = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
+ENGINE = "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
+
+check_inventory(VEA, [
+    "setupTextFontSelector", "showFontManagerBottomSheet", "updateLayerReorderButtons",
+    "applyCropPreview", "resetCropPreview", "cropAction", "canvasBackgroundAction",
+    "enterCanvasBackgroundEditingMode", "exitCanvasBackgroundEditingMode",
+    "textAction", "enterTextEditingMode", "exitTextEditingMode",
+    "duplicateSelectedOverlay", "pickBackgroundImage", "mediaOverlayAction",
+    "openImagePicker", "showImageOverlayConfig", "getExtensionFromUri",
+    "getOverlayFileDurationMs", "enterImageEditingMode", "enterImageEditingModeForEdit",
+    "exitImageEditingMode", "getPresetCropBounds", "enterCropEditingMode",
+    "exitCropEditingMode", "updateCanvasBackgroundPreview", "updateCropUi",
+    "triggerCanvasLayoutUpdate", "renderSegmentedPreview", "dismissPreview",
+    "markPaletteSelection", "buildTextPaletteRow", "setupColorPicker",
+    "setupBgColorPicker", "setupStrokeColorPicker", "setupShadowColorPicker",
+    "updateActiveBoundaries", "showChromaKeyDialog", "showCustomColorPicker",
+    "commitActiveEditsIfAny", "enterKeyframeEditingMode", "exitKeyframeEditingMode",
+    "showKeyframePropertyMenu", "handleKeyframeActionClick", "handleKeyframeSliderChange",
+    "updateKeyframeActionButtonState", "updateDraggableOverlayFromKeyframes",
+    "interpolateKeyframes", "interpolateKeyframePosition",
+    # local/nested functions inside removed regions
+    "refreshFontList", "onCreateViewHolder", "onBindViewHolder", "getItemCount",
+    "resetTabs", "styleTint", "syncStyleButtons", "syncBgSliders",
+    "syncStrokeSliders", "syncShadowSliders", "updatePreview",
+])
+
+check_inventory(VM, [
+    "buildCropFilterExpr", "prepareTextPngInputs", "overlayPosExpr",
+    "buildDrawtextExpr", "buildFFmpegInterpolationExpr", "formatColorForFFmpeg",
+    "buildEnableExpr", "buildVideoFilterStages", "buildPreviewCommand",
+])
+
+check_inventory(EXT, [
+    "addCropOperation", "updateCanvasBackgroundOperation", "addTextOperation",
+    "addImageOverlayOperation", "moveOverlayOperation",
+])
+
+check_inventory(ENGINE, [
+    "copyFontToCache", "renderCropPreview", "renderTextPreview", "cropVideo",
+    "addTextOverlay", "buildDrawtextFilter", "buildCropFilter",
+    "generateVideoFromImage", "generateVideoFromGif",
+])
+
+# ---- brace delta vs HEAD must match (removed code is brace-balanced) ----
+for p in [VEA, VM, EXT, ENGINE,
+          "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt",
+          "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt",
+          "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt",
+          "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"]:
+    old = head(p)
+    new = rd(p)
+    do = old.count("{") - new.count("{")
+    dc = old.count("}") - new.count("}")
+    if do != dc:
+        die("brace delta mismatch for %s (open removed %d, close removed %d)"
+            % (p, do, dc))
+    if old.count("{") == old.count("}") and new.count("{") != new.count("}"):
+        die("unbalanced braces in %s (open %d, close %d)"
+            % (p, new.count("{"), new.count("}")))
+
+print("[phase8] gate: inventory + brace checks passed")
+CUTPY
+
+# ---- leftover token scan across app/src/main ----
+LEFT_TOKENS="AddText AddImageOverlay CanvasBackground KeyframePoint TextPosition \
+textOverlayView imageOverlayView draggableTextOverlay draggableImageOverlay cropOverlayView \
+bgPreviewImageView textEditingToolbar imageEditingToolbar cropEditingToolbar \
+backgroundEditingToolbar keyframeEditingToolbar btnText btnMediaOverlay btnCrop \
+btnCanvasBackground btnMoveLayerUp btnMoveLayerDown btnPreview tvPreviewBadge \
+previewLoadingOverlay textTrackContainer imageTrackContainer keyframeTrackContainer \
+pickBackgroundImage mediaOverlayAction textAction cropAction canvasBackgroundAction \
+showChromaKeyDialog showCustomColorPicker HSVColorPickerView TextRenderUtils \
+FontManager FontItem fontFilePath fontPath fontfile copyFontToCache fontDir drawtext \
+buildVideoFilterStages buildPreviewCommand textPngRenderer prepareTextPngInputs \
+buildDrawtextExpr overlayPosExpr buildFFmpegInterpolationExpr buildCropFilterExpr \
+formatColorForFFmpeg buildEnableExpr moveOverlayOperation addTextOperation \
+addImageOverlayOperation updateCanvasBackgroundOperation updateCanvasBackgroundPreview \
+updateLayerReorderButtons duplicateSelectedOverlay enterKeyframeEditingMode \
+isKeyframeEditingMode updateDraggableOverlayFromKeyframes interpolateKeyframe \
+renderSegmentedPreview dismissPreview isShowingPreview isRenderingPreview previewJob \
+commitActiveEditsIfAny buildTextPaletteRow markPaletteSelection setupColorPicker \
+textPalettePresets selectedTextColor importFontLauncher activeFontSelectionCallback \
+showFontManagerBottomSheet setupTextFontSelector getExtensionFromUri \
+getOverlayFileDurationMs openImagePicker showImageOverlayConfig enterImageEditingMode \
+exitImageEditingMode PICK_IMAGE_REQUEST PICK_BACKGROUND_IMAGE_REQUEST \
+updateActiveBoundaries triggerCanvasLayoutUpdate generateVideoFromImage \
+generateVideoFromGif chroma ic_text_24 ic_canvas_24 ic_crop_24 ic_keyframe \
+ic_palette_24 ic_mirror ic_preview_24 ic_loop_24 ic_opacity_24 str_text str_overlay \
+str_crop str_16_9 str_9_16 str_1_1 str_0_1 str_color str_custom str_duplicate \
+str_keyboard str_loop str_opacity toast_failed_to_load_overlay_file"
+
+for t in $LEFT_TOKENS; do
+    if grep -rIqE -- "$t\\b" app/src/main 2>/dev/null; then
+        HIT=$(grep -rIlE -- "$t\\b" app/src/main 2>/dev/null | head -3 | tr '\n' ' ')
+        fail "leftover token '$t' still present in: $HIT"
+    fi
+done
+log "gate: leftover scan clean"
+
+# ---- kept-feature survival asserts ----
+SURVIVE_VEA="fun audioAction( fun enterAudioEditingMode( fun exitAudioEditingMode( \
+fun showTransitionDialog( fun performRenderTracks( fun freezeFrameAtCurrentPosition( \
+fun findTextureView( fun getSnapTargetsMs( fun showVideoSegmentTrimDialog( \
+fun splitSelectedVideo( fun applySpeedToSegment( fun enterVideoEditingMode( \
+fun reparentCanvasContainer( fun setActiveToolButton( fun closeActiveEditingModes( \
+fun updateUIInteractionState( fun renderTracks( fun syncUiWithPlayer( \
+R.id.btnAudio R.id.editingControlsScroll"
+for t in $SURVIVE_VEA; do
+    grep -q -- "$t" "$VEA" || fail "survival check failed in VEA: $t"
+done
+grep -q "findTextureView(playerView)" "$VEA" || fail "findTextureView transition-preview call lost"
+grep -q "AddBackgroundAudio" "$VEA" || fail "AddBackgroundAudio usage lost in VEA"
+grep -q "data class Trim(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "Trim model lost"
+grep -q "data class Merge(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "Merge model lost"
+grep -q "data class AddBackgroundAudio(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "AddBackgroundAudio model lost"
+grep -q "fun buildConsolidatedFFmpegCommand(" "$VM" || fail "buildConsolidatedFFmpegCommand lost"
+grep -q "fun VideoEditingViewModel.addBackgroundAudioOperation(" "$EXT" || fail "addBackgroundAudioOperation lost"
+grep -q "fun VideoEditingViewModel.splitVideoSegment(" "$EXT" || fail "splitVideoSegment lost"
+grep -q "AddBackgroundAudio" "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt" || fail "serializer audio mapping lost"
+grep -q "str_audio" "app/src/main/res/values/strings.xml" || fail "str_audio string lost"
+grep -q 'android:id="@+id/btnAudio"' "$AVEXML" || fail "btnAudio button lost from layout"
+grep -q 'android:id="@+id/audioTrackContainer"' "$AVEXML" || fail "audioTrackContainer lost from layout"
+grep -q 'android:id="@+id/videoEditingToolbar"' "$AVEXML" || fail "videoEditingToolbar include lost"
+log "gate: survival checks passed"
+
+# ---- XML validity of all touched resources ----
+python3 - <<'CUTPY'
+import glob, sys
+import xml.dom.minidom as md
+files = ["app/src/main/res/layout/activity_video_editing.xml"] + \
+        sorted(glob.glob("app/src/main/res/values*/strings.xml"))
+for f in files:
+    with open(f, "rb") as fh:
+        md.parseString(fh.read())
+print("[phase8] gate: XML parse ok for %d files" % len(files))
+CUTPY
+
+# ---- scope gate: only allowlisted files changed ----
+python3 - <<'CUTPY'
+import subprocess, sys
+
+ALLOWED = set()
+
+def add(p):
+    ALLOWED.add(p)
+
+cv = "app/src/main/java/com/tharunbirla/librecuts/customviews"
+ut = "app/src/main/java/com/tharunbirla/librecuts/utils"
+lay = "app/src/main/res/layout"
+drw = "app/src/main/res/drawable"
+for p in [
+    "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt",
+    "app/src/main/res/layout/activity_video_editing.xml",
+    cv + "/TextOverlayView.kt", cv + "/DraggableTextOverlayView.kt",
+    cv + "/ImageOverlayView.kt", cv + "/DraggableImageOverlayView.kt",
+    cv + "/CropOverlayView.kt", cv + "/HSVColorPickerView.kt",
+    ut + "/TextRenderUtils.kt", ut + "/FontManager.kt",
+    lay + "/text_editing_toolbar.xml", lay + "/text_background_settings.xml",
+    lay + "/text_format_settings.xml", lay + "/text_shadow_settings.xml",
+    lay + "/text_stroke_settings.xml", lay + "/image_editing_toolbar.xml",
+    lay + "/crop_editing_toolbar.xml", lay + "/background_editing_toolbar.xml",
+    lay + "/keyframe_editing_toolbar.xml", lay + "/chroma_key_bottom_sheet_dialog.xml",
+    lay + "/dialog_custom_color_picker.xml", lay + "/dialog_font_manager.xml",
+    lay + "/item_font_manager.xml",
+    "app/src/main/assets/fonts/Roboto-Regular.ttf",
+    drw + "/ic_canvas_24.xml", drw + "/ic_canvas_color_24.xml",
+    drw + "/ic_color_lens_24.xml", drw + "/ic_color_picker_24.xml",
+    drw + "/ic_crop_24.xml", drw + "/ic_crop_16_9_24.xml",
+    drw + "/ic_crop_portrait_24.xml", drw + "/ic_crop_square_24.xml",
+    drw + "/ic_format_24.xml", drw + "/ic_keyboard_24.xml",
+    drw + "/ic_keyframe_add.xml", drw + "/ic_keyframe_main.xml",
+    drw + "/ic_keyframe_remove.xml", drw + "/ic_loop_24.xml",
+    drw + "/ic_mirror.xml", drw + "/ic_opacity_24.xml",
+    drw + "/ic_palette_24.xml", drw + "/ic_preview_24.xml",
+    drw + "/ic_rotate_right_24.xml", drw + "/ic_arrow_drop_down_24.xml",
+    drw + "/ic_text_24.xml", drw + "/ic_text_bg_24.xml",
+    drw + "/ic_text_shadow_24.xml", drw + "/ic_text_stroke_24.xml",
+    drw + "/ic_align_center_24.xml", drw + "/ic_align_left_24.xml",
+    drw + "/ic_align_right_24.xml", drw + "/bg_layer_selected.xml",
+]:
+    add(p)
+import glob
+for f in glob.glob("app/src/main/res/values*/strings.xml"):
+    add(f)
+
+out = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout
+bad = []
+gh = []
+for line in out.splitlines():
+    path = line[3:].strip().strip('"')
+    if path.startswith(".github/"):
+        gh.append(path)
+    if path not in ALLOWED:
+        bad.append(path)
+if gh:
+    print("[phase8][GATE-FAIL] .github policy violation: %s" % gh)
+    sys.exit(1)
+if bad:
+    print("[phase8][GATE-FAIL] out-of-scope changes: %s" % bad)
+    sys.exit(1)
+print("[phase8] gate: scope ok (all changed files allowlisted, no .github/)")
+CUTPY
+
+# ---- ASCII self-check of this script ----
+if LC_ALL=C tr -d '\t' < "$0" | LC_ALL=C grep -nq '[^ -~]'; then
+    fail "script contains non-ASCII characters"
 fi
-step12_verify || FAILED=1
+log "gate: ASCII self-check passed"
 
-echo "----------------------------------------------------------"
-if [ "$FAILED" -ne 0 ]; then
-    echo " PHASE 10 FAILED -- see the [FAIL] lines above."
-    echo " Nothing was committed; main is untouched."
-    echo "----------------------------------------------------------"
-    exit 1
-fi
-echo " Phase 10 complete. Steps ok or skipped (version bump ran)."
-echo "  - Overlay toolbar: Duplicate / Mirror / Chroma Key gone"
-echo "    (text tool keeps its own Duplicate)."
-echo "  - New Scale button + slider: 5..500 percent of the video"
-echo "    width, same live behavior and range as pinch zoom."
-echo "  - versionCode ${NEW_VC} / versionName 1.0-beta${NEW_BETA}"
-echo "    (same committed debug key -> installs over the old APK)."
-echo " Next: the workflow commits these changes and builds the APK."
-echo "----------------------------------------------------------"
+log "ALL DONE -- phase 8 applied and verified"
