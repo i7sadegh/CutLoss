@@ -1,21 +1,39 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 8 -- remove the Text, Overlay, Crop and Canvas tools from the
-# video editor bottom tool row, together with ALL related code:
-#   * Text system    : AddText op, text editing toolbar + settings sheets,
-#                      font manager, TextOverlayView, DraggableTextOverlayView,
-#                      TextRenderUtils, bundled Roboto font asset
-#   * Overlay system : AddImageOverlay op (image/GIF/video PIP), image editing
-#                      toolbar, chroma key, ImageOverlayView,
-#                      DraggableImageOverlayView, layer reorder buttons
-#   * Crop system    : Crop op, crop toolbar + CropOverlayView, crop preview
-#   * Canvas system  : CanvasBackground op, background toolbar, blur preview,
-#                      background image picker
-#   * Keyframes      : KeyframePoint model + whole keyframe editing UI
-#                      (only served text/image overlays)
-#   * Preview render : segmented preview button + pipeline (crop/text only)
-# Audio, video toolbar (trim/split/mute/speed/freeze/delete), transitions,
-# magnet snapping and export are untouched.
+# CutLoss phase 9 -- Smart Export + Freeze fixes
+#
+# 1. FREEZE BUG FIX: when the playhead sits at the head of the FIRST clip and
+#    the user taps Freeze, the generated freeze video was silently DISCARDED
+#    (updateSequenceOrder(newItems.drop(1))) and the original main video was
+#    trimmed to 3s instead - so the "frozen" segment played as normal video.
+#    Fix: promote the freeze video to the MAIN video slot (same pattern as
+#    deleteSelectedVideo) and demote the original main clip into the merge
+#    list, so the sequence becomes [freeze][original][rest].
+#
+# 2. FREEZE CODEC MATCHING: the freeze segment is no longer encoded with
+#    h264_mediacodec + arbitrary parameters. The source clip is probed with
+#    FFprobeKit and the freeze video is encoded with the SAME codec
+#    parameters (codec, profile, level, resolution, fps, pix fmt, rotation,
+#    silent audio track matching the source audio) so the export pipeline can
+#    STREAM-COPY it with -c copy.
+#
+# 3. OP-INDEX REALIGNMENT: inserting a freeze segment shifts the sequence, so
+#    Transition (gap) indices and MuteClip indices are shifted accordingly
+#    (previously they silently attached to the wrong clip boundaries).
+#
+# 4. SMART EXPORT: new SmartExportPlanner + ExportService smart mode. When the
+#    project only contains copy-compatible operations (Trim / Merge /
+#    Transition / MuteClip / MuteAudio, no text or image overlays, no speed,
+#    no background audio, no custom resolution/fps/codec) and all clips share
+#    the same codec parameters, the export becomes:
+#      - unchanged clip parts        -> stream copy (-c copy)
+#      - freeze segments             -> already-encoded matching videos, copied
+#      - transition overlaps         -> rendered once (xfade offset=0 + acrossfade)
+#                                       with matching parameters, then copied
+#      - trim cuts                   -> only the trimmed span re-encoded
+#      - final assembly              -> concat demuxer + -c copy -bsf:v dump_extra
+#    Anything not copy-compatible falls back to the legacy consolidated
+#    filter-graph render, which is left fully intact.
 #
 # Invariants: pure ASCII, idempotent (2nd run = all [skip], zero diff),
 # hard verification gate exits 1 BEFORE anything can be committed.
@@ -25,1414 +43,1357 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-log()  { echo "[phase8] $*"; }
-fail() { echo "[phase8][ERROR] $*" >&2; exit 1; }
+log()  { echo "[phase9] $*"; }
+fail() { echo "[phase9][ERROR] $*" >&2; exit 1; }
 
 VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 EXT="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
-ENGINE="app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
-EO="app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
-SER="app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt"
-PIA="app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
-ESD="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
-AVEXML="app/src/main/res/layout/activity_video_editing.xml"
-
-CV="app/src/main/java/com/tharunbirla/librecuts/customviews"
-UT="app/src/main/java/com/tharunbirla/librecuts/utils"
-LAY="app/src/main/res/layout"
-DRW="app/src/main/res/drawable"
+EXPS="app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
+PLANNER="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
 
 ###############################################################################
-# Step 0 -- preconditions (phase 7 must already be applied)
+# Step 0 -- preconditions + idempotency marker
 ###############################################################################
 log "step0: checking preconditions"
-[ -f "$VEA" ] || fail "VideoEditingActivity.kt not found"
-[ -f "$LAY/video_editing_toolbar.xml" ] || fail "video_editing_toolbar.xml not found"
-grep -q "btnVideoFreezeFrame" "$LAY/video_editing_toolbar.xml" \
-  || fail "phase-7 marker missing (btnVideoFreezeFrame)"
-[ ! -f "$LAY/bottom_sheet_mask.xml" ] || fail "phase-7 not applied (bottom_sheet_mask.xml still present)"
-[ ! -f "$LAY/dialog_adjustments.xml" ] || fail "phase-7 not applied (dialog_adjustments.xml still present)"
-[ ! -f "$CV/MaskedFrameLayout.kt" ] || fail "phase-7 not applied (MaskedFrameLayout.kt still present)"
-log "step0: [ok] phase-7 base confirmed"
+[ -f "$VEA" ]  || fail "VideoEditingActivity.kt not found"
+[ -f "$EXT" ]  || fail "VideoEditingViewModelExt.kt not found"
+[ -f "$EXPS" ] || fail "ExportService.kt not found"
+grep -q "private fun freezeFrameAtCurrentPosition()" "$VEA" \
+  || fail "freezeFrameAtCurrentPosition not found (unexpected tree state)"
+grep -q "buildConsolidatedFFmpegCommand(" "$VEA" \
+  || fail "saveAction consolidated command call not found"
+grep -q "ExportService.EXTRA_COMMAND" "$VEA" \
+  || fail "saveAction ExportService wiring not found"
+grep -q "EXTRA_CONCAT_FILE_PATH" "$EXPS" \
+  || fail "ExportService extras not found (unexpected tree state)"
+grep -q "fun VideoEditingViewModel.updateSequenceOrder" "$EXT" \
+  || fail "Ext updateSequenceOrder not found (unexpected tree state)"
+grep -q "ffmpeg-kit-full-gpl" app/build.gradle \
+  || fail "ffmpeg-kit-full-gpl dependency not found (FFprobeKit required)"
 
-###############################################################################
-# Step 1 -- delete feature files (Kotlin views/utils, layouts, font, drawables)
-###############################################################################
-DELETE_FILES="
-$CV/TextOverlayView.kt
-$CV/DraggableTextOverlayView.kt
-$CV/ImageOverlayView.kt
-$CV/DraggableImageOverlayView.kt
-$CV/CropOverlayView.kt
-$CV/HSVColorPickerView.kt
-$UT/TextRenderUtils.kt
-$UT/FontManager.kt
-$LAY/text_editing_toolbar.xml
-$LAY/text_background_settings.xml
-$LAY/text_format_settings.xml
-$LAY/text_shadow_settings.xml
-$LAY/text_stroke_settings.xml
-$LAY/image_editing_toolbar.xml
-$LAY/crop_editing_toolbar.xml
-$LAY/background_editing_toolbar.xml
-$LAY/keyframe_editing_toolbar.xml
-$LAY/chroma_key_bottom_sheet_dialog.xml
-$LAY/dialog_custom_color_picker.xml
-$LAY/dialog_font_manager.xml
-$LAY/item_font_manager.xml
-app/src/main/assets/fonts/Roboto-Regular.ttf
-$DRW/ic_canvas_24.xml
-$DRW/ic_canvas_color_24.xml
-$DRW/ic_color_lens_24.xml
-$DRW/ic_color_picker_24.xml
-$DRW/ic_crop_24.xml
-$DRW/ic_crop_16_9_24.xml
-$DRW/ic_crop_portrait_24.xml
-$DRW/ic_crop_square_24.xml
-$DRW/ic_format_24.xml
-$DRW/ic_keyboard_24.xml
-$DRW/ic_keyframe_add.xml
-$DRW/ic_keyframe_main.xml
-$DRW/ic_keyframe_remove.xml
-$DRW/ic_loop_24.xml
-$DRW/ic_mirror.xml
-$DRW/ic_opacity_24.xml
-$DRW/ic_palette_24.xml
-$DRW/ic_preview_24.xml
-$DRW/ic_rotate_right_24.xml
-$DRW/ic_arrow_drop_down_24.xml
-$DRW/ic_text_24.xml
-$DRW/ic_text_bg_24.xml
-$DRW/ic_text_shadow_24.xml
-$DRW/ic_text_stroke_24.xml
-$DRW/ic_align_center_24.xml
-$DRW/ic_align_left_24.xml
-$DRW/ic_align_right_24.xml
-$DRW/bg_layer_selected.xml
-"
-
-ND=0; NS=0
-for f in $DELETE_FILES; do
-    if [ -f "$f" ]; then
-        rm -f "$f"
-        ND=$((ND+1))
-    else
-        NS=$((NS+1))
-    fi
-done
-# remove the fonts dir when it became empty
-if [ -d app/src/main/assets/fonts ] && [ -z "$(ls -A app/src/main/assets/fonts 2>/dev/null)" ]; then
-    rmdir app/src/main/assets/fonts 2>/dev/null || true
+if [ -f "$PLANNER" ]; then
+  APPLIED=1
+  log "step0: planner already present -> SKIP mode (idempotent re-run)"
+else
+  APPLIED=0
+  log "step0: [ok] base tree confirmed"
 fi
-log "step1: deleted=$ND skipped=$NS"
 
 ###############################################################################
-# Step 2 -- EditOperation.kt: drop Crop / KeyframePoint / AddText /
-#           AddImageOverlay / CanvasBackground models + TextPosition enum
+# Step 1 -- add services/SmartExportPlanner.kt
 ###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step1: [skip] SmartExportPlanner.kt already exists"
+else
 python3 <<'CUTPY'
-import re, sys
+import sys
 
 def die(m):
-    print("[phase8][ERROR] " + m)
+    print("[phase9][ERROR] " + m)
     sys.exit(1)
 
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
+PLANNER_PATH = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
 
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
+CONTENT = r'''package com.tharunbirla.librecuts.services
 
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
+import android.content.Context
+import android.net.Uri
+import android.util.Log
+import com.antonkarpenko.ffmpegkit.FFmpegKitConfig
+import com.antonkarpenko.ffmpegkit.FFprobeKit
+import com.tharunbirla.librecuts.models.EditOperation
+import com.tharunbirla.librecuts.models.VideoProject
+import org.json.JSONArray
+import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 
-def cut_between(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
+/**
+ * SmartExportPlanner builds a "smart render" export plan.
+ *
+ * Goal: when the timeline only contains operations that do not change the
+ * stream parameters (trim, merge, freeze, transitions, mute), the unchanged
+ * parts of the source clips are STREAM-COPIED (-c copy) into the output and
+ * only the changed parts (freeze segments, transition overlaps, trim cuts)
+ * are re-encoded with parameters that match the source clips. The final
+ * assembly uses the concat demuxer with -c copy, so most of the output is
+ * bit-exact with the original footage.
+ *
+ * If anything is not copy-compatible (mixed codecs, image clips, text or
+ * image overlays, speed changes, background audio, custom resolution or
+ * fps, ...) the planner returns null and the caller falls back to the
+ * legacy consolidated filter-graph render.
+ *
+ * Command templates validated against the bundled ffmpeg (Lavf 62 / ffmpeg
+ * 6.1, ffmpeg-kit-full-gpl 2.1.0):
+ *   full clip copy   : -y -noautorotate -i SRC -map 0:v:0 -map 0:a:0 -c copy SEG
+ *   trim re-encode   : -y -noautorotate -ss S -t D -i SRC ... libx264 -profile -level
+ *   freeze (2 steps) : PNG -> sensor-space encode, then -display_rotation remux
+ *   transition       : -ss tail / -ss head + xfade offset=0 (fps= filter needed
+ *                      for CFR) + acrossfade
+ *   concat           : -f concat -safe 0 -i list.txt -c copy -bsf:v dump_extra
+ */
+object SmartExportPlanner {
 
-P = "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt"
-s = rd(P)
+    private const val TAG = "SmartExportPlanner"
 
-if "data class AddText" not in s:
-    print("[phase8] step2: [skip] EditOperation already trimmed")
-    sys.exit(0)
+    data class MediaParams(
+        val vCodec: String,
+        val vProfile: String,
+        val vLevel: Int,
+        val width: Int,
+        val height: Int,
+        val fpsString: String,
+        val fpsValue: Double,
+        val pixFmt: String,
+        val hasAudio: Boolean,
+        val aCodec: String,
+        val aSampleRate: Int,
+        val aChannels: Int,
+        val rotation: Int,
+        val durationMs: Long
+    )
 
-# --- Crop data class (with doc comment) ---
-s = cut_between(s,
-    "    /**\n     * Crop operation: Crops video to a specified aspect ratio.\n",
-    "    /**\n     * Text overlay operation: Adds customizable text to the video at specified position and size.\n")
+    data class SmartPlan(val planFile: File)
 
-# --- KeyframePoint + AddText (with doc comment) ---
-s = cut_between(s,
-    "    /**\n     * Text overlay operation: Adds customizable text to the video at specified position and size.\n",
-    "    data class MergeItem(\n")
+    data class FreezeCommands(val commands: List<String>, val tempFiles: List<String>)
 
-# --- AddImageOverlay (with doc comment) ---
-s = cut_between(s,
-    "    /**\n     * Image overlay operation: Adds an image to the video at specified position, size, and rotation angle.\n",
-    "    /**\n     * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.\n")
+    // ------------------------------------------------------------------
+    // Probing
+    // ------------------------------------------------------------------
 
-# --- CanvasBackground (with doc comment + nested enum) ---
-s = cut_between(s,
-    "    /**\n     * Canvas background operation: Sets the padding style for clips that do not match the primary aspect ratio.\n",
-    "}\n\n/**\n * Enum for text positioning options in video overlays.\n")
+    /**
+     * Probe a clip with FFprobeKit (codec params) + MediaMetadataRetriever
+     * (rotation, duration). Returns null when probing fails - callers must
+     * treat that as "not copy-compatible" and fall back gracefully.
+     */
+    fun probeMedia(context: Context, uri: Uri, path: String?): MediaParams? {
+        val ffprobeArg = when {
+            path != null -> path
+            uri.scheme == "content" -> try {
+                FFmpegKitConfig.getSafParameterForRead(context, uri)
+            } catch (e: Exception) {
+                Log.w(TAG, "getSafParameterForRead failed: " + e.message)
+                null
+            } ?: return null
+            else -> uri.path ?: return null
+        }
 
-# --- TextPosition enum ---
-s = cut_between(s,
-    "/**\n * Enum for text positioning options in video overlays.\n",
-    "val EditOperation.id: String\n")
+        val session = try {
+            FFprobeKit.getMediaInformation(ffprobeArg)
+        } catch (e: Exception) {
+            Log.w(TAG, "ffprobe failed: " + e.message)
+            null
+        } ?: return null
 
-# --- id extension: drop removed branches ---
-s = rep(s, "        is EditOperation.Crop -> id\n", "")
-s = rep(s, "        is EditOperation.AddText -> id\n", "")
-s = rep(s, "        is EditOperation.AddImageOverlay -> id\n", "")
-s = rep(s, "        is EditOperation.CanvasBackground -> id\n", "")
+        val info = try {
+            session.getMediaInformation()
+        } catch (e: Exception) {
+            null
+        } ?: return null
 
-wr(P, s)
-print("[phase8] step2: [ok] EditOperation.kt trimmed")
+        val streams = try {
+            info.getStreams()
+        } catch (e: Exception) {
+            null
+        } ?: return null
+
+        var video: JSONObject? = null
+        var audio: JSONObject? = null
+        for (s in streams) {
+            val props = try {
+                s.getAllProperties()
+            } catch (e: Exception) {
+                null
+            } ?: continue
+            val type = props.optString("codec_type", "")
+            if (type == "video" && video == null) video = props
+            if (type == "audio" && audio == null) audio = props
+        }
+        val v = video ?: return null
+
+        var rotation = 0
+        var durationMs = 0L
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            try {
+                if (path != null) {
+                    retriever.setDataSource(path)
+                } else {
+                    retriever.setDataSource(context, uri)
+                }
+                rotation = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
+                durationMs = retriever.extractMetadata(
+                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
+            } finally {
+                retriever.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "MMR probe failed: " + e.message)
+        }
+        if (durationMs <= 0L) return null
+
+        val fpsString = v.optString("avg_frame_rate", "0/0")
+        val fpsValue = parseFraction(fpsString) ?: return null
+        if (fpsValue <= 0.0) return null
+
+        return MediaParams(
+            vCodec = v.optString("codec_name", ""),
+            vProfile = v.optString("profile", ""),
+            vLevel = v.optInt("level", 0),
+            width = v.optInt("width", 0),
+            height = v.optInt("height", 0),
+            fpsString = fpsString,
+            fpsValue = fpsValue,
+            pixFmt = v.optString("pix_fmt", ""),
+            hasAudio = audio != null,
+            aCodec = audio?.optString("codec_name", "") ?: "",
+            aSampleRate = audio?.optInt("sample_rate", 0) ?: 0,
+            aChannels = audio?.optInt("channels", 0) ?: 0,
+            rotation = rotation,
+            durationMs = durationMs
+        )
+    }
+
+    private fun parseFraction(s: String): Double? {
+        if (s.isEmpty() || s == "0/0") return null
+        return try {
+            if (s.contains("/")) {
+                val parts = s.split("/")
+                val num = parts[0].trim().toDouble()
+                val den = parts[1].trim().toDouble()
+                if (den == 0.0) null else num / den
+            } else {
+                s.trim().toDouble()
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Freeze frame command builder
+    // ------------------------------------------------------------------
+
+    /**
+     * Build the ffmpeg command(s) that turn the extracted freeze-frame PNG
+     * (which is in DISPLAY orientation, like MediaMetadataRetriever returns
+     * it) into a video whose stream parameters match the source clip. When
+     * the source is rotated the PNG is transposed back to sensor space and
+     * the rotation metadata is re-inserted with a -display_rotation remux.
+     */
+    fun buildFreezeFrameCommands(
+        params: MediaParams,
+        pngPath: String,
+        finalOutPath: String,
+        durationMs: Long
+    ): FreezeCommands {
+        val dSec = ms(durationMs)
+        val audioOk = params.hasAudio && (params.aCodec == "aac" || params.aCodec == "mp3")
+            && params.aSampleRate > 0
+        val aChanLabel = if (params.aChannels == 1) "mono" else "stereo"
+        val transpose = when (params.rotation) {
+            90 -> "transpose=2,"
+            180 -> "transpose=1,transpose=1,"
+            270 -> "transpose=1,"
+            else -> ""
+        }
+        val enc = videoEncoderArgs(params, "", "") ?: return FreezeCommands(emptyList(), emptyList())
+        val aEnc = audioEncoderArgs(params, "")
+
+        val sb = StringBuilder("-y -loop 1 -i \"").append(pngPath).append("\"")
+        if (audioOk) {
+            sb.append(" -f lavfi -t ").append(dSec)
+            sb.append(" -i anullsrc=r=").append(params.aSampleRate).append(":cl=").append(aChanLabel)
+        }
+        sb.append(" -t ").append(dSec)
+        sb.append(" -vf \"").append(transpose)
+        sb.append("scale=").append(params.width).append(":").append(params.height)
+        sb.append(",setsar=1,fps=").append(params.fpsString)
+        sb.append(",format=yuv420p\"")
+        sb.append(" -map 0:v:0")
+        if (audioOk) sb.append(" -map 1:a:0")
+        sb.append(" ").append(enc)
+        if (audioOk) sb.append(" ").append(aEnc)
+
+        if (params.rotation != 0) {
+            val tmp = File(File(finalOutPath).parentFile, "freeze_tmp_" + System.nanoTime() + ".mp4")
+            sb.append(" \"").append(tmp.absolutePath).append("\"")
+            val rot = StringBuilder("-y -display_rotation:v ").append(-params.rotation)
+            rot.append(" -i \"").append(tmp.absolutePath).append("\"")
+            rot.append(" -map 0:v:0")
+            if (audioOk) rot.append(" -map 0:a:0")
+            rot.append(" -c copy \"").append(finalOutPath).append("\"")
+            return FreezeCommands(listOf(sb.toString(), rot.toString()), listOf(tmp.absolutePath))
+        }
+        sb.append(" \"").append(finalOutPath).append("\"")
+        return FreezeCommands(listOf(sb.toString()), emptyList())
+    }
+
+    // ------------------------------------------------------------------
+    // Planning
+    // ------------------------------------------------------------------
+
+    fun planSmartExport(
+        context: Context,
+        project: VideoProject,
+        sourceFilePath: String,
+        outputFilePath: String,
+        exportResolution: Int,
+        exportFps: Int,
+        exportBitrate: String,
+        audioOnly: Boolean,
+        advancedVideoCodec: String,
+        advancedAudioCodec: String,
+        advancedPreset: String,
+        advancedAudioBitrate: String,
+        customWidth: Int,
+        customHeight: Int,
+        videoFormat: String
+    ): SmartPlan? {
+        try {
+            return planInternal(
+                context, project, sourceFilePath, outputFilePath,
+                exportResolution, exportFps, exportBitrate, audioOnly,
+                advancedVideoCodec, advancedAudioCodec, advancedPreset,
+                advancedAudioBitrate, customWidth, customHeight, videoFormat
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "smart export planning failed: " + e.message, e)
+            return null
+        }
+    }
+
+    private fun planInternal(
+        context: Context,
+        project: VideoProject,
+        sourceFilePath: String,
+        outputFilePath: String,
+        exportResolution: Int,
+        exportFps: Int,
+        exportBitrate: String,
+        audioOnly: Boolean,
+        advancedVideoCodec: String,
+        advancedAudioCodec: String,
+        advancedPreset: String,
+        advancedAudioBitrate: String,
+        customWidth: Int,
+        customHeight: Int,
+        videoFormat: String
+    ): SmartPlan? {
+        sweepStaleWorkDirs(context)
+
+        if (audioOnly) return null
+        if (videoFormat != "mp4") return null
+        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return null
+        if (customWidth >= 16 || customHeight >= 16) return null
+        if (isImagePath(sourceFilePath)) return null
+
+        val ops = project.operations
+        val allowed = ops.all {
+            it is EditOperation.Trim || it is EditOperation.Merge ||
+                it is EditOperation.Transition || it is EditOperation.MuteClip ||
+                it is EditOperation.MuteAudio
+        }
+        if (!allowed) return null
+
+        val mergeOp = ops.filterIsInstance<EditOperation.Merge>().firstOrNull()
+        val trimOp = ops.filterIsInstance<EditOperation.Trim>().lastOrNull()
+        val audioMuted = ops.any { it is EditOperation.MuteAudio }
+
+        val workDir = File(context.cacheDir, "smart_export_" + System.currentTimeMillis())
+        if (!workDir.mkdirs() && !workDir.isDirectory) return null
+
+        // ---- probe the main clip (reference parameters) ----
+        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
+        if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return null
+        if (refParams.pixFmt != "yuv420p") return null
+        if (refParams.width <= 0 || refParams.height <= 0) return null
+        if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return null
+        if (refParams.durationMs <= 0L) return null
+
+        val displayWidth = if (refParams.rotation == 90 || refParams.rotation == 270) {
+            refParams.height
+        } else {
+            refParams.width
+        }
+        val displayHeight = if (refParams.rotation == 90 || refParams.rotation == 270) {
+            refParams.width
+        } else {
+            refParams.height
+        }
+        val shortSide = Math.min(displayWidth, displayHeight)
+        // Resolution is a no-op when it equals the display height or the short
+        // side (a "1080" preset on a portrait 1080x1920 clip). Anything else
+        // means the user asked for a real resize -> legacy render.
+        if (exportResolution != 0 && exportResolution != displayHeight && exportResolution != shortSide) return null
+        if (exportFps != 0 && exportFps != Math.round(refParams.fpsValue).toInt()) return null
+
+        data class ClipInfo(
+            val path: String,
+            val params: MediaParams,
+            val trimStartMs: Long,
+            val trimEndMs: Long,
+            val durationMs: Long,
+            val muted: Boolean
+        )
+
+        // ---- resolve + probe all clips ----
+        val clips = mutableListOf<ClipInfo>()
+        clips.add(
+            ClipInfo(
+                path = sourceFilePath,
+                params = refParams,
+                trimStartMs = trimOp?.startMs ?: 0L,
+                trimEndMs = trimOp?.endMs ?: refParams.durationMs,
+                durationMs = refParams.durationMs,
+                muted = isClipMuted(ops, 0)
+            )
+        )
+        if (mergeOp != null) {
+            for (item in mergeOp.items) {
+                if (item.isImage) return null
+                if (item.speed != 1.0f) return null
+                if (item.proxyUri != null) return null
+                val localPath: String? = if (item.uri.scheme == "content") {
+                    copyToCache(context, item.uri, workDir)
+                } else {
+                    item.uri.path
+                }
+                if (localPath == null || isImagePath(localPath)) return null
+                val p = probeMedia(context, item.uri, localPath) ?: return null
+                if (p.vCodec != refParams.vCodec) return null
+                if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return null
+                if (p.width != refParams.width || p.height != refParams.height) return null
+                if (p.rotation != refParams.rotation) return null
+                if (p.fpsString != refParams.fpsString) return null
+                if (p.pixFmt != "yuv420p") return null
+                if (p.durationMs <= 0L) return null
+                clips.add(
+                    ClipInfo(
+                        path = localPath,
+                        params = p,
+                        trimStartMs = item.trimStartMs.coerceIn(0L, p.durationMs),
+                        trimEndMs = item.trimEndMs.coerceAtMost(p.durationMs),
+                        durationMs = p.durationMs,
+                        muted = isClipMuted(ops, clips.size)
+                    )
+                )
+            }
+        }
+
+        // ---- audio reference ----
+        val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
+        if (audioRef != null) {
+            if (audioRef.aCodec != "aac" && audioRef.aCodec != "mp3") return null
+            if (audioRef.aSampleRate <= 0) return null
+            if (audioRef.aChannels != 1 && audioRef.aChannels != 2) return null
+        }
+        if (audioRef != null) {
+            for (c in clips) {
+                if (c.params.hasAudio) {
+                    if (c.params.aCodec != audioRef.aCodec) return null
+                    if (c.params.aSampleRate != audioRef.aSampleRate) return null
+                    if (c.params.aChannels != audioRef.aChannels) return null
+                }
+            }
+        }
+        val planHasAudio = audioRef != null
+        val aRate = audioRef?.aSampleRate ?: 44100
+        val aChanLabel = if ((audioRef?.aChannels ?: 2) == 1) "mono" else "stereo"
+
+        // ---- transitions with clamped durations ----
+        val transitions = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            transitions[t.index] = Pair(t.type, t.durationMs)
+        }
+        val clampedTransitions = mutableMapOf<Int, Pair<String, Long>>()
+        for ((gap, td) in transitions) {
+            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
+            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
+            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
+            if (d >= 50L) {
+                clampedTransitions[gap] = Pair(td.first, d)
+            }
+        }
+
+        // ---- effective spans + degenerate check ----
+        for (i in clips.indices) {
+            val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val start = clips[i].trimStartMs + dLeft
+            val end = clips[i].trimEndMs - dRight
+            if (end <= start) return null
+        }
+
+        // ---- build per-segment commands ----
+        val commands = mutableListOf<Pair<String, Double>>()
+        val segmentFiles = mutableListOf<File>()
+        val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
+        val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
+        val fpsFilter = "fps=" + refParams.fpsString
+
+        var segCounter = 0
+        fun nextSegmentFile(): File {
+            val f = File(workDir, "seg_" + segCounter + ".mp4")
+            segCounter++
+            segmentFiles.add(f)
+            return f
+        }
+
+        for (i in clips.indices) {
+            val clip = clips[i]
+            val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val spanStart = clip.trimStartMs + dLeft
+            val spanEnd = clip.trimEndMs - dRight
+            val spanMs = spanEnd - spanStart
+            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
+            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
+            val seg = nextSegmentFile()
+
+            if (fullRange) {
+                // Whole clip unchanged -> pure stream copy remux
+                val sb = StringBuilder("-y -noautorotate -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                    sb.append(" -map 0:v:0 -map 1:a:0 -c:v copy ").append(aEnc)
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
+                } else {
+                    sb.append(" -map 0:v:0 -c copy")
+                }
+                sb.append(" \"").append(seg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters
+                val sb = StringBuilder("-y -noautorotate")
+                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                sb.append(" -vf \"").append(fpsFilter).append(",setsar=1\" ")
+                sb.append(enc)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(" \"").append(seg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            }
+
+            // Transition segment that starts right after this clip
+            val trans = clampedTransitions[i]
+            if (trans != null && i < clips.size - 1) {
+                val type = trans.first
+                val dMs = trans.second
+                val right = clips[i + 1]
+                val dSec = ms(dMs)
+                val leftTailStart = ms(clip.trimEndMs - dMs)
+                val rightHeadStart = ms(right.trimStartMs)
+                val leftAudioReal = planHasAudio && clip.params.hasAudio && !clip.muted
+                val rightAudioReal = planHasAudio && right.params.hasAudio && !right.muted
+                val tSeg = nextSegmentFile()
+
+                val sb = StringBuilder("-y -noautorotate -ss ").append(leftTailStart)
+                sb.append(" -t ").append(dSec).append(" -i \"").append(clip.path).append("\"")
+                sb.append(" -noautorotate -ss ").append(rightHeadStart)
+                sb.append(" -t ").append(dSec).append(" -i \"").append(right.path).append("\"")
+
+                var anullCounter = 2
+                val leftALabel: String
+                val rightALabel: String
+                if (planHasAudio) {
+                    if (leftAudioReal) {
+                        leftALabel = "[0:a:0]"
+                    } else {
+                        sb.append(" -f lavfi -t ").append(dSec)
+                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                        leftALabel = "[" + anullCounter + ":a:0]"
+                        anullCounter++
+                    }
+                    if (rightAudioReal) {
+                        rightALabel = "[1:a:0]"
+                    } else {
+                        sb.append(" -f lavfi -t ").append(dSec)
+                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                        rightALabel = "[" + anullCounter + ":a:0]"
+                        anullCounter++
+                    }
+                } else {
+                    leftALabel = ""
+                    rightALabel = ""
+                }
+
+                val filterParts = mutableListOf<String>()
+                filterParts.add("[0:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[lv]")
+                filterParts.add("[1:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[rv]")
+                filterParts.add(
+                    "[lv][rv]xfade=transition=" + sanitizeTransitionType(type) +
+                        ":duration=" + dSec + ":offset=0[tv]"
+                )
+
+                if (planHasAudio) {
+                    if (leftAudioReal && rightAudioReal) {
+                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
+                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
+                        filterParts.add("[la][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
+                    } else if (leftAudioReal) {
+                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
+                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
+                        filterParts.add("[la][sa]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
+                    } else if (rightAudioReal) {
+                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
+                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
+                        filterParts.add("[sa][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
+                    }
+                }
+
+                sb.append(" -filter_complex \"").append(filterParts.joinToString(";")).append("\"")
+                sb.append(" -map \"[tv]\"")
+                if (planHasAudio) {
+                    if (leftAudioReal || rightAudioReal) {
+                        sb.append(" -map \"[ta]\"")
+                    } else {
+                        // Both sides silent: map the silence input directly
+                        sb.append(" -map ").append(leftALabel)
+                    }
+                }
+                sb.append(" ").append(enc)
+                if (planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(" \"").append(tSeg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, dMs / 1000.0)))
+            }
+        }
+
+        // ---- concat all segments with stream copy ----
+        val listFile = File(workDir, "concat_list.txt")
+        val listSb = StringBuilder()
+        for (f in segmentFiles) {
+            listSb.append("file '").append(f.absolutePath).append("'\n")
+        }
+        listFile.writeText(listSb.toString())
+
+        val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
+        val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
+            "\" -map 0:v:0" + audioMap + " -c copy -bsf:v dump_extra \"" + outputFilePath + "\""
+        commands.add(Pair(concatCmd, 1.0))
+
+        // ---- plan json ----
+        val arr = JSONArray()
+        for (pair in commands) {
+            val o = JSONObject()
+            o.put("cmd", pair.first)
+            o.put("weight", pair.second)
+            arr.put(o)
+        }
+        val planFile = File(workDir, "plan.json")
+        planFile.writeText(arr.toString())
+
+        Log.d(
+            TAG,
+            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
+                ", transitions=" + clampedTransitions.size
+        )
+        return SmartPlan(planFile)
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private fun ms(v: Long): String = (v / 1000.0).toString()
+
+    private fun isClipMuted(ops: List<EditOperation>, index: Int): Boolean {
+        return ops.filterIsInstance<EditOperation.MuteClip>().any { it.index == index && it.isMuted }
+    }
+
+    private fun isImagePath(p: String): Boolean {
+        val lower = p.lowercase()
+        return lower.endsWith(".png") || lower.endsWith(".jpg") ||
+            lower.endsWith(".jpeg") || lower.endsWith(".webp")
+    }
+
+    private fun copyToCache(context: Context, uri: Uri, workDir: File): String? {
+        return try {
+            val f = File(workDir, "src_" + System.nanoTime() + ".mp4")
+            val input = context.contentResolver.openInputStream(uri) ?: return null
+            val output = FileOutputStream(f)
+            try {
+                input.copyTo(output)
+            } finally {
+                input.close()
+                output.close()
+            }
+            if (f.length() == 0L) {
+                f.delete()
+                return null
+            }
+            f.absolutePath
+        } catch (e: Exception) {
+            Log.w(TAG, "copyToCache failed: " + e.message)
+            null
+        }
+    }
+
+    private fun sweepStaleWorkDirs(context: Context) {
+        try {
+            val cache = context.cacheDir ?: return
+            val cutoff = System.currentTimeMillis() - 2L * 60L * 60L * 1000L
+            val dirs = cache.listFiles { file ->
+                file.isDirectory && file.name.startsWith("smart_export_")
+            } ?: return
+            for (d in dirs) {
+                if (d.lastModified() < cutoff) {
+                    d.listFiles()?.forEach { it.delete() }
+                    d.delete()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "sweep failed: " + e.message)
+        }
+    }
+
+    private fun videoEncoderArgs(p: MediaParams, bitrate: String, preset: String): String? {
+        if (p.vCodec == "h264") {
+            val profile = when (p.vProfile.lowercase()) {
+                "baseline", "constrained baseline" -> "baseline"
+                "main" -> "main"
+                "high 10" -> "high10"
+                else -> "high"
+            }
+            val sb = StringBuilder("-c:v libx264 -profile:v ").append(profile)
+            if (p.vLevel > 0) sb.append(" -level:v ").append(p.vLevel)
+            sb.append(" -pix_fmt yuv420p")
+            if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 18")
+            if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
+            return sb.toString()
+        }
+        if (p.vCodec == "hevc") {
+            val profile = if (p.vProfile.lowercase() == "main 10") "main10" else "main"
+            val sb = StringBuilder("-c:v libx265 -profile:v ").append(profile)
+            sb.append(" -tag:v hvc1 -pix_fmt yuv420p")
+            if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 20")
+            if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
+            return sb.toString()
+        }
+        return null
+    }
+
+    private fun audioEncoderArgs(audioRef: MediaParams?, audioBitrate: String): String {
+        val codec = if (audioRef?.aCodec == "mp3") "libmp3lame" else "aac"
+        val rate = audioRef?.aSampleRate ?: 44100
+        val channels = audioRef?.aChannels ?: 2
+        val sb = StringBuilder("-c:a ").append(codec)
+        sb.append(" -ar ").append(rate)
+        sb.append(" -ac ").append(channels)
+        if (audioBitrate.isNotEmpty()) {
+            sb.append(" -b:a ").append(audioBitrate)
+        } else {
+            sb.append(" -b:a 192k")
+        }
+        return sb.toString()
+    }
+
+    private val validXfadeTransitions = setOf(
+        "fade", "fadeblack", "fadewhite", "rectcrop", "circlecrop", "circleclose", "circleopen",
+        "horzclose", "horzopen", "vertclose", "vertopen", "diagbl", "diagbr", "diagtl", "diagtr",
+        "hlslice", "hrslice", "vuslice", "vdslice", "dissolve", "pixelize", "slidedown", "slideleft",
+        "slideright", "slideup", "wipedown", "wipeleft", "wiperight", "wipeup", "zoomin", "squeezeh",
+        "squeezev", "coverleft", "coverright", "coverup", "coverdown", "revealleft", "revealright",
+        "revealup", "revealdown"
+    )
+
+    fun sanitizeTransitionType(rawType: String): String {
+        val raw = rawType.lowercase()
+        return when (raw) {
+            "smoothleft" -> "coverleft"
+            "smoothright" -> "coverright"
+            "distance" -> "zoomin"
+            else -> if (validXfadeTransitions.contains(raw)) raw else "fade"
+        }
+    }
+}
+'''
+
+with open(PLANNER_PATH, "w", encoding="utf-8") as f:
+    f.write(CONTENT)
+print("[phase9] step1: [ok] wrote SmartExportPlanner.kt (%d bytes)" % len(CONTENT))
 CUTPY
+fi
 
 ###############################################################################
-# Step 3 -- VideoEditingActivity.kt surgery (the big one)
+# Step 2 -- VideoEditingViewModelExt.kt: add shiftSequenceOpIndices()
 ###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step2: [skip] Ext already patched"
+else
 python3 <<'CUTPY'
-import re, sys
+import sys
 
 def die(m):
-    print("[phase8][ERROR] " + m)
+    print("[phase9][ERROR] " + m)
     sys.exit(1)
 
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
+EXT = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
 
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
+with open(EXT, encoding="utf-8") as f:
+    s = f.read()
 
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
+ANCHOR = "fun VideoEditingViewModel.removeMergeVideo(index: Int) {"
+if s.count(ANCHOR) != 1:
+    die("removeMergeVideo anchor count = %d (expected 1)" % s.count(ANCHOR))
 
-def sub(s, pat, new, n=1):
-    r, c = re.subn(pat, new, s)
-    if c != n:
-        die("sub count=%d expected=%d for: %s" % (c, n, pat[:90]))
-    return r
+NEWFUN = r'''/**
+ * Keep Transition (gap) and MuteClip (position) op indices aligned with the
+ * sequence after a freeze insertion changes the clip layout.
+ *
+ * gapFrom/gapBy   : old gap indices >= gapFrom shift by gapBy (a gap between
+ *                   clips g and g+1 moves when an insertion lands at or after
+ *                   the gap's left clip).
+ * posFrom/posBy   : old clip positions >= posFrom shift by posBy.
+ * splitMuteAt     : when the muted clip itself was split in two by the freeze
+ *                   insertion, the mute is cloned onto both halves.
+ */
+fun VideoEditingViewModel.shiftSequenceOpIndices(
+    gapFrom: Int,
+    gapBy: Int,
+    posFrom: Int,
+    posBy: Int,
+    splitMuteAt: Int = -1
+) {
+    executeCommand(MutateListCommand("Adjust Sequence Indices") { ops ->
+        val result = mutableListOf<EditOperation>()
+        for (op in ops) {
+            when (op) {
+                is EditOperation.Transition -> {
+                    result.add(
+                        if (op.index >= gapFrom) op.copy(index = op.index + gapBy) else op
+                    )
+                }
+                is EditOperation.MuteClip -> {
+                    if (op.index == splitMuteAt) {
+                        result.add(op)
+                        result.add(op.copy(index = op.index + posBy))
+                    } else if (op.index >= posFrom) {
+                        result.add(op.copy(index = op.index + posBy))
+                    } else {
+                        result.add(op)
+                    }
+                }
+                else -> result.add(op)
+            }
+        }
+        result
+    })
+}
 
-def cut_between(s, a, b):
-    i = s.find(a)
+'''
+
+i = s.find(ANCHOR)
+s = s[:i] + NEWFUN + s[i:]
+
+with open(EXT, "w", encoding="utf-8") as f:
+    f.write(s)
+print("[phase9] step2: [ok] shiftSequenceOpIndices added to Ext")
+CUTPY
+fi
+
+###############################################################################
+# Step 3 -- VideoEditingActivity.kt: rewrite freezeFrameAtCurrentPosition()
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step3: [skip] freeze function already rewritten"
+else
+python3 <<'CUTPY'
+import sys
+
+def die(m):
+    print("[phase9][ERROR] " + m)
+    sys.exit(1)
+
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+
+with open(VEA, encoding="utf-8") as f:
+    s = f.read()
+
+def replace_fun(s, header, newfun):
+    i = s.find(header)
     if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
-
-def cut_between_re(s, a, b):
-    ma = re.search(a, s)
-    if not ma:
-        die("cut_between_re start miss: %s" % a[:70])
-    mb = re.compile(b).search(s, ma.end())
-    if not mb:
-        die("cut_between_re end miss: %s" % b[:70])
-    return s[:ma.start()] + s[mb.start():]
-
-def cut_fun(s, header):
-    i = s.find("    " + header)
-    if i < 0:
-        die("cut_fun miss: " + header)
+        die("replace_fun miss: " + header)
+    if s.find(header, i + 1) >= 0:
+        die("replace_fun duplicate header: " + header)
     j = s.find("{", i)
-    d = 0
+    if j < 0:
+        die("replace_fun no opening brace: " + header)
+    depth = 0
     k = j
     while k < len(s):
-        if s[k] == "{":
-            d += 1
-        elif s[k] == "}":
-            d -= 1
-            if d == 0:
+        c = s[k]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
                 break
         k += 1
-    if d != 0 or k >= len(s):
-        die("cut_fun unbalanced: " + header)
+    if k >= len(s) or depth != 0:
+        die("replace_fun unbalanced braces: " + header)
     end = k + 1
     if s[end:end + 1] == "\n":
         end += 1
-        if s[end:end + 1] == "\n":
-            end += 1
-    start = i
-    if start >= 2 and s[start - 2:start] == "\n\n":
-        start -= 1
-    return s[:start] + s[end:]
+    return s[:i] + newfun + s[end:]
 
-P = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-s = rd(P)
+NEWFREEZE = r'''    private fun freezeFrameAtCurrentPosition() {
+        val index = selectedVideoIndex ?: return
+        val sequenceItems = getSequenceItems()
+        if (index < 0 || index >= sequenceItems.size) return
+        val item = sequenceItems[index]
 
-if "R.id.btnText" not in s:
-    print("[phase8] step3: [skip] VEA already trimmed")
-    sys.exit(0)
+        showLoading("Creating freeze frame...")
+        isImportLoading = true
 
-# ---------------- imports ----------------
-s = rep(s, "import com.tharunbirla.librecuts.customviews.DraggableTextOverlayView\n"
-           "import com.tharunbirla.librecuts.customviews.DraggableImageOverlayView\n"
-           "import com.tharunbirla.librecuts.customviews.ImageOverlayView\n", "")
-s = rep(s, "import com.tharunbirla.librecuts.models.TextPosition\n", "")
+        val globalPos = getGlobalPosition()
 
-# ---------------- fields ----------------
-s = rep(s, "    private lateinit var textTrackContainer: LinearLayout\n"
-           "    private lateinit var imageTrackContainer: LinearLayout\n", "")
-s = rep(s, "    private lateinit var btnMoveLayerUp: ImageButton\n"
-           "    private lateinit var btnMoveLayerDown: ImageButton\n", "")
-s = rep(s, "    private lateinit var previewLoadingOverlay: View\n", "")
-s = rep(s, "    private lateinit var btnPreview: ImageButton\n", "")
-s = rep(s, "    private var tvPreviewBadge: TextView? = null\n"
-           "    private var textOverlayView: com.tharunbirla.librecuts.customviews.TextOverlayView? = null\n", "")
-s = cut_between(s, "    private var bgPreviewImageView: ImageView? = null\n",
-                "    private val activeExtractionUris = mutableSetOf<Uri>()\n")
-# font field block (comment line contains non-ASCII dash -- use wildcards)
-s = sub(s, r"\n\n    // [^\n]*FONT: cached absolute path[^\n]*\n"
-            r"    // Populated in onCreate via ffmpegEngine\.copyFontToCache\(\)\.\n"
-            r"    // Passed to buildConsolidatedFFmpegCommand\(\) so drawtext can find the font\.\n"
-            r"    private var fontFilePath: String\? = null\n", "")
-# text/image editing state fields (keep isMagnetEnabled)
-s = rep(s, "    // Inline text editing state\n"
-           "    private var draggableTextOverlay: DraggableTextOverlayView? = null\n"
-           "    private var textEditingToolbar: View? = null\n"
-           "    private var isTextEditingActive = false\n"
-           "\n"
-           "    // Inline image overlay editing state\n"
-           "    private var draggableImageOverlay: DraggableImageOverlayView? = null\n"
-           "    private var imageOverlayView: ImageOverlayView? = null\n"
-           "    private var imageEditingToolbar: View? = null\n"
-           "    private var isImageEditingActive = false\n"
-           "    private var isMagnetEnabled = true\n",
-           "    private var isMagnetEnabled = true\n")
-s = rep(s, "    private var backgroundEditingToolbar: View? = null\n", "")
-s = rep(s, "    private var cropEditingToolbar: View? = null\n"
-           "    private var cropOverlayView: com.tharunbirla.librecuts.customviews.CropOverlayView? = null\n"
-           "    private var initialCropOperation: com.tharunbirla.librecuts.models.EditOperation.Crop? = null\n\n", "")
-s = rep(s, "    private var keyframeEditingToolbar: View? = null\n"
-           "    private var isKeyframeEditingMode = false\n"
-           "    private var activeKeyframeProperty = \"Position\" // \"Position\", \"Opacity\", or \"Speed\"\n\n", "")
-s = sub(s, r"\n    // Segmented preview state\n"
-            r"    private var previewJob: Job\? = null\n"
-            r"    private var isShowingPreview = false\n"
-            r"    private var isRenderingPreview = false\n"
-            r"    private var previewFile: File\? = null\n"
-            r"    \n", "\n")
-s = cut_between(s, "    private var activeFontSelectionCallback: ((com.tharunbirla.librecuts.utils.FontItem) -> Unit)? = null\n",
-                "    private var photoSequencePreviewImageView: ImageView? = null\n")
+        lifecycleScope.launch {
+            val resultUri = withContext(Dispatchers.IO) {
+                var bitmap: android.graphics.Bitmap? = null
+                val retriever = android.media.MediaMetadataRetriever()
+                try {
+                    retriever.setDataSource(this@VideoEditingActivity, item.uri)
 
-# ---------------- onCreate: font copy + text PNG renderer wiring ----------------
-s = cut_between_re(s,
-    r"        // [^\n]*Copy the bundled font from assets[^\n]*\n",
-    "        // Initialize UI components\n")
+                    var globalStartMs = 0L
+                    for (i in 0 until index) {
+                        globalStartMs += sequenceItems[i].trimmedDurationMs
+                    }
+                    val relativePosMs = globalPos - globalStartMs
+                    val sourceTimeMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
+                    val coercedSourceTimeMs = sourceTimeMs.coerceIn(item.trimStartMs, item.trimEndMs)
 
-# ---------------- initializeViews ----------------
-s = rep(s, "        bgPreviewImageView = findViewById(R.id.bgPreviewImageView)\n", "")
-s = rep(s, "        val canvasLayoutListener = android.view.ViewTreeObserver.OnGlobalLayoutListener {\n"
-           "            triggerCanvasLayoutUpdate()\n"
-           "        }\n"
-           "        playerContainer.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n"
-           "        pipPlayerContainer.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n"
-           "        fullscreenCanvasHolder.viewTreeObserver.addOnGlobalLayoutListener(canvasLayoutListener)\n\n", "")
-s = rep(s, "        previewLoadingOverlay = findViewById(R.id.previewLoadingOverlay)\n", "")
-s = rep(s, "        textTrackContainer = findViewById(R.id.textTrackContainer)\n"
-           "        imageTrackContainer = findViewById(R.id.imageTrackContainer)\n", "")
-# magnet listener: drop overlay snapping lines
-s = rep(s, "            draggableTextOverlay?.isSnappingEnabled = isMagnetEnabled\n"
-           "            draggableImageOverlay?.isSnappingEnabled = isMagnetEnabled\n", "")
-# layer reorder buttons
-s = rep(s, "        btnMoveLayerUp = findViewById(R.id.btnMoveLayerUp)\n"
-           "        btnMoveLayerDown = findViewById(R.id.btnMoveLayerDown)\n"
-           "        btnMoveLayerUp.setBounceClickListener {\n"
-           "            viewModel.selectedOperationId.value?.let { id ->\n"
-           "                viewModel.moveOverlayOperation(id, moveUp = true)\n"
-           "            }\n"
-           "        }\n"
-           "        btnMoveLayerDown.setBounceClickListener {\n"
-           "            viewModel.selectedOperationId.value?.let { id ->\n"
-           "                viewModel.moveOverlayOperation(id, moveUp = false)\n"
-           "            }\n"
-           "        }\n\n", "")
-# text/image overlay views + text toolbar + draggable image overlay + crop overlay (contiguous)
-s = cut_between(s, "        textOverlayView = try {\n", "        imageEditingToolbar = try {\n")
-# image editing toolbar setup
-s = cut_between(s, "        imageEditingToolbar = try {\n", "        videoEditingToolbar = try {\n")
-# crop + background + keyframe toolbar setups (contiguous)
-s = cut_between(s, "        cropEditingToolbar = try {\n",
-                "        findViewById<ImageButton>(R.id.btnHome)?.setBounceClickListener {\n")
-# tvPreviewBadge init
-s = rep(s, "        tvPreviewBadge = findViewById(R.id.tvPreviewBadge)\n\n", "")
-# tool button wirings: keep btnAudio only
-s = rep(s, "        // Tool Buttons with proper scoping\n"
-           "        findViewById<ImageButton>(R.id.btnText).setBounceClickListener {\n"
-           "            setActiveToolButton(R.id.btnText)\n"
-           "            textAction()\n"
-           "        }\n"
-           "        findViewById<ImageButton>(R.id.btnMediaOverlay)?.setBounceClickListener {\n"
-           "            setActiveToolButton(R.id.btnMediaOverlay)\n"
-           "            mediaOverlayAction()\n"
-           "        }\n"
-           "\n"
-           "        findViewById<ImageButton>(R.id.btnAudio).setBounceClickListener {\n",
-           "        // Tool Buttons with proper scoping\n"
-           "        findViewById<ImageButton>(R.id.btnAudio).setBounceClickListener {\n")
-s = rep(s, "        findViewById<ImageButton>(R.id.btnCrop).setBounceClickListener {\n"
-           "            setActiveToolButton(R.id.btnCrop)\n"
-           "            cropAction()\n"
-           "        }\n"
-           "\n"
-           "        findViewById<ImageButton>(R.id.btnCanvasBackground)?.setBounceClickListener {\n"
-           "            setActiveToolButton(R.id.btnCanvasBackground)\n"
-           "            canvasBackgroundAction()\n"
-           "        }\n\n", "")
-# undo/redo/preview block: drop btnPreview
-s = rep(s, "        try {\n"
-           "            btnUndo = findViewById(R.id.btnUndo)\n"
-           "            btnRedo = findViewById(R.id.btnRedo)\n"
-           "            btnPreview = findViewById(R.id.btnPreview)\n"
-           "            btnUndo.setBounceClickListener {\n"
-           "                if (isShowingPreview) dismissPreview()\n"
-           "                viewModel.undo()\n"
-           "            }\n"
-           "            btnRedo.setBounceClickListener {\n"
-           "                if (isShowingPreview) dismissPreview()\n"
-           "                viewModel.redo()\n"
-           "            }\n"
-           "            btnPreview.setBounceClickListener {\n"
-           "                if (isShowingPreview) {\n"
-           "                    dismissPreview()\n"
-           "                } else {\n"
-           "                    renderSegmentedPreview()\n"
-           "                }\n"
-           "            }\n"
-           "        } catch (e: Exception) {\n"
-           "            Log.d(TAG, \"Undo/Redo/Preview buttons not found in layout (optional)\")\n"
-           "        }\n",
-           "        try {\n"
-           "            btnUndo = findViewById(R.id.btnUndo)\n"
-           "            btnRedo = findViewById(R.id.btnRedo)\n"
-           "            btnUndo.setBounceClickListener {\n"
-           "                viewModel.undo()\n"
-           "            }\n"
-           "            btnRedo.setBounceClickListener {\n"
-           "                viewModel.redo()\n"
-           "            }\n"
-           "        } catch (e: Exception) {\n"
-           "            Log.d(TAG, \"Undo/Redo buttons not found in layout (optional)\")\n"
-           "        }\n")
+                    bitmap = retriever.getFrameAtTime(coercedSourceTimeMs * 1000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to retrieve frame: ${e.message}", e)
+                } finally {
+                    try {
+                        retriever.release()
+                    } catch (e: Exception) {}
+                }
 
-# ---------------- updateUIInteractionState ----------------
-s = rep(s, "        val isBusy = uiState.isExporting || isRenderingPreview\n"
-           "        \n"
-           "        if (::previewLoadingOverlay.isInitialized) {\n"
-           "            previewLoadingOverlay.visibility = if (isRenderingPreview) View.VISIBLE else View.GONE\n"
-           "        }\n"
-           "        \n",
-           "        val isBusy = uiState.isExporting\n")
-s = cut_between(s, "        if (::btnPreview.isInitialized) {\n",
-                "        customVideoSeeker.isEnabled = !isBusy\n")
+                if (bitmap == null) return@withContext null
 
-# ---------------- setActiveToolButton ----------------
-s = rep(s, "    private fun setActiveToolButton(activeId: Int) {\n"
-           "        if (isShowingPreview) dismissPreview()\n"
-           "        val toolIds = listOf(R.id.btnText, R.id.btnMediaOverlay, R.id.btnAudio, R.id.btnCrop, R.id.btnCanvasBackground)\n",
-           "    private fun setActiveToolButton(activeId: Int) {\n"
-           "        val toolIds = listOf(R.id.btnAudio)\n")
+                val pngFile = File(cacheDir, "freeze_${System.nanoTime()}.png")
+                try {
+                    java.io.FileOutputStream(pngFile).use { out ->
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to save temp PNG: ${e.message}", e)
+                    return@withContext null
+                }
 
-# ---------------- observeViewModelState ----------------
-s = rep(s,
-    "            viewModel.selectedOperationId.collect { selectedId ->\n"
-    "                if (selectedId != null && isShowingPreview) dismissPreview()\n"
-    "                textOverlayView?.hiddenOperationId = selectedId\n"
-    "                imageOverlayView?.hiddenOperationId = selectedId\n"
-    "                \n"
-    "                if (selectedId != null) {\n"
-    "                    if (isKeyframeEditingMode) {\n"
-    "                        exitKeyframeEditingMode()\n"
-    "                    }\n"
-    "\n"
-    "                    // Reset editing modes to prevent multiple active editing toolbars/states\n"
-    "                    draggableTextOverlay?.deactivate()\n"
-    "                    draggableImageOverlay?.deactivate()\n"
-    "                    exitTextEditingMode()\n"
-    "                    exitImageEditingMode()\n"
-    "\n"
-    "                    val op = viewModel.project.value?.operations?.find {\n"
-    "                        when (it) {\n"
-    "                            is EditOperation.AddText -> it.id == selectedId\n"
-    "                            is EditOperation.AddImageOverlay -> it.id == selectedId\n"
-    "                            is EditOperation.AddBackgroundAudio -> it.id == selectedId\n"
-    "                            else -> false\n"
-    "                        }\n"
-    "                    }\n"
-    "                    when (op) {\n"
-    "                        is EditOperation.AddText -> {\n"
-    "                            draggableTextOverlay?.activateForEdit(op)\n"
-    "                            enterTextEditingMode(isReEditing = true)\n"
-    "                        }\n"
-    "                        is EditOperation.AddImageOverlay -> {\n"
-    "                            draggableImageOverlay?.activateForEdit(op)\n"
-    "                            enterImageEditingModeForEdit(op.rotationAngle)\n"
-    "                        }\n"
-    "                        is EditOperation.AddBackgroundAudio -> {\n"
-    "                            enterAudioEditingMode(op)\n"
-    "                        }\n"
-    "                        else -> {}\n"
-    "                    }\n"
-    "                } else {\n"
-    "                    draggableTextOverlay?.deactivate()\n"
-    "                    draggableImageOverlay?.deactivate()\n"
-    "                    exitTextEditingMode()\n"
-    "                    exitImageEditingMode()\n"
-    "                    exitAudioEditingMode()\n"
-    "                }\n"
-    "                \n"
-    "                // Re-render tracks so the selection highlight updates\n"
-    "                viewModel.project.value?.let { renderTracks(it) }\n"
-    "                updateLayerReorderButtons()\n"
-    "            }\n",
-    "            viewModel.selectedOperationId.collect { selectedId ->\n"
-    "                if (selectedId != null) {\n"
-    "                    val op = viewModel.project.value?.operations?.find {\n"
-    "                        when (it) {\n"
-    "                            is EditOperation.AddBackgroundAudio -> it.id == selectedId\n"
-    "                            else -> false\n"
-    "                        }\n"
-    "                    }\n"
-    "                    when (op) {\n"
-    "                        is EditOperation.AddBackgroundAudio -> {\n"
-    "                            enterAudioEditingMode(op)\n"
-    "                        }\n"
-    "                        else -> {}\n"
-    "                    }\n"
-    "                } else {\n"
-    "                    exitAudioEditingMode()\n"
-    "                }\n"
-    "                \n"
-    "                // Re-render tracks so the selection highlight updates\n"
-    "                viewModel.project.value?.let { renderTracks(it) }\n"
-    "            }\n")
-# project collector: text/image/crop/canvas blocks
-s = cut_between(s, "                    textOverlayView?.let { overlay ->\n",
-                "                    renderTracks(project)\n")
-s = rep(s, "                    renderTracks(project)\n                    updateLayerReorderButtons()\n",
-           "                    renderTracks(project)\n")
+                val mp4File = File(cacheDir, "freeze_vid_${System.nanoTime()}.mp4")
 
-# ---------------- whole function cuts ----------------
-# setupTextFontSelector + showFontManagerBottomSheet (contiguous, before saveProjectLauncher)
-s = cut_between(s, "    private fun setupTextFontSelector(formatContainer: View?) {\n",
-                "    private val saveProjectLauncher = registerForActivityResult(\n")
-for h in [
-    "private fun updateLayerReorderButtons(",
-    "private fun applyCropPreview(",
-    "private fun resetCropPreview(",
-    "private fun cropAction(",
-    "private fun canvasBackgroundAction(",
-    "private fun enterCanvasBackgroundEditingMode(",
-    "private fun exitCanvasBackgroundEditingMode(",
-    "private fun textAction(",
-    "private fun enterTextEditingMode(",
-    "private fun exitTextEditingMode(",
-    "private fun duplicateSelectedOverlay(",
-    "private fun pickBackgroundImage(",
-    "private fun mediaOverlayAction(",
-    "private fun openImagePicker(",
-    "private fun showImageOverlayConfig(",
-    "private fun getExtensionFromUri(",
-    "private fun getOverlayFileDurationMs(",
-    "private fun enterImageEditingMode(",
-    "private fun enterImageEditingModeForEdit(",
-    "private fun exitImageEditingMode(",
-    "private fun getPresetCropBounds(",
-    "private fun enterCropEditingMode(",
-    "private fun exitCropEditingMode(",
-    "private fun updateCanvasBackgroundPreview(",
-    "private fun updateCropUi(",
-]:
-    s = cut_fun(s, h)
+                // SMART FREEZE (phase 9): encode the still frame with the SAME codec
+                // parameters as the source clip (codec, profile, level, resolution,
+                // fps, rotation, silent audio matching the source audio) so the smart
+                // export pipeline can stream-copy this segment with -c copy.
+                val srcParams = com.tharunbirla.librecuts.services.SmartExportPlanner.probeMedia(
+                    this@VideoEditingActivity, item.uri, item.uri.path
+                )
+                var outUri: Uri? = null
+                if (srcParams != null && (srcParams.vCodec == "h264" || srcParams.vCodec == "hevc")
+                    && srcParams.pixFmt == "yuv420p" && srcParams.width > 0 && srcParams.height > 0) {
+                    val freezeCmds = com.tharunbirla.librecuts.services.SmartExportPlanner.buildFreezeFrameCommands(
+                        srcParams, pngFile.absolutePath, mp4File.absolutePath, 3000L
+                    )
+                    var ok = freezeCmds.commands.isNotEmpty()
+                    for (cmd in freezeCmds.commands) {
+                        val r = ffmpegEngine.executeCommand(cmd)
+                        if (r !is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
+                            Log.e(TAG, "FFmpeg failed to create freeze frame video")
+                            ok = false
+                            break
+                        }
+                    }
+                    for (tmpPath in freezeCmds.tempFiles) {
+                        try { File(tmpPath).delete() } catch (e: Exception) {}
+                    }
+                    if (ok) outUri = Uri.fromFile(mp4File)
+                }
+                if (outUri == null) {
+                    // Fallback: legacy hardware-encoder path (works, but not copy-compatible)
+                    val cmd = "-y -loop 1 -i \"${pngFile.absolutePath}\" -c:v h264_mediacodec -t 3 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" \"${mp4File.absolutePath}\""
+                    val renderResult = ffmpegEngine.executeCommand(cmd)
+                    if (renderResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
+                        outUri = Uri.fromFile(mp4File)
+                    }
+                }
 
-# closeActiveEditingModes: keep video/audio toolbars only
-s = rep(s,
-    "    private fun closeActiveEditingModes() {\n"
-    "        if (isTextEditingActive) {\n"
-    "            draggableTextOverlay?.commitText()\n"
-    "            isTextEditingActive = false\n"
-    "        }\n"
-    "        if (isImageEditingActive) {\n"
-    "            draggableImageOverlay?.commitImage()\n"
-    "            isImageEditingActive = false\n"
-    "        }\n"
-    "        textEditingToolbar?.visibility = View.GONE\n"
-    "        imageEditingToolbar?.visibility = View.GONE\n"
-    "        videoEditingToolbar?.visibility = View.GONE\n"
-    "        audioEditingToolbar?.visibility = View.GONE\n"
-    "        cropEditingToolbar?.visibility = View.GONE\n"
-    "        backgroundEditingToolbar?.visibility = View.GONE\n"
-    "    }\n",
-    "    private fun closeActiveEditingModes() {\n"
-    "        videoEditingToolbar?.visibility = View.GONE\n"
-    "        audioEditingToolbar?.visibility = View.GONE\n"
-    "    }\n")
+                try { pngFile.delete() } catch (e: Exception) {}
+                outUri
+            }
 
-# clearProjectAndShowImportScreen: drop text/image mode exits
-s = rep(s, "        // Hide toolbars\n"
-           "        exitVideoEditingMode()\n"
-           "        exitAudioEditingMode()\n"
-           "        exitImageEditingMode()\n"
-           "        exitTextEditingMode()\n",
-           "        // Hide toolbars\n"
-           "        exitVideoEditingMode()\n"
-           "        exitAudioEditingMode()\n")
+            isImportLoading = false
+            loadingScreen.visibility = View.GONE
 
-# onActivityResult: drop PICK_IMAGE + PICK_BACKGROUND_IMAGE branches
-s = rep(s, "        } else if (requestCode == PICK_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {\n"
-           "            data?.data?.let { imageUri ->\n"
-           "                showImageOverlayConfig(imageUri)\n"
-           "            }\n", "")
-s = cut_between(s, " else if (requestCode == PICK_BACKGROUND_IMAGE_REQUEST && resultCode == Activity.RESULT_OK) {\n",
-                "\n    }\n\n    private fun audioAction() {")
+            if (resultUri != null) {
+                val freezeFrameItem = com.tharunbirla.librecuts.models.EditOperation.MergeItem(resultUri, 3000L)
 
-# saveAction: commit/preview/font plumbing
-s = rep(s, "    /**\n"
-           "     * SAVE/EXPORT: Consolidates all pending operations into a single FFmpeg command and runs it.\n"
-           "     *\n"
-           "     * KEY FIX: fontFilePath (populated in onCreate from assets/fonts/Roboto-Regular.ttf)\n"
-           "     * is now passed to buildConsolidatedFFmpegCommand so drawtext gets a valid fontfile= path.\n"
-           "     */\n",
-           "    /**\n"
-           "     * SAVE/EXPORT: Consolidates all pending operations into a single FFmpeg command and runs it.\n"
-           "     */\n")
-s = rep(s, "        commitActiveEditsIfAny()\n"
-           "        if (isShowingPreview) dismissPreview()\n"
-           "        val project = viewModel.project.value\n",
-           "        val project = viewModel.project.value\n")
-s = sub(s, r"\n        // Warn but don[^\n]*\n"
-            r"        if \(fontFilePath == null\) \{\n"
-            r"            Log\.w\(TAG, \"fontFilePath is null[^\n]*\n"
-            r"                    \"Check that assets/fonts/Roboto-Regular\.ttf exists[^\n]*\n"
-            r"        \}\n", "")
-s = rep(s, "                    fontFilePath = fontFilePath,\n", "")
+                var globalStartMs = 0L
+                for (i in 0 until index) {
+                    globalStartMs += sequenceItems[i].trimmedDurationMs
+                }
+                val relativePosMs = globalPos - globalStartMs
+                val splitSourceMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
 
-# export dialogs
-s = rep(s, "        commitActiveEditsIfAny()\n"
-           "        if (isShowingPreview) dismissPreview()\n"
-           "\n"
-           "        ExportSettingsDialog(\n",
-           "        ExportSettingsDialog(\n")
-s = rep(s, "            fontPath = fontFilePath,\n", "")
-s = rep(s, "    private fun showQualitySettingsDialog() {\n"
-           "        commitActiveEditsIfAny()\n"
-           "        if (isShowingPreview) dismissPreview()\n"
-           "        val bottomSheetDialog = BottomSheetDialog(this)\n",
-           "    private fun showQualitySettingsDialog() {\n"
-           "        val bottomSheetDialog = BottomSheetDialog(this)\n")
+                val atHeadOfFirstClip = (index == 0 && splitSourceMs <= item.trimStartMs)
 
-# setupExoPlayer STATE_ENDED guard
-s = rep(s, "                        stopProgressUpdater()\n"
-           "                        if (isShowingPreview) dismissPreview()\n",
-           "                        stopProgressUpdater()\n")
+                if (atHeadOfFirstClip) {
+                    // Phase-9 fix: the freeze frame lands at position 0 of the timeline.
+                    // Promote the freeze video to the MAIN video slot and demote the current
+                    // main clip into the merge list. Previously the freeze file was discarded
+                    // (updateSequenceOrder(newItems.drop(1))) and the original main video was
+                    // trimmed to 3s instead, so the "frozen" segment played as normal video.
+                    tempInputFile = File(resultUri.path ?: resultUri.toString())
+                    originalMainVideoDurationMs = 3000L
+                    videoFileName = tempInputFile.name
+                    videoUri = resultUri
+                    viewModel.updateMainVideoTrim(0L, 3000L)
+                    viewModel.updateMainVideoSpeed(1.0f, null)
+                    // Whole old sequence shifts one slot to the right (freeze is the new main)
+                    viewModel.shiftSequenceOpIndices(-1, 1, 0, 1)
+                    viewModel.updateSequenceOrder(sequenceItems)
+                    selectedVideoIndex = null
+                    exitVideoEditingMode()
+                } else {
+                    val newItems = mutableListOf<com.tharunbirla.librecuts.models.EditOperation.MergeItem>()
 
-# syncUiWithPlayer: overlay positions + keyframes + canvas blur
-s = rep(s, "            textOverlayView?.currentPositionMs = currentGlobalPos\n"
-           "            imageOverlayView?.currentPositionMs = currentGlobalPos\n"
-           "\n"
-           "            if (isKeyframeEditingMode) {\n"
-           "                updateDraggableOverlayFromKeyframes(currentGlobalPos)\n"
-           "            }\n\n", "")
-s = cut_between(s, "            if (activeClipIndex != lastActiveClipIndexForBlur) {\n",
-                "            // Real-time transition preview overlay update\n")
+                    for (i in 0 until sequenceItems.size) {
+                        if (i == index) {
+                            if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
+                                val itemA = item.copy(trimEndMs = splitSourceMs)
+                                val itemB = item.copy(trimStartMs = splitSourceMs)
+                                newItems.add(itemA)
+                                newItems.add(freezeFrameItem)
+                                newItems.add(itemB)
+                            } else if (splitSourceMs <= item.trimStartMs) {
+                                newItems.add(freezeFrameItem)
+                                newItems.add(item)
+                            } else {
+                                newItems.add(item)
+                                newItems.add(freezeFrameItem)
+                            }
+                        } else {
+                            newItems.add(sequenceItems[i])
+                        }
+                    }
 
-# seekToGlobalPosition: overlay positions + keyframes
-s = rep(s, "        textOverlayView?.currentPositionMs = globalPos\n"
-           "        imageOverlayView?.currentPositionMs = globalPos\n"
-           "\n"
-           "        if (isKeyframeEditingMode) {\n"
-           "            updateDraggableOverlayFromKeyframes(globalPos)\n"
-           "        }\n", "")
+                    // Keep Transition / MuteClip op indices aligned with the new layout:
+                    //  - main mid-split  : freeze lands at seq 1, second half at seq 2
+                    //  - merge mid-split : freeze lands at seq index+1, second half at index+2
+                    //  - insert before   : freeze takes the item's old position
+                    //  - insert after    : freeze lands at seq index+1
+                    if (index == 0) {
+                        viewModel.shiftSequenceOpIndices(0, 2, 1, 2, 0)
+                    } else if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
+                        viewModel.shiftSequenceOpIndices(index, 2, index + 1, 2, index)
+                    } else if (splitSourceMs <= item.trimStartMs) {
+                        viewModel.shiftSequenceOpIndices(index - 1, 1, index, 1)
+                    } else {
+                        viewModel.shiftSequenceOpIndices(index, 1, index + 1, 1)
+                    }
 
-# performRenderTracks: track container widths + overlay tracks + keyframe cues
-s = rep(s, "        textTrackContainer.layoutParams = textTrackContainer.layoutParams.apply {\n"
-           "            width = timelineWidth\n"
-           "        }\n"
-           "        imageTrackContainer.layoutParams = imageTrackContainer.layoutParams.apply {\n"
-           "            width = timelineWidth\n"
-           "        }\n", "")
-s = cut_between(s, "        // Combined Text and Image tracks (Overlays) in Z-order stack\n",
-                "        // Audio tracks\n")
-s = cut_between(s, "        // Keyframe cues tracks\n",
-                "        if (activeExtractionCount == 0 && isImportLoading) {\n")
+                    selectedVideoIndex = null
+                    exitVideoEditingMode()
+                    if (newItems.isNotEmpty()) {
+                        val primaryItem = newItems[0]
+                        viewModel.updateMainVideoTrim(primaryItem.trimStartMs, primaryItem.trimEndMs)
+                        viewModel.updateSequenceOrder(newItems.drop(1))
+                    }
+                }
+                Toast.makeText(this@VideoEditingActivity, R.string.toast_freeze_frame_added_to_sequence, Toast.LENGTH_SHORT).show()
+            } else {
+                Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_create_freeze_frame, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+'''
 
-# trim dialog + custom seeker preview guards
-s = rep(s, "    private fun showVideoSegmentTrimDialog(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {\n"
-           "        if (isShowingPreview) dismissPreview()\n",
-           "    private fun showVideoSegmentTrimDialog(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {\n")
-s = rep(s, "        customVideoSeeker.onSeekListener = { seekPosition ->\n"
-           "            // Dismiss preview when user manually seeks\n"
-           "            if (isShowingPreview) dismissPreview()\n",
-           "        customVideoSeeker.onSeekListener = { seekPosition ->\n")
-# setupCustomSeeker: overlay time sync
-s = rep(s, "                updateDurationDisplay(newSeekTime.toInt(), totalDuration.toInt())\n"
-           "                \n"
-           "                textOverlayView?.currentPositionMs = newSeekTime\n"
-           "                imageOverlayView?.currentPositionMs = newSeekTime\n",
-           "                updateDurationDisplay(newSeekTime.toInt(), totalDuration.toInt())\n")
+s = replace_fun(s, "    private fun freezeFrameAtCurrentPosition() {", NEWFREEZE)
 
-# fullscreen canvas: drop crop-aware layout trigger
-s = rep(s, "        }\n"
-           "        targetContainer.post {\n"
-           "            triggerCanvasLayoutUpdate()\n"
-           "        }\n"
-           "    }\n",
-           "        }\n"
-           "    }\n")
-s = cut_fun(s, "private fun triggerCanvasLayoutUpdate(")
+# sanity: old buggy pattern must be gone, new markers present
+if "newItems.drop(1))" in s and "atHeadOfFirstClip" not in s:
+    die("old freeze insertion logic still present")
+if "atHeadOfFirstClip" not in s:
+    die("new freeze promote branch missing")
+if "buildFreezeFrameCommands" not in s:
+    die("smart freeze encode missing")
+if "shiftSequenceOpIndices" not in s:
+    die("op index realignment missing")
 
-# segmented preview rendering block (comment + renderSegmentedPreview + dismissPreview)
-def cut_re_lit(s, a, b):
-    ma = re.search(a, s)
-    if not ma:
-        die("cut_re_lit start miss: %s" % a[:70])
-    j = s.find(b, ma.end())
-    if j < 0:
-        die("cut_re_lit end miss: %r" % b[:70])
-    return s[:ma.start()] + s[j:]
-s = cut_re_lit(s, r"    // [^\n]*Segmented Preview Rendering[^\n]*\n",
-               "    override fun onPause() {\n")
-
-# onPause / onDestroy preview + overlay cleanup
-s = rep(s, "        frameExtractionJob?.cancel()\n"
-           "        previewJob?.cancel()\n"
-           "    }\n"
-           "\n"
-           "    override fun onDestroy() {\n",
-           "        frameExtractionJob?.cancel()\n"
-           "    }\n"
-           "\n"
-           "    override fun onDestroy() {\n")
-s = rep(s, "        frameExtractionJob?.cancel()\n"
-           "        previewJob?.cancel()\n"
-           "        clearFrameCache()\n"
-           "        extractedFrames.forEach { if (!it.isRecycled) it.recycle() }\n"
-           "        draggableTextOverlay?.deactivate()\n"
-           "        draggableImageOverlay?.deactivate()\n"
-           "        previewFile?.delete()\n"
-           "        super.onDestroy()\n",
-           "        frameExtractionJob?.cancel()\n"
-           "        clearFrameCache()\n"
-           "        extractedFrames.forEach { if (!it.isRecycled) it.recycle() }\n"
-           "        super.onDestroy()\n")
-
-# palette fields + functions
-s = cut_between(s, "    private val textPalettePresets = listOf(\n",
-                "    private fun markPaletteSelection(container: LinearLayout, selectedTag: String?) {\n")
-for h in [
-    "private fun markPaletteSelection(",
-    "private fun buildTextPaletteRow(",
-    "private fun setupColorPicker(",
-    "private fun setupBgColorPicker(",
-    "private fun setupStrokeColorPicker(",
-    "private fun setupShadowColorPicker(",
-    "private fun updateActiveBoundaries(",
-    "private fun showChromaKeyDialog(",
-    "private fun showCustomColorPicker(",
-    "private fun commitActiveEditsIfAny(",
-    "private fun enterKeyframeEditingMode(",
-    "private fun exitKeyframeEditingMode(",
-    "private fun showKeyframePropertyMenu(",
-    "private fun handleKeyframeActionClick(",
-    "private fun handleKeyframeSliderChange(",
-    "private fun updateKeyframeActionButtonState(",
-    "private fun updateDraggableOverlayFromKeyframes(",
-    "private fun interpolateKeyframes(",
-    "private fun interpolateKeyframePosition(",
-]:
-    s = cut_fun(s, h)
-
-# getSnapTargetsMs: drop text/image overlay snap targets
-s = rep(s, "                is EditOperation.AddText -> {\n"
-           "                    op.startTimeMs?.let { targets.add(it) }\n"
-           "                    op.endTimeMs?.let { targets.add(it) }\n"
-           "                }\n"
-           "                is EditOperation.AddImageOverlay -> {\n"
-           "                    op.startTimeMs?.let { targets.add(it) }\n"
-           "                    op.endTimeMs?.let { targets.add(it) }\n"
-           "                }\n", "")
-
-# companion constants
-s = rep(s, "        private const val PICK_AUDIO_REQUEST = 2\n"
-           "        private const val PICK_IMAGE_REQUEST = 3\n"
-           "        private const val PICK_DIRECTORY_REQUEST = 5\n"
-           "        private const val PICK_BACKGROUND_IMAGE_REQUEST = 6\n",
-           "        private const val PICK_AUDIO_REQUEST = 2\n"
-           "        private const val PICK_DIRECTORY_REQUEST = 5\n")
-
-wr(P, s)
-print("[phase8] step3: [ok] VideoEditingActivity.kt trimmed")
+with open(VEA, "w", encoding="utf-8") as f:
+    f.write(s)
+print("[phase9] step3: [ok] freezeFrameAtCurrentPosition rewritten")
 CUTPY
+fi
 
 ###############################################################################
-# Step 4 -- VideoEditingViewModel.kt surgery
+# Step 4 -- VideoEditingActivity.kt: smart-export hook in saveAction()
 ###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step4: [skip] saveAction already hooked"
+else
 python3 <<'CUTPY'
-import re, sys
+import sys
 
 def die(m):
-    print("[phase8][ERROR] " + m)
+    print("[phase9][ERROR] " + m)
     sys.exit(1)
 
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
-
-def cut_between(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
-
-def cut_between_re(s, a, b):
-    ma = re.search(a, s)
-    if not ma:
-        die("cut_between_re start miss: %s" % a[:70])
-    mb = re.compile(b).search(s, ma.end())
-    if not mb:
-        die("cut_between_re end miss: %s" % b[:70])
-    return s[:ma.start()] + s[mb.start():]
-
-P = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
-s = rd(P)
-
-if "buildVideoFilterStages" not in s:
-    print("[phase8] step4: [skip] ViewModel already trimmed")
-    sys.exit(0)
-
-# import
-s = rep(s, "import com.tharunbirla.librecuts.models.TextPosition\n", "")
-
-# filter helper block: buildCropFilterExpr (with doc)
-s = cut_between(s, "    /** Build a crop filter expression for an aspect ratio. */\n",
-                "    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).\n")
-# textPng fields + prepare + overlayPosExpr + drawtext + interpolation + color + enable + buildVideoFilterStages
-s = cut_between(s, "    /** Renders AddText ops to transparent PNGs (WYSIWYG canvas rendering).\n",
-                "    /**\n     * Build the consolidated FFmpeg command for final export.\n")
-
-# buildConsolidatedFFmpegCommand signature + doc
-s = rep(s, "     * Uses -filter_complex with explicit stream labels so each filter stage\n"
-           "     * receives the correct input dimensions (e.g., drawtext after crop uses\n"
-           "     * post-crop resolution).\n",
-           "     * Uses -filter_complex with explicit stream labels so each filter stage\n"
-           "     * receives the correct input dimensions.\n")
-s = rep(s, "     * @param outputFilePath  Absolute path for the exported video.\n"
-           "     * @param fontFilePath    Absolute path to a TTF font file (from assets via copyFontToCache).\n"
-           "     *                        Required for text overlays to render on Android.\n",
-           "     * @param outputFilePath  Absolute path for the exported video.\n")
-s = rep(s, "    fun buildConsolidatedFFmpegCommand(\n"
-           "        sourceFilePath: String,\n"
-           "        outputFilePath: String,\n"
-           "        fontFilePath: String? = null,\n"
-           "        context: Context? = null\n",
-           "    fun buildConsolidatedFFmpegCommand(\n"
-           "        sourceFilePath: String,\n"
-           "        outputFilePath: String,\n"
-           "        context: Context? = null\n")
-# density + source dimensions block
-s = cut_between(s, "        val density = context?.resources?.displayMetrics?.density ?: 1.0f\n",
-                "        if (currentProject.operations.isEmpty()) {\n")
-# op collection: drop nonMergeOps/videoOps/imageOps/prepareTextPngInputs
-s = rep(s, "        val nonMergeOps = operations.filterNot { it is EditOperation.Merge }\n", "")
-s = rep(s, "        val videoOps = nonMergeOps.filter { it is EditOperation.Crop || it is EditOperation.AddText || it is EditOperation.AddImageOverlay }\n"
-           "        val imageOps = operations.filterIsInstance<EditOperation.AddImageOverlay>()\n"
-           "        // Render text overlay PNGs before inputs are indexed\n"
-           "        prepareTextPngInputs(operations)\n", "")
-# input indexing: image overlays + text PNGs + canvas background image
-s = cut_between_re(s, r"        // 4\. Image Overlay Inputs[^\n]*\n",
-                   r"\n        // [^\n]*MERGE PATH")
-# merge path: background/padding block -> plain black padding
-s = cut_between_re(s, r"                // 2\. Apply background/padding\n",
-                   r"                val isClipMuted = operations\.filterIsInstance<EditOperation\.MuteClip>\(\)\.find \{ it\.index == i \}\?\.isMuted \?: false\n")
-s = rep(s, "                val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false\n",
-           "                // 2. Apply background/padding (solid black behind letterboxed clips)\n"
-           "                filterParts.add(\"color=c=black:s=${mainWidth}x${mainHeight}:r=30[bg$i]\")\n"
-           "                filterParts.add(\"[pre$i]scale=$mainWidth:$mainHeight:force_original_aspect_ratio=decrease[fg$i]\")\n"
-           "                filterParts.add(\"[bg$i][fg$i]overlay=(W-w)/2:(H-h)/2:shortest=1,setsar=1,fps=30,format=yuv420p[norm$i]\")\n"
-           "\n"
-           "                val isClipMuted = operations.filterIsInstance<EditOperation.MuteClip>().find { it.index == i }?.isMuted ?: false\n")
-# merge path: buildVideoFilterStages call -> direct output scale
-s = rep(s, "            val (sourceVideoStages, tempVideoLabel) = buildVideoFilterStages(\n"
-           "                operations = videoOps,\n"
-           "                fontFilePath = fontFilePath,\n"
-           "                inputLabel = currentVideoLabel,\n"
-           "                imageInputIndices = imageInputIndices,\n"
-           "                textInputIndices = textInputIndices,\n"
-           "                density = density,\n"
-           "                sourceVideoHeight = sourceVideoHeight\n"
-           "            )\n"
-           "            filterParts.addAll(sourceVideoStages)\n"
-           "            val finalVideoLabel = \"[fmtv]\"\n"
-           "            filterParts.add(buildOutputScaleFilter(tempVideoLabel, finalVideoLabel))\n",
-           "            val finalVideoLabel = \"[fmtv]\"\n"
-           "            filterParts.add(buildOutputScaleFilter(currentVideoLabel, finalVideoLabel))\n")
-# non-merge path: label + video filter stages call
-s = cut_between_re(s, r"        var currentInputVideoLabel = \"\[0:v\]\"\n",
-                   r"\n        // [^\n]*Audio filter stages")
-# non-merge assembly: hasVideoFilters always false now
-s = rep(s, "        val hasVideoFilters = videoStages.isNotEmpty()\n"
-           "        val hasAudioFilters = finalAudioLabel != null\n"
-           "\n"
-           "        if (hasVideoFilters || hasAudioFilters) {\n"
-           "            var mappedVideoLabel = finalVideoLabel\n"
-           "            if (hasVideoFilters) {\n"
-           "                val fmtLabel = \"[fmtv]\"\n"
-           "                filterComplexParts.add(buildOutputScaleFilter(finalVideoLabel, fmtLabel))\n"
-           "                mappedVideoLabel = fmtLabel\n"
-           "            }\n"
-           "            \n"
-           "            if (_exportAudioOnly.value && hasVideoFilters) {\n"
-           "                filterComplexParts.add(\"${mappedVideoLabel}nullsink\")\n"
-           "            }\n"
-           "            \n"
-           "            cmd.append(\" -filter_complex \\\"${filterComplexParts.joinToString(\";\")}\\\"\")\n"
-           "\n"
-           "            if (!_exportAudioOnly.value) {\n"
-           "                if (hasVideoFilters) {\n"
-           "                    cmd.append(\" -map \\\"$mappedVideoLabel\\\"\")\n"
-           "                } else {\n"
-           "                    cmd.append(\" -map 0:v\")\n"
-           "                }\n"
-           "            }\n"
-           "\n"
-           "            if (effectiveAudioMuted) {\n"
-           "                cmd.append(\" -an\")\n"
-           "            } else if (hasAudioFilters) {\n"
-           "                cmd.append(\" -map \\\"$finalAudioLabel\\\"\")\n"
-           "            } else {\n"
-           "                cmd.append(\" -map 0:a?\")\n"
-           "            }\n"
-           "        } else {\n",
-           "        val hasAudioFilters = finalAudioLabel != null\n"
-           "\n"
-           "        if (hasAudioFilters) {\n"
-           "            cmd.append(\" -filter_complex \\\"${filterComplexParts.joinToString(\";\")}\\\"\")\n"
-           "\n"
-           "            if (!_exportAudioOnly.value) {\n"
-           "                cmd.append(\" -map 0:v\")\n"
-           "            }\n"
-           "\n"
-           "            if (effectiveAudioMuted) {\n"
-           "                cmd.append(\" -an\")\n"
-           "            } else {\n"
-           "                cmd.append(\" -map \\\"$finalAudioLabel\\\"\")\n"
-           "            }\n"
-           "        } else {\n")
-# codec section: hasVideoFilters branch
-s = rep(s, "            if (!hasVideoFilters) {\n"
-           "                val vfArgs = buildOutputVfArgs()\n"
-           "                cmd.append(\" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}\")\n"
-           "                if (vfArgs.isNotEmpty()) cmd.append(\" $vfArgs\")\n"
-           "            } else {\n"
-           "                cmd.append(\" ${buildVideoCodecArgs(defaultEncoder)}\")\n"
-           "            }\n",
-           "            val vfArgs = buildOutputVfArgs()\n"
-           "            cmd.append(\" ${buildVideoCodecArgs(defaultEncoder, vfArgs.isEmpty())}\")\n"
-           "            if (vfArgs.isNotEmpty()) cmd.append(\" $vfArgs\")\n")
-
-# buildPreviewCommand (with doc)
-s = cut_between(s, "    /**\n     * Build an FFmpeg command for a fast 3-second preview around the playhead.\n",
-                "    private fun copyContentUriToTempFile(context: Context, uri: Uri): String? {\n")
-
-wr(P, s)
-print("[phase8] step4: [ok] VideoEditingViewModel.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 5 -- VideoEditingViewModelExt.kt surgery
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def cut_between(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
-
-P = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
-s = rd(P)
-
-if "addTextOperation" not in s:
-    print("[phase8] step5: [skip] Ext already trimmed")
-    sys.exit(0)
-
-# import
-s = s.replace("import com.tharunbirla.librecuts.models.TextPosition\n", "")
-# addCropOperation + updateCanvasBackgroundOperation + addTextOperation (contiguous)
-s = cut_between(s, "fun VideoEditingViewModel.addCropOperation(\n",
-                "fun VideoEditingViewModel.updateMergeItemTrim(index: Int, startMs: Long, endMs: Long) {\n")
-# addImageOverlayOperation
-s = cut_between(s, "fun VideoEditingViewModel.addImageOverlayOperation(\n",
-                "fun VideoEditingViewModel.addOperation(operation: EditOperation) {\n")
-# moveOverlayOperation
-s = cut_between(s, "fun VideoEditingViewModel.moveOverlayOperation(id: String, moveUp: Boolean) {\n",
-                "fun VideoEditingViewModel.setScrubProxyUri(dependencyId: String, proxyUri: Uri) {\n")
-
-wr(P, s)
-print("[phase8] step5: [ok] VideoEditingViewModelExt.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 6 -- FFmpegRenderEngine.kt surgery
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def cut_between(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
-
-def cut_between_re(s, a, b):
-    ma = re.search(a, s)
-    if not ma:
-        die("cut_between_re start miss: %s" % a[:70])
-    mb = re.compile(b).search(s, ma.end())
-    if not mb:
-        die("cut_between_re end miss: %s" % b[:70])
-    return s[:ma.start()] + s[mb.start():]
-
-P = "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
-s = rd(P)
-
-if "copyFontToCache" not in s:
-    print("[phase8] step6: [skip] Engine already trimmed")
-    sys.exit(0)
-
-# class doc: drop FONT NOTE section (comment contains non-ASCII dash -> regex)
-s = cut_between_re(s, r" \*\n \* FONT NOTE:\n", r" \*/\n")
-# init block: system font directory probing
-s = cut_between_re(s,
-    r"        // System fonts as a last-resort fallback[^\n]*\n"
-    r"        // Always supply an explicit fontFilePath[^\n]*\n"
-    r"        // Probe multiple vendor font directories[^\n]*\n"
-    r"        val fontDir = listOf\(",
-    r"        // Register a global log callback")
-# font helper section (section comment + doc + copyFontToCache)
-s = cut_between_re(s, r"    // [^\n]*Font helper[^\n]*\n", r"    // [^\n]*Core execution")
-# renderCropPreview + renderTextPreview (with doc); section marker has non-ASCII dashes -> regex end
-def cut_lit_re(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_lit_re start miss: %r" % a[:70])
-    mb = re.compile(b).search(s, i + len(a))
-    if not mb:
-        die("cut_lit_re end miss: %s" % b[:70])
-    return s[:i] + s[mb.start():]
-s = cut_lit_re(s, "    suspend fun renderCropPreview(\n", r"    // [^\n]*Full-quality operations")
-# cropVideo + addTextOverlay (with doc)
-s = cut_between(s, "    suspend fun cropVideo(\n",
-                "    suspend fun addBackgroundAudio(\n")
-# buildDrawtextFilter (with doc) + buildCropFilter
-s = cut_between(s, "    /**\n     * Build a drawtext filter string.\n",
-                "    /**\n     * Extract the output file path from an FFmpeg command.\n")
-# misplaced extractOutputPath doc + generateVideoFromImage + generateVideoFromGif
-s = cut_between(s, "    /**\n     * Extract the output file path from an FFmpeg command.\n",
-                "    /**\n     * Resolve any URI to a plain file-system path that FFmpeg can read.\n")
-
-wr(P, s)
-print("[phase8] step6: [ok] FFmpegRenderEngine.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 7 -- ProjectSerializer.kt surgery
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
-
-P = "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt"
-s = rd(P)
-
-if '"AddText" -> EditOperation.AddText::class.java' not in s:
-    print("[phase8] step7: [skip] Serializer already trimmed")
-    sys.exit(0)
-
-# valid classes
-s = rep(s, 'val validClasses = setOf("Trim", "SpeedMain", "Crop", "AddText", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio", "AddImageOverlay", "CanvasBackground")\n',
-           'val validClasses = setOf("Trim", "SpeedMain", "Merge", "MuteAudio", "Transition", "MuteClip", "AddBackgroundAudio")\n')
-# drop the colorHex/blurRadius heuristic
-s = rep(s, "                    if (jsonObject.has(\"durationMs\") && jsonObject.has(\"index\") && !jsonObject.has(\"items\")) {\n"
-           "                        opTypeStr = \"Transition\"\n"
-           "                    } else if (jsonObject.has(\"colorHex\") && jsonObject.has(\"blurRadius\")) {\n"
-           "                        opTypeStr = \"CanvasBackground\"\n"
-           "                    } else {\n"
-           "                        opTypeStr = typeVal\n"
-           "                    }\n",
-           "                    if (jsonObject.has(\"durationMs\") && jsonObject.has(\"index\") && !jsonObject.has(\"items\")) {\n"
-           "                        opTypeStr = \"Transition\"\n"
-           "                    } else {\n"
-           "                        opTypeStr = typeVal\n"
-           "                    }\n")
-# soften missing-type into graceful skip instead of throwing
-s = rep(s, "            val type = opTypeStr ?: throw JsonParseException(\"Missing type property in EditOperation\")\n",
-           "            val type = opTypeStr\n"
-           "            if (type == null) {\n"
-           "                android.util.Log.w(\"ProjectSerializer\", \"Skipping EditOperation with missing type property\")\n"
-           "                return EditOperation.MuteAudio(\"skipped_unknown_null\")\n"
-           "            }\n")
-# drop CanvasBackground backgroundType remap
-s = rep(s, "            } else if (type == \"CanvasBackground\") {\n"
-           "                val t = jsonObject.get(\"type\")?.asString\n"
-           "                if (t != null && t != \"CanvasBackground\") {\n"
-           "                     jsonObject.addProperty(\"backgroundType\", t)\n"
-           "                } else if (!jsonObject.has(\"backgroundType\")) {\n"
-           "                     jsonObject.addProperty(\"backgroundType\", \"COLOR\")\n"
-           "                }\n"
-           "            }\n",
-           "            }\n")
-# class mapping branches
-s = rep(s, '                "Crop" -> EditOperation.Crop::class.java\n', "")
-s = rep(s, '                "AddText" -> EditOperation.AddText::class.java\n', "")
-s = rep(s, '                "AddImageOverlay" -> EditOperation.AddImageOverlay::class.java\n', "")
-s = rep(s, '                "CanvasBackground" -> EditOperation.CanvasBackground::class.java\n', "")
-# JsonParseException import now unused
-s = rep(s, "import com.google.gson.JsonParseException\n", "")
-
-wr(P, s)
-print("[phase8] step7: [ok] ProjectSerializer.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 8 -- ProjectImportActivity.kt surgery
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
-
-def cut_between(s, a, b):
-    i = s.find(a)
-    if i < 0:
-        die("cut_between start miss: %r" % a[:70])
-    j = s.find(b, i + len(a))
-    if j < 0:
-        die("cut_between end miss: %r" % b[:70])
-    return s[:i] + s[j:]
-
-P = "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
-s = rd(P)
-
-if "AddImageOverlay" not in s:
-    print("[phase8] step8: [skip] ProjectImportActivity already trimmed")
-    sys.exit(0)
-
-# dependency scan branch
-s = cut_between(s, "                is EditOperation.AddImageOverlay -> {\n",
-                "                else -> {}\n")
-# remap branch
-s = rep(s, "                    is EditOperation.AddImageOverlay -> {\n"
-           "                        val dep = dependencies.find { it.operationId == op.id }\n"
-           "                        if (dep != null && dep.currentUri != null) op.copy(imageUri = dep.currentUri!!) else op\n"
-           "                    }\n", "")
-
-wr(P, s)
-print("[phase8] step8: [ok] ProjectImportActivity.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 9 -- ExportSettingsDialog.kt: drop fontPath plumbing
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-def rd(p):
-    with open(p, encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def rep(s, old, new, n=1):
-    c = s.count(old)
-    if c != n:
-        die("rep count=%d expected=%d for: %r" % (c, n, old[:90]))
-    return s.replace(old, new)
-
-P = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
-s = rd(P)
-
-if "fontPath" not in s:
-    print("[phase8] step9: [skip] ExportSettingsDialog already trimmed")
-    sys.exit(0)
-
-s = rep(s, "    private val fontPath: String?,\n", "")
-s = rep(s, "            viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, fontPath, activity)\n",
-           "            viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, activity)\n")
-
-wr(P, s)
-print("[phase8] step9: [ok] ExportSettingsDialog.kt trimmed")
-CUTPY
-
-###############################################################################
-# Step 10 -- activity_video_editing.xml surgery
-###############################################################################
-python3 <<'CUTPY'
-import re, sys
-
-def die(m):
-    print("[phase8][ERROR] " + m)
-    sys.exit(1)
-
-P = "app/src/main/res/layout/activity_video_editing.xml"
-with open(P, encoding="utf-8") as f:
+with open(VEA, encoding="utf-8") as f:
     s = f.read()
 
-if 'android:id="@+id/btnText"' not in s:
-    print("[phase8] step10: [skip] layout already trimmed")
-    sys.exit(0)
+ANCHOR = '''                val tempOutputPath = tempOutputFile.absolutePath
 
-def elem_bounds(s, id_attr):
-    m = re.search(r'android:id="@\+id/%s"' % re.escape(id_attr), s)
-    if not m:
-        die("xml id miss: " + id_attr)
-    i = s.rfind("<", 0, m.start())
-    tag = re.compile(r"<([A-Za-z][A-Za-z0-9._]*)").match(s, i).group(1)
-    depth = 0
-    end = -1
-    for mt in re.compile(r"<%s(?:\s[^<>]*)?/?>|</%s\s*>" % (re.escape(tag), re.escape(tag))).finditer(s, i):
-        tok = mt.group(0)
-        if tok.startswith("</"):
-            depth -= 1
-            if depth == 0:
-                end = mt.end()
-                break
-        elif tok.endswith("/>"):
-            if depth == 0:
-                end = mt.end()
-                break
-        else:
-            depth += 1
-    if end < 0:
-        die("xml walk fail: " + id_attr)
-    return i, end
+                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand('''
+if s.count(ANCHOR) != 1:
+    die("saveAction anchor count = %d (expected 1)" % s.count(ANCHOR))
 
-def swallow_comment(s, i):
-    before = s[:i]
-    stripped = before.rstrip()
-    if not stripped.endswith("-->"):
-        return i
-    cstart = before.rfind("<!--")
-    if cstart < 0:
-        return i
-    between = before[before.find("-->", cstart) + 3:i]
-    if between.strip() != "":
-        return i
-    return cstart
+HOOK = r'''                val tempOutputPath = tempOutputFile.absolutePath
 
-def cut_elem(s, id_attr):
-    i, end = elem_bounds(s, id_attr)
-    i = swallow_comment(s, i)
-    if s[end:end + 1] == "\n":
-        end += 1
-    if s[:i].endswith("\n\n") and s[end:end + 1] == "\n":
-        end += 1
-    return s[:i] + s[end:]
+                // SMART EXPORT (phase 9): when the project is copy-compatible (only
+                // trims / merges / freezes / transitions / mutes, all clips sharing the
+                // same codec parameters), build a segment plan that stream-copies the
+                // unchanged parts and only re-encodes the changed parts. Falls back to
+                // the consolidated render below whenever the planner says null.
+                val smartPlanPath = try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.tharunbirla.librecuts.services.SmartExportPlanner.planSmartExport(
+                            context = this@VideoEditingActivity,
+                            project = project,
+                            sourceFilePath = sourceFilePath,
+                            outputFilePath = tempOutputPath,
+                            exportResolution = viewModel.exportResolution.value,
+                            exportFps = viewModel.exportFps.value,
+                            exportBitrate = viewModel.exportBitrate.value,
+                            audioOnly = isAudioOnly,
+                            advancedVideoCodec = viewModel.advancedExport.value.videoCodec,
+                            advancedAudioCodec = viewModel.advancedExport.value.audioCodec,
+                            advancedPreset = viewModel.advancedExport.value.preset,
+                            advancedAudioBitrate = viewModel.advancedExport.value.audioBitrate,
+                            customWidth = viewModel.advancedExport.value.customWidth,
+                            customHeight = viewModel.advancedExport.value.customHeight,
+                            videoFormat = viewModel.advancedExport.value.videoFormat
+                        )?.planFile?.absolutePath
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Smart export planning failed, using consolidated render: ${e.message}", e)
+                    null
+                }
 
-def wrapper_start(s, id_attr):
-    m = re.search(r'android:id="@\+id/%s"' % re.escape(id_attr), s)
-    if not m:
-        die("wrapper id miss: " + id_attr)
-    return s.rfind("<LinearLayout", 0, m.start())
+                if (smartPlanPath != null) {
+                    val intent = Intent(this@VideoEditingActivity, com.tharunbirla.librecuts.services.ExportService::class.java).apply {
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_SMART_PLAN_PATH, smartPlanPath)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TEMP_OUTPUT_PATH, tempOutputPath)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TOTAL_DURATION_SECS, getTotalSequenceDuration() / 1000.0)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_IS_AUDIO_ONLY, false)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
+                    } else {
+                        startService(intent)
+                    }
+                    Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
 
-for eid in [
-    "bgPreviewImageView",
-    "btnPreview",
-    "textOverlayView",
-    "draggableTextOverlay",
-    "imageOverlayView",
-    "draggableImageOverlay",
-    "cropOverlayView",
-    "tvPreviewBadge",
-    "btnMoveLayerUp",
-    "btnMoveLayerDown",
-    "textTrackContainer",
-    "imageTrackContainer",
-    "keyframeTrackContainer",
-    "textEditingToolbar",
-    "imageEditingToolbar",
-    "cropEditingToolbar",
-    "backgroundEditingToolbar",
-    "keyframeEditingToolbar",
-    "previewLoadingOverlay",
-]:
-    s = cut_elem(s, eid)
+                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand('''
 
-# tool row: remove btnText + btnMediaOverlay wrappers (up to btnAudio wrapper)
-i = wrapper_start(s, "btnText")
-j = wrapper_start(s, "btnAudio")
-if i < 0 or j < 0 or i >= j:
-    die("tool row span A failed")
-s = s[:i] + s[j:]
+s = s.replace(ANCHOR, HOOK, 1)
 
-# tool row: remove btnCrop + btnCanvasBackground wrappers (up to wrapper close)
-i = wrapper_start(s, "btnCrop")
-j = s.find("            </LinearLayout>\n        </HorizontalScrollView>")
-if i < 0 or j < 0 or i >= j:
-    die("tool row span B failed")
-s = s[:i] + s[j:]
+if "SmartExportPlanner.planSmartExport" not in s:
+    die("smart export hook missing after insert")
+if s.count("EXTRA_SMART_PLAN_PATH") < 1:
+    die("smart export service extras missing after insert")
 
-# validate XML + normalize blank-line runs created by the cuts
-s = re.sub(r"\n{4,}", "\n\n\n", s)
-import xml.dom.minidom as md
-md.parseString(s)
-
-with open(P, "w", encoding="utf-8") as f:
+with open(VEA, "w", encoding="utf-8") as f:
     f.write(s)
-print("[phase8] step10: [ok] activity_video_editing.xml trimmed")
+print("[phase9] step4: [ok] saveAction smart-export hook inserted")
 CUTPY
+fi
 
 ###############################################################################
-# Step 11 -- strings sweep (all locales)
+# Step 5 -- ExportService.kt: smart multi-command export mode
 ###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step5: [skip] ExportService already patched"
+else
 python3 <<'CUTPY'
-import re, sys, glob
+import sys
 
 def die(m):
-    print("[phase8][ERROR] " + m)
+    print("[phase9][ERROR] " + m)
     sys.exit(1)
 
-KEYS = [
-    "str_text", "str_overlay", "str_crop", "str_crop_aspect_ratio",
-    "toast_failed_to_load_overlay_file",
-    "str_0_1", "str_16_9", "str_1_1", "str_9_16", "str_color",
-    "str_color_filters",
-    "str_custom", "str_duplicate", "str_keyboard", "str_loop", "str_opacity",
-]
+EXPS = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
 
-import xml.dom.minidom as md
-touched = 0
-for f in sorted(glob.glob("app/src/main/res/values*/strings.xml")):
-    with open(f, encoding="utf-8") as fh:
-        s = fh.read()
-    orig = s
-    for k in KEYS:
-        s = re.sub(r'[ \t]*<string name="%s">[^<]*</string>\n' % k, "", s)
-    if s != orig:
-        try:
-            md.parseString(s)
-        except Exception as e:
-            die("strings XML invalid after sweep: %s (%s)" % (f, e))
-        with open(f, "w", encoding="utf-8") as fh:
-            fh.write(s)
-        touched += 1
-print("[phase8] step11: [ok] strings swept in %d locale files" % touched)
+with open(EXPS, encoding="utf-8") as f:
+    s = f.read()
+
+# 5a. new extra constant
+A1 = '''        const val EXTRA_IS_AUDIO_ONLY = "extra_is_audio_only"'''
+if s.count(A1) != 1:
+    die("EXTRA_IS_AUDIO_ONLY anchor count = %d" % s.count(A1))
+R1 = A1 + '''
+        const val EXTRA_SMART_PLAN_PATH = "extra_smart_plan_path"'''
+s = s.replace(A1, R1, 1)
+
+# 5b. null-guard that accepts smart mode (no EXTRA_COMMAND)
+A2 = '''        val command = intent.getStringExtra(EXTRA_COMMAND) ?: return START_NOT_STICKY'''
+if s.count(A2) != 1:
+    die("EXTRA_COMMAND guard anchor count = %d" % s.count(A2))
+R2 = '''        val smartPlanPath = intent.getStringExtra(EXTRA_SMART_PLAN_PATH)
+        val command = intent.getStringExtra(EXTRA_COMMAND)
+        if (command == null && smartPlanPath == null) {
+            return START_NOT_STICKY
+        }'''
+s = s.replace(A2, R2, 1)
+
+# 5c. result computation branch
+A3 = '''                val result = ffmpegEngine.exportFinal(
+                    ffmpegCommand = command,
+                    totalDurationSecs = durationSecs,
+                    onProgress = { progress ->
+                        updateNotification(progress, "Exporting...")
+                        broadcastProgress(progress)
+                    }
+                )'''
+if s.count(A3) != 1:
+    die("exportFinal result block anchor count = %d" % s.count(A3))
+R3 = '''                val result: FFmpegRenderEngine.RenderResult = when {
+                    smartPlanPath != null -> runSmartExport(smartPlanPath)
+                    command != null -> ffmpegEngine.exportFinal(
+                        ffmpegCommand = command,
+                        totalDurationSecs = durationSecs,
+                        onProgress = { progress ->
+                            updateNotification(progress, "Exporting...")
+                            broadcastProgress(progress)
+                        }
+                    )
+                    else -> FFmpegRenderEngine.RenderResult.Failure("No export command provided")
+                }'''
+s = s.replace(A3, R3, 1)
+
+# 5d. cleanup of the smart work dir
+A4 = '''                if (concatFile?.exists() == true) concatFile.delete()'''
+if s.count(A4) != 1:
+    die("concat cleanup anchor count = %d" % s.count(A4))
+R4 = A4 + '''
+                smartPlanPath?.let { sp ->
+                    val smartWorkDir = File(sp).parentFile
+                    if (smartWorkDir != null && smartWorkDir.exists()) {
+                        smartWorkDir.listFiles()?.forEach { it.delete() }
+                        smartWorkDir.delete()
+                    }
+                }'''
+s = s.replace(A4, R4, 1)
+
+# 5e. runSmartExport implementation
+A5 = '''    private fun createNotificationChannel() {'''
+if s.count(A5) != 1:
+    die("createNotificationChannel anchor count = %d" % s.count(A5))
+R5 = r'''    /**
+     * Smart export mode (phase 9): runs the plan produced by
+     * SmartExportPlanner command-by-command with aggregated progress. The
+     * last command is the concat step that writes the final output file, so
+     * its Success result carries the output path for the regular save flow.
+     */
+    private suspend fun runSmartExport(planPath: String): FFmpegRenderEngine.RenderResult {
+        val planFile = File(planPath)
+        if (!planFile.exists()) {
+            return FFmpegRenderEngine.RenderResult.Failure("Smart export plan not found")
+        }
+        val commands = try {
+            val arr = org.json.JSONArray(planFile.readText())
+            val list = mutableListOf<Pair<String, Double>>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+            }
+            list
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse smart export plan: ${e.message}", e)
+            return FFmpegRenderEngine.RenderResult.Failure("Invalid smart export plan")
+        }
+        if (commands.isEmpty()) {
+            return FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan")
+        }
+
+        val totalWeight = commands.sumOf { it.second }.coerceAtLeast(0.001)
+        var completedWeight = 0.0
+        var lastResult: FFmpegRenderEngine.RenderResult =
+            FFmpegRenderEngine.RenderResult.Failure("No commands executed")
+
+        for (pair in commands) {
+            val cmd = pair.first
+            val weight = pair.second
+            val base = completedWeight
+            val result = ffmpegEngine.exportFinal(
+                ffmpegCommand = cmd,
+                totalDurationSecs = if (weight > 0.01) weight else null,
+                onProgress = { pct ->
+                    val overall = (((base + pct / 100.0 * weight) / totalWeight) * 100)
+                        .toInt().coerceIn(0, 99)
+                    updateNotification(overall, "Exporting...")
+                    broadcastProgress(overall)
+                }
+            )
+            if (result !is FFmpegRenderEngine.RenderResult.Success) {
+                return result
+            }
+            completedWeight += weight
+            lastResult = result
+        }
+
+        broadcastProgress(100)
+        updateNotification(100, "Exporting...")
+        return lastResult
+    }
+
+    private fun createNotificationChannel() {'''
+s = s.replace(A5, R5, 1)
+
+for marker in ["runSmartExport", "EXTRA_SMART_PLAN_PATH", "commands.sumOf"]:
+    if marker not in s:
+        die("ExportService marker missing after patch: " + marker)
+
+with open(EXPS, "w", encoding="utf-8") as f:
+    f.write(s)
+print("[phase9] step5: [ok] ExportService smart mode added")
 CUTPY
+fi
 
 ###############################################################################
-# Step 12 -- hard verification gate (exits 1 BEFORE anything gets committed)
+# Step 6 -- hard verification gate (exits 1 BEFORE anything gets committed)
 ###############################################################################
-log "step12: verification gate"
+log "step6: verification gate"
 
 python3 <<'CUTPY'
 import re, subprocess, sys
 
 def die(m):
-    print("[phase8][GATE-FAIL] " + m)
+    print("[phase9][GATE-FAIL] " + m)
     sys.exit(1)
 
 def rd(p):
@@ -1440,8 +1401,9 @@ def rd(p):
         return f.read()
 
 def head(p):
-    return subprocess.run(["git", "show", "HEAD:" + p],
-                          capture_output=True, text=True).stdout
+    r = subprocess.run(["git", "show", "HEAD:" + p],
+                       capture_output=True, text=True)
+    return r.stdout if r.returncode == 0 else None
 
 def fun_names(src):
     names = set()
@@ -1451,213 +1413,114 @@ def fun_names(src):
         names.add(m.group(1))
     return names
 
-def check_inventory(path, expected_removed):
-    old = fun_names(head(path))
-    new = fun_names(rd(path))
+def check_inventory(path, expected_removed, expected_added):
+    old_src = head(path)
+    if old_src is None:
+        return  # new file (planner) or not comparable
+    new_src = rd(path)
+    old = fun_names(old_src)
+    new = fun_names(new_src)
     removed = old - new
     added = new - old
-    exp = set(expected_removed)
-    if removed == exp and not added:
+    exp_rm = set(expected_removed)
+    exp_ad = set(expected_added)
+    if removed == exp_rm and added == exp_ad:
         return
     if not removed and not added:
         return  # already committed at HEAD (RUN 3)
-    die("function inventory mismatch for %s:\n  unexpected removals: %s\n  unexpected additions: %s\n  missing removals: %s"
-        % (path, sorted(removed - exp), sorted(added), sorted(exp - removed)))
+    die("function inventory mismatch for %s:\n  unexpected removals: %s\n  unexpected additions: %s\n  missing removals: %s\n  missing additions: %s"
+        % (path, sorted(removed - exp_rm), sorted(added - exp_ad),
+           sorted(exp_rm - removed), sorted(exp_ad - added)))
 
 VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-VM = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 EXT = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
-ENGINE = "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
+EXPS = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
+PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
 
-check_inventory(VEA, [
-    "setupTextFontSelector", "showFontManagerBottomSheet", "updateLayerReorderButtons",
-    "applyCropPreview", "resetCropPreview", "cropAction", "canvasBackgroundAction",
-    "enterCanvasBackgroundEditingMode", "exitCanvasBackgroundEditingMode",
-    "textAction", "enterTextEditingMode", "exitTextEditingMode",
-    "duplicateSelectedOverlay", "pickBackgroundImage", "mediaOverlayAction",
-    "openImagePicker", "showImageOverlayConfig", "getExtensionFromUri",
-    "getOverlayFileDurationMs", "enterImageEditingMode", "enterImageEditingModeForEdit",
-    "exitImageEditingMode", "getPresetCropBounds", "enterCropEditingMode",
-    "exitCropEditingMode", "updateCanvasBackgroundPreview", "updateCropUi",
-    "triggerCanvasLayoutUpdate", "renderSegmentedPreview", "dismissPreview",
-    "markPaletteSelection", "buildTextPaletteRow", "setupColorPicker",
-    "setupBgColorPicker", "setupStrokeColorPicker", "setupShadowColorPicker",
-    "updateActiveBoundaries", "showChromaKeyDialog", "showCustomColorPicker",
-    "commitActiveEditsIfAny", "enterKeyframeEditingMode", "exitKeyframeEditingMode",
-    "showKeyframePropertyMenu", "handleKeyframeActionClick", "handleKeyframeSliderChange",
-    "updateKeyframeActionButtonState", "updateDraggableOverlayFromKeyframes",
-    "interpolateKeyframes", "interpolateKeyframePosition",
-    # local/nested functions inside removed regions
-    "refreshFontList", "onCreateViewHolder", "onBindViewHolder", "getItemCount",
-    "resetTabs", "styleTint", "syncStyleButtons", "syncBgSliders",
-    "syncStrokeSliders", "syncShadowSliders", "updatePreview",
-])
+# freezeFrameAtCurrentPosition is REPLACED (same name) -> no inventory change;
+# saveAction hook adds no function. Ext and ExportService gain exactly one each.
+check_inventory(VEA, [], [])
+check_inventory(EXT, [], ["shiftSequenceOpIndices"])
+check_inventory(EXPS, [], ["runSmartExport"])
 
-check_inventory(VM, [
-    "buildCropFilterExpr", "prepareTextPngInputs", "overlayPosExpr",
-    "buildDrawtextExpr", "buildFFmpegInterpolationExpr", "formatColorForFFmpeg",
-    "buildEnableExpr", "buildVideoFilterStages", "buildPreviewCommand",
-])
-
-check_inventory(EXT, [
-    "addCropOperation", "updateCanvasBackgroundOperation", "addTextOperation",
-    "addImageOverlayOperation", "moveOverlayOperation",
-])
-
-check_inventory(ENGINE, [
-    "copyFontToCache", "renderCropPreview", "renderTextPreview", "cropVideo",
-    "addTextOverlay", "buildDrawtextFilter", "buildCropFilter",
-    "generateVideoFromImage", "generateVideoFromGif",
-])
-
-# ---- brace delta vs HEAD must match (removed code is brace-balanced) ----
-for p in [VEA, VM, EXT, ENGINE,
-          "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt",
-          "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt",
-          "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt",
-          "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"]:
-    old = head(p)
-    new = rd(p)
-    do = old.count("{") - new.count("{")
-    dc = old.count("}") - new.count("}")
-    if do != dc:
-        die("brace delta mismatch for %s (open removed %d, close removed %d)"
-            % (p, do, dc))
-    if old.count("{") == old.count("}") and new.count("{") != new.count("}"):
+# ---- brace balance ----
+for p in [VEA, EXT, EXPS]:
+    new_src = rd(p)
+    old_src = head(p)
+    if old_src is not None and old_src.strip():
+        do = old_src.count("{") - new_src.count("{")
+        dc = old_src.count("}") - new_src.count("}")
+        if do != dc:
+            die("brace delta mismatch for %s (open removed %d, close removed %d)"
+                % (p, do, dc))
+    if new_src.count("{") != new_src.count("}"):
         die("unbalanced braces in %s (open %d, close %d)"
-            % (p, new.count("{"), new.count("}")))
+            % (p, new_src.count("{"), new_src.count("}")))
 
-print("[phase8] gate: inventory + brace checks passed")
+psrc = rd(PLANNER)
+if psrc.count("{") != psrc.count("}"):
+    die("unbalanced braces in %s (open %d, close %d)"
+        % (PLANNER, psrc.count("{"), psrc.count("}")))
+if psrc.count("(") != psrc.count(")"):
+    die("unbalanced parens in %s (open %d, close %d)"
+        % (PLANNER, psrc.count("("), psrc.count(")")))
+
+print("[phase9] gate: inventory + brace checks passed")
 CUTPY
 
-# ---- leftover token scan across app/src/main ----
-LEFT_TOKENS="AddText AddImageOverlay CanvasBackground KeyframePoint TextPosition \
-textOverlayView imageOverlayView draggableTextOverlay draggableImageOverlay cropOverlayView \
-bgPreviewImageView textEditingToolbar imageEditingToolbar cropEditingToolbar \
-backgroundEditingToolbar keyframeEditingToolbar btnText btnMediaOverlay btnCrop \
-btnCanvasBackground btnMoveLayerUp btnMoveLayerDown btnPreview tvPreviewBadge \
-previewLoadingOverlay textTrackContainer imageTrackContainer keyframeTrackContainer \
-pickBackgroundImage mediaOverlayAction textAction cropAction canvasBackgroundAction \
-showChromaKeyDialog showCustomColorPicker HSVColorPickerView TextRenderUtils \
-FontManager FontItem fontFilePath fontPath fontfile copyFontToCache fontDir drawtext \
-buildVideoFilterStages buildPreviewCommand textPngRenderer prepareTextPngInputs \
-buildDrawtextExpr overlayPosExpr buildFFmpegInterpolationExpr buildCropFilterExpr \
-formatColorForFFmpeg buildEnableExpr moveOverlayOperation addTextOperation \
-addImageOverlayOperation updateCanvasBackgroundOperation updateCanvasBackgroundPreview \
-updateLayerReorderButtons duplicateSelectedOverlay enterKeyframeEditingMode \
-isKeyframeEditingMode updateDraggableOverlayFromKeyframes interpolateKeyframe \
-renderSegmentedPreview dismissPreview isShowingPreview isRenderingPreview previewJob \
-commitActiveEditsIfAny buildTextPaletteRow markPaletteSelection setupColorPicker \
-textPalettePresets selectedTextColor importFontLauncher activeFontSelectionCallback \
-showFontManagerBottomSheet setupTextFontSelector getExtensionFromUri \
-getOverlayFileDurationMs openImagePicker showImageOverlayConfig enterImageEditingMode \
-exitImageEditingMode PICK_IMAGE_REQUEST PICK_BACKGROUND_IMAGE_REQUEST \
-updateActiveBoundaries triggerCanvasLayoutUpdate generateVideoFromImage \
-generateVideoFromGif chroma ic_text_24 ic_canvas_24 ic_crop_24 ic_keyframe \
-ic_palette_24 ic_mirror ic_preview_24 ic_loop_24 ic_opacity_24 str_text str_overlay \
-str_crop str_16_9 str_9_16 str_1_1 str_0_1 str_color str_custom str_duplicate \
-str_keyboard str_loop str_opacity toast_failed_to_load_overlay_file"
-
-for t in $LEFT_TOKENS; do
-    if grep -rIqE -- "$t\\b" app/src/main 2>/dev/null; then
-        HIT=$(grep -rIlE -- "$t\\b" app/src/main 2>/dev/null | head -3 | tr '\n' ' ')
-        fail "leftover token '$t' still present in: $HIT"
-    fi
+# ---- positive marker checks (all new wiring must be present) ----
+for t in "SmartExportPlanner.planSmartExport" "atHeadOfFirstClip" \
+         "buildFreezeFrameCommands" "shiftSequenceOpIndices" \
+         "EXTRA_SMART_PLAN_PATH" "runSmartExport"; do
+    grep -rq -- "$t" app/src/main/java || fail "new phase-9 marker missing: $t"
 done
-log "gate: leftover scan clean"
+grep -q "SmartExportPlanner.planSmartExport" "$VEA" || fail "VEA smart hook missing"
+grep -q "atHeadOfFirstClip" "$VEA" || fail "VEA freeze promote branch missing"
+grep -q "updateSequenceOrder(sequenceItems)" "$VEA" || fail "VEA freeze promote order update missing"
+grep -q "fun VideoEditingViewModel.shiftSequenceOpIndices(" "$EXT" || fail "Ext shift function missing"
+grep -q "private suspend fun runSmartExport(" "$EXPS" || fail "ExportService runSmartExport missing"
+grep -q "const val EXTRA_SMART_PLAN_PATH" "$EXPS" || fail "ExportService smart extra missing"
+log "gate: positive marker checks passed"
 
-# ---- kept-feature survival asserts ----
-SURVIVE_VEA="fun audioAction( fun enterAudioEditingMode( fun exitAudioEditingMode( \
-fun showTransitionDialog( fun performRenderTracks( fun freezeFrameAtCurrentPosition( \
-fun findTextureView( fun getSnapTargetsMs( fun showVideoSegmentTrimDialog( \
-fun splitSelectedVideo( fun applySpeedToSegment( fun enterVideoEditingMode( \
-fun reparentCanvasContainer( fun setActiveToolButton( fun closeActiveEditingModes( \
-fun updateUIInteractionState( fun renderTracks( fun syncUiWithPlayer( \
-R.id.btnAudio R.id.editingControlsScroll"
-for t in $SURVIVE_VEA; do
-    grep -q -- "$t" "$VEA" || fail "survival check failed in VEA: $t"
+# ---- planner content checks ----
+for t in "fun probeMedia(" "fun planSmartExport(" "fun buildFreezeFrameCommands(" \
+         "anullsrc" "xfade=transition=" "acrossfade" "-f concat -safe 0" \
+         "-bsf:v dump_extra" "libx264" "getMediaInformation" "getSafParameterForRead" \
+         "sanitizeTransitionType"; do
+    grep -q -- "$t" "$PLANNER" || fail "planner missing required piece: $t"
 done
-grep -q "findTextureView(playerView)" "$VEA" || fail "findTextureView transition-preview call lost"
-grep -q "AddBackgroundAudio" "$VEA" || fail "AddBackgroundAudio usage lost in VEA"
-grep -q "data class Trim(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "Trim model lost"
-grep -q "data class Merge(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "Merge model lost"
-grep -q "data class AddBackgroundAudio(" "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt" || fail "AddBackgroundAudio model lost"
-grep -q "fun buildConsolidatedFFmpegCommand(" "$VM" || fail "buildConsolidatedFFmpegCommand lost"
-grep -q "fun VideoEditingViewModel.addBackgroundAudioOperation(" "$EXT" || fail "addBackgroundAudioOperation lost"
-grep -q "fun VideoEditingViewModel.splitVideoSegment(" "$EXT" || fail "splitVideoSegment lost"
-grep -q "AddBackgroundAudio" "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt" || fail "serializer audio mapping lost"
-grep -q "str_audio" "app/src/main/res/values/strings.xml" || fail "str_audio string lost"
-grep -q 'android:id="@+id/btnAudio"' "$AVEXML" || fail "btnAudio button lost from layout"
-grep -q 'android:id="@+id/audioTrackContainer"' "$AVEXML" || fail "audioTrackContainer lost from layout"
-grep -q 'android:id="@+id/videoEditingToolbar"' "$AVEXML" || fail "videoEditingToolbar include lost"
+log "gate: planner content checks passed"
+
+# ---- kept-feature survival asserts (legacy path must stay intact) ----
+grep -q "private fun freezeFrameAtCurrentPosition()" "$VEA" || fail "freeze function lost"
+[ "$(grep -c 'private fun freezeFrameAtCurrentPosition()' "$VEA")" = "1" ] || fail "freeze function duplicated"
+grep -q "btnVideoFreezeFrame" "$VEA" || fail "freeze button wiring lost"
+grep -q "freezeFrameAtCurrentPosition()" "$VEA" || fail "freeze button call lost"
+grep -q "buildConsolidatedFFmpegCommand(" "$VEA" || fail "legacy consolidated call lost from VEA"
+grep -q "fun buildConsolidatedFFmpegCommand(" "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt" || fail "legacy builder lost from VM"
+grep -q "ffmpegEngine.exportFinal(" "$EXPS" || fail "legacy exportFinal branch lost"
+grep -q "saveVideoToGallery" "$EXPS" || fail "gallery save flow lost"
+grep -q "fun showTransitionDialog(" "$VEA" || fail "transition dialog lost"
+grep -q "fun VideoEditingViewModel.updateMainVideoTrim(" "$EXT" || fail "updateMainVideoTrim lost"
+grep -q "fun VideoEditingViewModel.updateSequenceOrder(" "$EXT" || fail "updateSequenceOrder lost"
+grep -q "fun VideoEditingViewModel.updateMainVideoSpeed(" "$EXT" || fail "updateMainVideoSpeed lost"
+grep -q "toast_freeze_frame_added_to_sequence" app/src/main/res/values/strings.xml || fail "freeze toast string lost"
+grep -q "fun getSequenceItems()" "$VEA" || fail "getSequenceItems lost"
+grep -q "fun getGlobalPosition()" "$VEA" || fail "getGlobalPosition lost"
 log "gate: survival checks passed"
-
-# ---- XML validity of all touched resources ----
-python3 - <<'CUTPY'
-import glob, sys
-import xml.dom.minidom as md
-files = ["app/src/main/res/layout/activity_video_editing.xml"] + \
-        sorted(glob.glob("app/src/main/res/values*/strings.xml"))
-for f in files:
-    with open(f, "rb") as fh:
-        md.parseString(fh.read())
-print("[phase8] gate: XML parse ok for %d files" % len(files))
-CUTPY
 
 # ---- scope gate: only allowlisted files changed ----
 python3 - <<'CUTPY'
 import subprocess, sys
 
-ALLOWED = set()
-
-def add(p):
-    ALLOWED.add(p)
-
-cv = "app/src/main/java/com/tharunbirla/librecuts/customviews"
-ut = "app/src/main/java/com/tharunbirla/librecuts/utils"
-lay = "app/src/main/res/layout"
-drw = "app/src/main/res/drawable"
-for p in [
+ALLOWED = {
     "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt",
     "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/models/EditOperation.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/utils/ProjectSerializer.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt",
-    "app/src/main/res/layout/activity_video_editing.xml",
-    cv + "/TextOverlayView.kt", cv + "/DraggableTextOverlayView.kt",
-    cv + "/ImageOverlayView.kt", cv + "/DraggableImageOverlayView.kt",
-    cv + "/CropOverlayView.kt", cv + "/HSVColorPickerView.kt",
-    ut + "/TextRenderUtils.kt", ut + "/FontManager.kt",
-    lay + "/text_editing_toolbar.xml", lay + "/text_background_settings.xml",
-    lay + "/text_format_settings.xml", lay + "/text_shadow_settings.xml",
-    lay + "/text_stroke_settings.xml", lay + "/image_editing_toolbar.xml",
-    lay + "/crop_editing_toolbar.xml", lay + "/background_editing_toolbar.xml",
-    lay + "/keyframe_editing_toolbar.xml", lay + "/chroma_key_bottom_sheet_dialog.xml",
-    lay + "/dialog_custom_color_picker.xml", lay + "/dialog_font_manager.xml",
-    lay + "/item_font_manager.xml",
-    "app/src/main/assets/fonts/Roboto-Regular.ttf",
-    drw + "/ic_canvas_24.xml", drw + "/ic_canvas_color_24.xml",
-    drw + "/ic_color_lens_24.xml", drw + "/ic_color_picker_24.xml",
-    drw + "/ic_crop_24.xml", drw + "/ic_crop_16_9_24.xml",
-    drw + "/ic_crop_portrait_24.xml", drw + "/ic_crop_square_24.xml",
-    drw + "/ic_format_24.xml", drw + "/ic_keyboard_24.xml",
-    drw + "/ic_keyframe_add.xml", drw + "/ic_keyframe_main.xml",
-    drw + "/ic_keyframe_remove.xml", drw + "/ic_loop_24.xml",
-    drw + "/ic_mirror.xml", drw + "/ic_opacity_24.xml",
-    drw + "/ic_palette_24.xml", drw + "/ic_preview_24.xml",
-    drw + "/ic_rotate_right_24.xml", drw + "/ic_arrow_drop_down_24.xml",
-    drw + "/ic_text_24.xml", drw + "/ic_text_bg_24.xml",
-    drw + "/ic_text_shadow_24.xml", drw + "/ic_text_stroke_24.xml",
-    drw + "/ic_align_center_24.xml", drw + "/ic_align_left_24.xml",
-    drw + "/ic_align_right_24.xml", drw + "/bg_layer_selected.xml",
-]:
-    add(p)
-import glob
-for f in glob.glob("app/src/main/res/values*/strings.xml"):
-    add(f)
+    "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt",
+    "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt",
+    "scripts/apply-changes.sh",
+    "apply-changes.sh",
+}
 
 out = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout
 bad = []
@@ -1669,12 +1532,12 @@ for line in out.splitlines():
     if path not in ALLOWED:
         bad.append(path)
 if gh:
-    print("[phase8][GATE-FAIL] .github policy violation: %s" % gh)
+    print("[phase9][GATE-FAIL] .github policy violation: %s" % gh)
     sys.exit(1)
 if bad:
-    print("[phase8][GATE-FAIL] out-of-scope changes: %s" % bad)
+    print("[phase9][GATE-FAIL] out-of-scope changes: %s" % bad)
     sys.exit(1)
-print("[phase8] gate: scope ok (all changed files allowlisted, no .github/)")
+print("[phase9] gate: scope ok (4 code files + script only, no .github/)")
 CUTPY
 
 # ---- ASCII self-check of this script ----
@@ -1683,4 +1546,4 @@ if LC_ALL=C tr -d '\t' < "$0" | LC_ALL=C grep -nq '[^ -~]'; then
 fi
 log "gate: ASCII self-check passed"
 
-log "ALL DONE -- phase 8 applied and verified"
+log "ALL DONE -- phase 9 applied and verified"
