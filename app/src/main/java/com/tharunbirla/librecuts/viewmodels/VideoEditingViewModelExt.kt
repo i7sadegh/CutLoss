@@ -98,6 +98,50 @@ fun VideoEditingViewModel.updateSequenceOrder(orderedItems: List<EditOperation.M
     })
 }
 
+/**
+ * Keep Transition (gap) and MuteClip (position) op indices aligned with the
+ * sequence after a freeze insertion changes the clip layout.
+ *
+ * gapFrom/gapBy   : old gap indices >= gapFrom shift by gapBy (a gap between
+ *                   clips g and g+1 moves when an insertion lands at or after
+ *                   the gap's left clip).
+ * posFrom/posBy   : old clip positions >= posFrom shift by posBy.
+ * splitMuteAt     : when the muted clip itself was split in two by the freeze
+ *                   insertion, the mute is cloned onto both halves.
+ */
+fun VideoEditingViewModel.shiftSequenceOpIndices(
+    gapFrom: Int,
+    gapBy: Int,
+    posFrom: Int,
+    posBy: Int,
+    splitMuteAt: Int = -1
+) {
+    executeCommand(MutateListCommand("Adjust Sequence Indices") { ops ->
+        val result = mutableListOf<EditOperation>()
+        for (op in ops) {
+            when (op) {
+                is EditOperation.Transition -> {
+                    result.add(
+                        if (op.index >= gapFrom) op.copy(index = op.index + gapBy) else op
+                    )
+                }
+                is EditOperation.MuteClip -> {
+                    if (op.index == splitMuteAt) {
+                        result.add(op)
+                        result.add(op.copy(index = op.index + posBy))
+                    } else if (op.index >= posFrom) {
+                        result.add(op.copy(index = op.index + posBy))
+                    } else {
+                        result.add(op)
+                    }
+                }
+                else -> result.add(op)
+            }
+        }
+        result
+    })
+}
+
 fun VideoEditingViewModel.removeMergeVideo(index: Int) {
     executeCommand(MutateListCommand("Remove Clip") { ops ->
         val mergeIdx = ops.indexOfFirst { it is EditOperation.Merge }

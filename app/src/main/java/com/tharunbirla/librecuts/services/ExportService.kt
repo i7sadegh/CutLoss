@@ -48,6 +48,7 @@ class ExportService : Service() {
         const val EXTRA_CONCAT_FILE_PATH = "extra_concat_file_path"
         const val EXTRA_TOTAL_DURATION_SECS = "extra_total_duration_secs"
         const val EXTRA_IS_AUDIO_ONLY = "extra_is_audio_only"
+        const val EXTRA_SMART_PLAN_PATH = "extra_smart_plan_path"
     }
 
     override fun onCreate() {
@@ -62,7 +63,11 @@ class ExportService : Service() {
             return START_NOT_STICKY
         }
 
-        val command = intent.getStringExtra(EXTRA_COMMAND) ?: return START_NOT_STICKY
+        val smartPlanPath = intent.getStringExtra(EXTRA_SMART_PLAN_PATH)
+        val command = intent.getStringExtra(EXTRA_COMMAND)
+        if (command == null && smartPlanPath == null) {
+            return START_NOT_STICKY
+        }
         val tempOutputPath = intent.getStringExtra(EXTRA_TEMP_OUTPUT_PATH) ?: return START_NOT_STICKY
         val concatFilePath = intent.getStringExtra(EXTRA_CONCAT_FILE_PATH)
         val durationSecs = intent.getDoubleExtra(EXTRA_TOTAL_DURATION_SECS, 0.0)
@@ -72,14 +77,18 @@ class ExportService : Service() {
 
         serviceScope.launch {
             try {
-                val result = ffmpegEngine.exportFinal(
-                    ffmpegCommand = command,
-                    totalDurationSecs = durationSecs,
-                    onProgress = { progress ->
-                        updateNotification(progress, "Exporting...")
-                        broadcastProgress(progress)
-                    }
-                )
+                val result: FFmpegRenderEngine.RenderResult = when {
+                    smartPlanPath != null -> runSmartExport(smartPlanPath)
+                    command != null -> ffmpegEngine.exportFinal(
+                        ffmpegCommand = command,
+                        totalDurationSecs = durationSecs,
+                        onProgress = { progress ->
+                            updateNotification(progress, "Exporting...")
+                            broadcastProgress(progress)
+                        }
+                    )
+                    else -> FFmpegRenderEngine.RenderResult.Failure("No export command provided")
+                }
 
                 val tempFile = File(tempOutputPath)
                 val concatFile = concatFilePath?.let { File(it) }
@@ -110,6 +119,13 @@ class ExportService : Service() {
                 // Cleanup temp files
                 if (tempFile.exists()) tempFile.delete()
                 if (concatFile?.exists() == true) concatFile.delete()
+                smartPlanPath?.let { sp ->
+                    val smartWorkDir = File(sp).parentFile
+                    if (smartWorkDir != null && smartWorkDir.exists()) {
+                        smartWorkDir.listFiles()?.forEach { it.delete() }
+                        smartWorkDir.delete()
+                    }
+                }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Export exception", e)
@@ -122,6 +138,64 @@ class ExportService : Service() {
         }
 
         return START_NOT_STICKY
+    }
+
+    /**
+     * Smart export mode (phase 9): runs the plan produced by
+     * SmartExportPlanner command-by-command with aggregated progress. The
+     * last command is the concat step that writes the final output file, so
+     * its Success result carries the output path for the regular save flow.
+     */
+    private suspend fun runSmartExport(planPath: String): FFmpegRenderEngine.RenderResult {
+        val planFile = File(planPath)
+        if (!planFile.exists()) {
+            return FFmpegRenderEngine.RenderResult.Failure("Smart export plan not found")
+        }
+        val commands = try {
+            val arr = org.json.JSONArray(planFile.readText())
+            val list = mutableListOf<Pair<String, Double>>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+            }
+            list
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse smart export plan: ${e.message}", e)
+            return FFmpegRenderEngine.RenderResult.Failure("Invalid smart export plan")
+        }
+        if (commands.isEmpty()) {
+            return FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan")
+        }
+
+        val totalWeight = commands.sumOf { it.second }.coerceAtLeast(0.001)
+        var completedWeight = 0.0
+        var lastResult: FFmpegRenderEngine.RenderResult =
+            FFmpegRenderEngine.RenderResult.Failure("No commands executed")
+
+        for (pair in commands) {
+            val cmd = pair.first
+            val weight = pair.second
+            val base = completedWeight
+            val result = ffmpegEngine.exportFinal(
+                ffmpegCommand = cmd,
+                totalDurationSecs = if (weight > 0.01) weight else null,
+                onProgress = { pct ->
+                    val overall = (((base + pct / 100.0 * weight) / totalWeight) * 100)
+                        .toInt().coerceIn(0, 99)
+                    updateNotification(overall, "Exporting...")
+                    broadcastProgress(overall)
+                }
+            )
+            if (result !is FFmpegRenderEngine.RenderResult.Success) {
+                return result
+            }
+            completedWeight += weight
+            lastResult = result
+        }
+
+        broadcastProgress(100)
+        updateNotification(100, "Exporting...")
+        return lastResult
     }
 
     private fun createNotificationChannel() {

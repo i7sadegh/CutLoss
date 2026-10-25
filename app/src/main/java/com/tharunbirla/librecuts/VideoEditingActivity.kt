@@ -2393,7 +2393,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 val retriever = android.media.MediaMetadataRetriever()
                 try {
                     retriever.setDataSource(this@VideoEditingActivity, item.uri)
-                    
+
                     var globalStartMs = 0L
                     for (i in 0 until index) {
                         globalStartMs += sequenceItems[i].trimmedDurationMs
@@ -2424,19 +2424,45 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
 
                 val mp4File = File(cacheDir, "freeze_vid_${System.nanoTime()}.mp4")
-                val cmd = "-y -loop 1 -i \"${pngFile.absolutePath}\" -c:v h264_mediacodec -t 3 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" \"${mp4File.absolutePath}\""
-                val renderResult = ffmpegEngine.executeCommand(cmd)
 
-                try {
-                    pngFile.delete()
-                } catch (e: Exception) {}
-
-                if (renderResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                    Uri.fromFile(mp4File)
-                } else {
-                    Log.e(TAG, "FFmpeg failed to create freeze frame video")
-                    null
+                // SMART FREEZE (phase 9): encode the still frame with the SAME codec
+                // parameters as the source clip (codec, profile, level, resolution,
+                // fps, rotation, silent audio matching the source audio) so the smart
+                // export pipeline can stream-copy this segment with -c copy.
+                val srcParams = com.tharunbirla.librecuts.services.SmartExportPlanner.probeMedia(
+                    this@VideoEditingActivity, item.uri, item.uri.path
+                )
+                var outUri: Uri? = null
+                if (srcParams != null && (srcParams.vCodec == "h264" || srcParams.vCodec == "hevc")
+                    && srcParams.pixFmt == "yuv420p" && srcParams.width > 0 && srcParams.height > 0) {
+                    val freezeCmds = com.tharunbirla.librecuts.services.SmartExportPlanner.buildFreezeFrameCommands(
+                        srcParams, pngFile.absolutePath, mp4File.absolutePath, 3000L
+                    )
+                    var ok = freezeCmds.commands.isNotEmpty()
+                    for (cmd in freezeCmds.commands) {
+                        val r = ffmpegEngine.executeCommand(cmd)
+                        if (r !is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
+                            Log.e(TAG, "FFmpeg failed to create freeze frame video")
+                            ok = false
+                            break
+                        }
+                    }
+                    for (tmpPath in freezeCmds.tempFiles) {
+                        try { File(tmpPath).delete() } catch (e: Exception) {}
+                    }
+                    if (ok) outUri = Uri.fromFile(mp4File)
                 }
+                if (outUri == null) {
+                    // Fallback: legacy hardware-encoder path (works, but not copy-compatible)
+                    val cmd = "-y -loop 1 -i \"${pngFile.absolutePath}\" -c:v h264_mediacodec -t 3 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" \"${mp4File.absolutePath}\""
+                    val renderResult = ffmpegEngine.executeCommand(cmd)
+                    if (renderResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
+                        outUri = Uri.fromFile(mp4File)
+                    }
+                }
+
+                try { pngFile.delete() } catch (e: Exception) {}
+                outUri
             }
 
             isImportLoading = false
@@ -2444,41 +2470,78 @@ class VideoEditingActivity : AppCompatActivity() {
 
             if (resultUri != null) {
                 val freezeFrameItem = com.tharunbirla.librecuts.models.EditOperation.MergeItem(resultUri, 3000L)
-                val newItems = mutableListOf<com.tharunbirla.librecuts.models.EditOperation.MergeItem>()
-                
+
                 var globalStartMs = 0L
                 for (i in 0 until index) {
                     globalStartMs += sequenceItems[i].trimmedDurationMs
                 }
                 val relativePosMs = globalPos - globalStartMs
-                
-                for (i in 0 until sequenceItems.size) {
-                    if (i == index) {
-                        val splitSourceMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
-                        if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
-                            val itemA = item.copy(trimEndMs = splitSourceMs)
-                            val itemB = item.copy(trimStartMs = splitSourceMs)
-                            newItems.add(itemA)
-                            newItems.add(freezeFrameItem)
-                            newItems.add(itemB)
-                        } else if (splitSourceMs <= item.trimStartMs) {
-                            newItems.add(freezeFrameItem)
-                            newItems.add(item)
+                val splitSourceMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
+
+                val atHeadOfFirstClip = (index == 0 && splitSourceMs <= item.trimStartMs)
+
+                if (atHeadOfFirstClip) {
+                    // Phase-9 fix: the freeze frame lands at position 0 of the timeline.
+                    // Promote the freeze video to the MAIN video slot and demote the current
+                    // main clip into the merge list. Previously the freeze file was discarded
+                    // (updateSequenceOrder(newItems.drop(1))) and the original main video was
+                    // trimmed to 3s instead, so the "frozen" segment played as normal video.
+                    tempInputFile = File(resultUri.path ?: resultUri.toString())
+                    originalMainVideoDurationMs = 3000L
+                    videoFileName = tempInputFile.name
+                    videoUri = resultUri
+                    viewModel.updateMainVideoTrim(0L, 3000L)
+                    viewModel.updateMainVideoSpeed(1.0f, null)
+                    // Whole old sequence shifts one slot to the right (freeze is the new main)
+                    viewModel.shiftSequenceOpIndices(-1, 1, 0, 1)
+                    viewModel.updateSequenceOrder(sequenceItems)
+                    selectedVideoIndex = null
+                    exitVideoEditingMode()
+                } else {
+                    val newItems = mutableListOf<com.tharunbirla.librecuts.models.EditOperation.MergeItem>()
+
+                    for (i in 0 until sequenceItems.size) {
+                        if (i == index) {
+                            if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
+                                val itemA = item.copy(trimEndMs = splitSourceMs)
+                                val itemB = item.copy(trimStartMs = splitSourceMs)
+                                newItems.add(itemA)
+                                newItems.add(freezeFrameItem)
+                                newItems.add(itemB)
+                            } else if (splitSourceMs <= item.trimStartMs) {
+                                newItems.add(freezeFrameItem)
+                                newItems.add(item)
+                            } else {
+                                newItems.add(item)
+                                newItems.add(freezeFrameItem)
+                            }
                         } else {
-                            newItems.add(item)
-                            newItems.add(freezeFrameItem)
+                            newItems.add(sequenceItems[i])
                         }
-                    } else {
-                        newItems.add(sequenceItems[i])
                     }
-                }
-                
-                selectedVideoIndex = null
-                exitVideoEditingMode()
-                if (newItems.isNotEmpty()) {
-                    val primaryItem = newItems[0]
-                    viewModel.updateMainVideoTrim(primaryItem.trimStartMs, primaryItem.trimEndMs)
-                    viewModel.updateSequenceOrder(newItems.drop(1))
+
+                    // Keep Transition / MuteClip op indices aligned with the new layout:
+                    //  - main mid-split  : freeze lands at seq 1, second half at seq 2
+                    //  - merge mid-split : freeze lands at seq index+1, second half at index+2
+                    //  - insert before   : freeze takes the item's old position
+                    //  - insert after    : freeze lands at seq index+1
+                    if (index == 0) {
+                        viewModel.shiftSequenceOpIndices(0, 2, 1, 2, 0)
+                    } else if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
+                        viewModel.shiftSequenceOpIndices(index, 2, index + 1, 2, index)
+                    } else if (splitSourceMs <= item.trimStartMs) {
+                        viewModel.shiftSequenceOpIndices(index - 1, 1, index, 1)
+                    } else {
+                        viewModel.shiftSequenceOpIndices(index, 1, index + 1, 1)
+                    }
+
+                    selectedVideoIndex = null
+                    exitVideoEditingMode()
+                    if (newItems.isNotEmpty()) {
+                        val primaryItem = newItems[0]
+                        viewModel.updateMainVideoTrim(primaryItem.trimStartMs, primaryItem.trimEndMs)
+                        viewModel.updateSequenceOrder(newItems.drop(1))
+                    }
                 }
                 Toast.makeText(this@VideoEditingActivity, R.string.toast_freeze_frame_added_to_sequence, Toast.LENGTH_SHORT).show()
             } else {
@@ -3216,6 +3279,52 @@ class VideoEditingActivity : AppCompatActivity() {
                 val ext = viewModel.getOutputExtension(isAudioOnly)
                 tempOutputFile = File(cacheDir, "temp_video_${System.currentTimeMillis()}$ext")
                 val tempOutputPath = tempOutputFile.absolutePath
+
+                // SMART EXPORT (phase 9): when the project is copy-compatible (only
+                // trims / merges / freezes / transitions / mutes, all clips sharing the
+                // same codec parameters), build a segment plan that stream-copies the
+                // unchanged parts and only re-encodes the changed parts. Falls back to
+                // the consolidated render below whenever the planner says null.
+                val smartPlanPath = try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.tharunbirla.librecuts.services.SmartExportPlanner.planSmartExport(
+                            context = this@VideoEditingActivity,
+                            project = project,
+                            sourceFilePath = sourceFilePath,
+                            outputFilePath = tempOutputPath,
+                            exportResolution = viewModel.exportResolution.value,
+                            exportFps = viewModel.exportFps.value,
+                            exportBitrate = viewModel.exportBitrate.value,
+                            audioOnly = isAudioOnly,
+                            advancedVideoCodec = viewModel.advancedExport.value.videoCodec,
+                            advancedAudioCodec = viewModel.advancedExport.value.audioCodec,
+                            advancedPreset = viewModel.advancedExport.value.preset,
+                            advancedAudioBitrate = viewModel.advancedExport.value.audioBitrate,
+                            customWidth = viewModel.advancedExport.value.customWidth,
+                            customHeight = viewModel.advancedExport.value.customHeight,
+                            videoFormat = viewModel.advancedExport.value.videoFormat
+                        )?.planFile?.absolutePath
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Smart export planning failed, using consolidated render: ${e.message}", e)
+                    null
+                }
+
+                if (smartPlanPath != null) {
+                    val intent = Intent(this@VideoEditingActivity, com.tharunbirla.librecuts.services.ExportService::class.java).apply {
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_SMART_PLAN_PATH, smartPlanPath)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TEMP_OUTPUT_PATH, tempOutputPath)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TOTAL_DURATION_SECS, getTotalSequenceDuration() / 1000.0)
+                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_IS_AUDIO_ONLY, false)
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        startForegroundService(intent)
+                    } else {
+                        startService(intent)
+                    }
+                    Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
 
                 var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand(
                     sourceFilePath = sourceFilePath,
