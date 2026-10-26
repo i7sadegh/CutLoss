@@ -25,7 +25,8 @@ import java.io.FileOutputStream
  *
  * Phase 12: there is NO legacy filter-graph fallback anymore - this
  * planner is the ONLY export pipeline, and it never emits complex filter
- * graphs. Transitions export as straight cuts (frames are never blended). Any
+ * graphs. Fade transitions render as matched per-clip fade segments
+ * (phase 14); other transition types block the export. Any
  * pixel format is fine: keyframe cuts copy bytes untouched, encodable
  * 8-bit 4:2:0 sources keep the hybrid copy+match plan, and only exotic
  * formats with a non-keyframe trim re-encode everything uniformly.
@@ -41,6 +42,21 @@ import java.io.FileOutputStream
  * -preset). Normal-cut exports with changed settings encode each segment
  * directly (frame-accurate). Containers: MP4/MKV/MOV remux losslessly,
  * WebM needs VP9/AV1 video + Opus audio, AVI is refused.
+ * Phase 14 (matched fade segments): a transition between two clips is
+ * exported as its own small segments - the tail of the left clip fading
+ * out and the head of the right clip fading in - encoded with parameters
+ * IDENTICAL to the reference clip (codec, profile, level, resolution,
+ * pixel format, SAR - DAR follows from W/H + SAR -, fps, TBN via
+ * -video_track_timescale, audio sample rate and channel layout). The rest
+ * of the timeline stays a stream copy and the final assembly is still the
+ * concat demuxer with -c copy, so only the transition window is ever
+ * re-encoded. Fade-type transitions (fade / dissolve / fade black / fade
+ * white) render as a dip through the fade color; every other transition
+ * type blocks the export honestly because blending frames from two clips
+ * at once needs a filter graph. Copied spans next to a transition are cut
+ * EXACTLY at keyframe packet boundaries (-ss at the keyframe plus
+ * -frames:v N counted from the probed packet list), so no frame is
+ * duplicated or lost at the seams.
  * When the project or settings are not compatible the planner returns null
  * and the caller surfaces the real reason instead of re-encoding.
  *
@@ -79,7 +95,10 @@ object SmartExportPlanner {
         val aSampleRate: Int,
         val aChannels: Int,
         val rotation: Int,
-        val durationMs: Long
+        val durationMs: Long,
+        val sarNum: Int = 1,
+        val sarDen: Int = 1,
+        val tbn: Int = 0
     )
 
     data class SmartPlan(val planFile: File)
@@ -223,6 +242,9 @@ object SmartExportPlanner {
                 if (p.rotation != refParams.rotation) return fail("clips have different rotation")
                 if (p.fpsString != refParams.fpsString) return fail("clips have different frame rates")
                 if (p.pixFmt != refParams.pixFmt) return fail("clips use different pixel formats")
+                if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) {
+                    return fail("clips use different sample aspect ratios")
+                }
                 if (p.durationMs <= 0L) return fail("bad clip duration")
                 clips.add(
                     AClip(
@@ -253,15 +275,16 @@ object SmartExportPlanner {
         for (t in ops.filterIsInstance<EditOperation.Transition>()) {
             if (t.type.equals("none", ignoreCase = true)) continue
             if (t.index < 0 || t.index >= clips.size - 1) continue
+            if (!renderableTransitionType(t.type)) {
+                return fail("transition '" + t.type +
+                    "' needs frame blending - use Fade, Fade Black or Fade White")
+            }
             transitions[t.index] = Pair(t.type, t.durationMs)
         }
-        val clampedTransitions = mutableMapOf<Int, Long>()
-        for ((gap, td) in transitions) {
-            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
-            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
-            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
-            if (d >= 50L) clampedTransitions[gap] = d
-        }
+        val clampedTransitions = effectiveTransitionDurations(
+            transitions,
+            clips.map { Pair(it.trimStartMs, it.trimEndMs) }
+        )
 
         val displayWidth = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.height else refParams.width
         val displayHeight = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.width else refParams.height
@@ -371,6 +394,21 @@ object SmartExportPlanner {
         val fpsString = v.optString("avg_frame_rate", "0/0")
         val fpsValue = parseFraction(fpsString) ?: return null
         if (fpsValue <= 0.0) return null
+        // Phase 14: sample aspect ratio and the video track timescale, so
+        // re-encoded transition segments can match the source exactly (an
+        // unset or "0:1" SAR is treated as square pixels like players do).
+        val sarParts = v.optString("sample_aspect_ratio", "1:1").split(":")
+        var sarNum = 1
+        var sarDen = 1
+        if (sarParts.size == 2) {
+            val sn = sarParts[0].trim().toIntOrNull() ?: 0
+            val sd = sarParts[1].trim().toIntOrNull() ?: 0
+            if (sn > 0 && sd > 0) {
+                sarNum = sn
+                sarDen = sd
+            }
+        }
+        val tbn = parseTimeBaseDen(v.optString("time_base", ""))
 
         return MediaParams(
             vCodec = v.optString("codec_name", ""),
@@ -386,7 +424,10 @@ object SmartExportPlanner {
             aSampleRate = audio?.optInt("sample_rate", 0) ?: 0,
             aChannels = audio?.optInt("channels", 0) ?: 0,
             rotation = rotation,
-            durationMs = durationMs
+            durationMs = durationMs,
+            sarNum = sarNum,
+            sarDen = sarDen,
+            tbn = tbn
         )
     }
 
@@ -405,6 +446,137 @@ object SmartExportPlanner {
             null
         }
     }
+
+    private fun parseTimeBaseDen(s: String): Int {
+        if (!s.contains("/")) return 0
+        return try {
+            val den = s.split("/")[1].trim().toIntOrNull() ?: 0
+            if (den > 0) den else 0
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /**
+     * Phase 14: transition types the lossless pipeline can render. A fade
+     * is a per-frame opacity ramp on a single stream, so the tail of the
+     * left clip and the head of the right clip carry it as two small
+     * re-encoded segments. Every other transition type has to blend frames
+     * from two clips at once, which needs a filter graph - those block the
+     * export honestly instead of silently degrading.
+     */
+    private fun renderableTransitionType(type: String): Boolean =
+        type.equals("fade", ignoreCase = true) || type.equals("dissolve", ignoreCase = true) ||
+            type.equals("fadeblack", ignoreCase = true) || type.equals("fadewhite", ignoreCase = true)
+
+    /**
+     * Phase 14: effective transition durations after clamping. A
+     * transition of duration D shows as D/2 of fade-out at the end of the
+     * left clip and D/2 of fade-in at the head of the right clip, so each
+     * side keeps at least 250 ms of untouched material and the effect
+     * itself stays at least 200 ms. One shared implementation keeps the
+     * export dialog and the planner in agreement.
+     */
+    private fun effectiveTransitionDurations(
+        transitions: Map<Int, Pair<String, Long>>,
+        spans: List<Pair<Long, Long>>
+    ): Map<Int, Long> {
+        val out = mutableMapOf<Int, Long>()
+        for ((gap, td) in transitions) {
+            if (gap < 0 || gap >= spans.size - 1) continue
+            val leftDur = spans[gap].second - spans[gap].first
+            val rightDur = spans[gap + 1].second - spans[gap + 1].first
+            val maxD = Math.min(leftDur - 250L, rightDur - 250L)
+            if (maxD < 200L) continue
+            val d = Math.min(td.second, maxD)
+            if (d >= 200L) out[gap] = d
+        }
+        return out
+    }
+
+    /**
+     * Phase 14: video packet list (pts in ms, is-keyframe) straight from
+     * ffprobe's packet dump. Stream copy can only start on a keyframe and
+     * a plain -t overshoots the tail by the reorder delay, so the exact
+     * copied spans next to a transition are cut with -ss at a keyframe
+     * timestamp plus -frames:v N counted from this list. Packets without a
+     * readable pts keep their index slot (pts -1) so the count stays true.
+     */
+    private fun probeVideoPackets(path: String): List<Pair<Long, Boolean>>? {
+        val session = try {
+            com.antonkarpenko.ffmpegkit.FFprobeKit.execute(
+                "-v error -select_streams v:0 -show_packets -show_entries " +
+                    "packet=pts_time,flags -of csv=p=0 \"" + path + "\""
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "packet probe failed: " + e.message)
+            null
+        } ?: return null
+        val out = try {
+            session.output
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        if (out.isBlank()) return null
+        val pkts = mutableListOf<Pair<Long, Boolean>>()
+        for (line in out.split("\n")) {
+            val parts = line.split(",")
+            if (parts.size < 2) continue
+            val ptsSec = parts[0].trim().toDoubleOrNull()
+            pkts.add(Pair(ptsSec?.let { Math.round(it * 1000.0) } ?: -1L, parts[1].contains("K")))
+        }
+        return if (pkts.isEmpty()) null else pkts
+    }
+
+    /**
+     * Exact boundaries for the copied span of a clip next to a transition
+     * (phase 14). startKf is the keyframe the -ss seek lands on (the
+     * aligned keyframe after a left transition's fade-in, or the snap
+     * keyframe at or before trimStart otherwise); endKf is the keyframe at
+     * or before a right transition's fade-out start, or trimEnd when no
+     * transition follows. framesV is the exact video packet count between
+     * the two keyframes (0 = plain -t tail). Returns null when no clean
+     * boundary exists - the whole span then re-encodes with the fades
+     * riding on it.
+     */
+    private fun planTransitionSpan(
+        pkts: List<Pair<Long, Boolean>>,
+        trimStartMs: Long,
+        trimEndMs: Long,
+        leftD: Long,
+        rightD: Long
+    ): TransitionSpan? {
+        val startKf: Long = if (leftD > 0L) {
+            val target = trimStartMs + leftD
+            pkts.firstOrNull { it.second && it.first >= 0L && it.first >= target }?.first ?: return null
+        } else {
+            pkts.lastOrNull { it.second && it.first >= 0L && it.first <= trimStartMs }?.first ?: return null
+        }
+        val endKf: Long = if (rightD > 0L) {
+            val target = trimEndMs - rightD
+            pkts.lastOrNull { it.second && it.first >= 0L && it.first <= target }?.first ?: return null
+        } else {
+            trimEndMs
+        }
+        if (endKf - startKf < 100L) return null
+        if (rightD > 0L) {
+            var idxStart = -1
+            var idxEnd = -1
+            for (i in pkts.indices) {
+                if (idxStart < 0 && pkts[i].second && pkts[i].first == startKf) idxStart = i
+                if (pkts[i].second && pkts[i].first == endKf) idxEnd = i
+            }
+            if (idxStart < 0 || idxEnd <= idxStart) return null
+            return TransitionSpan(startKf, endKf, idxEnd - idxStart)
+        }
+        return TransitionSpan(startKf, endKf, 0)
+    }
+
+    private data class TransitionSpan(
+        val startKfMs: Long,
+        val endKfMs: Long,
+        val framesV: Int
+    )
 
     // ------------------------------------------------------------------
     // Freeze frame command builder
@@ -631,6 +803,7 @@ object SmartExportPlanner {
                 if (p.rotation != refParams.rotation) return null
                 if (p.fpsString != refParams.fpsString) return null
                 if (p.pixFmt != refParams.pixFmt) return null
+                if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) return null
                 if (p.durationMs <= 0L) return null
                 clips.add(
                     ClipInfo(
@@ -657,6 +830,35 @@ object SmartExportPlanner {
         }
         val encodableSource = refParams.pixFmt == "yuv420p" || refParams.pixFmt == "yuvj420p" ||
             refParams.pixFmt == "nv12" || refParams.pixFmt == "nv21"
+        // ---- phase 14: transitions as matched fade segments ----
+        // A fade transition is per-stream, so it exports as small segments
+        // that then join the rest through the concat: the left clip's tail
+        // fades out, the right clip's head fades in, and both pieces are
+        // re-encoded with parameters IDENTICAL to the reference clip -
+        // codec, profile, level, resolution, pixel format, SAR (DAR
+        // follows from W/H + SAR), fps, TBN, audio sample rate and channel
+        // layout - so the final assembly stays a pure -c copy. Copied
+        // spans around a seam are cut exactly at keyframe packet
+        // boundaries. Non-fade transitions need a frame blend, so they
+        // block the export instead of silently degrading.
+        val merged = !exportSeparateFiles   // single file vs one per clip
+        val transitionsRaw = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            if (!renderableTransitionType(t.type)) return null
+            transitionsRaw[t.index] = Pair(t.type, t.durationMs)
+        }
+        val transitionDurations = if (merged) {
+            effectiveTransitionDurations(
+                transitionsRaw,
+                clips.map { Pair(it.trimStartMs, it.trimEndMs) }
+            )
+        } else {
+            emptyMap()
+        }
+        val hasTransitions = transitionDurations.isNotEmpty()
+
         // ---- phase 13: the flag contract ----
         // A setting left on "same as input" never writes a flag. All
         // same-as-input = pure -c copy. Keyframe cut + changed settings =
@@ -672,8 +874,13 @@ object SmartExportPlanner {
         val needsAudioEncode = aBitrateSet || aCodecSet
         val anyEncode = needsVideoEncode || needsAudioEncode
         val twoStep = anyEncode && keyframeCut
-        val perSegmentEncode = !keyframeCut &&
-            (anyEncode || (!encodableSource && anyTrimmedSpan))
+        // A source pixel format the encoders cannot reproduce would make
+        // the fade pieces differ from their copied neighbours, so a
+        // transition on a non-encodable source takes the uniform encode
+        // (the fades then ride the per-segment commands).
+        val perSegmentEncode = (!keyframeCut &&
+            (anyEncode || (!encodableSource && anyTrimmedSpan))) ||
+            (!encodableSource && merged && hasTransitions)
         val outExt = when (videoFormat) {
             "mkv" -> ".mkv"
             "mov" -> ".mov"
@@ -709,11 +916,20 @@ object SmartExportPlanner {
         val aRate = audioRef?.aSampleRate ?: 44100
         val aChanLabel = if ((audioRef?.aChannels ?: 2) == 1) "mono" else "stereo"
 
-        // ---- phase 12: transitions export as straight cuts ----
-        // The lossless pipeline never blends frames, so no transition
-        // segments are rendered and no span is shortened: every clip is
-        // simply its trim, and clips join end to start in the concat.
-        val merged = !exportSeparateFiles   // single file vs one per clip
+        // Transition-adjacent copied spans need exact keyframe boundaries
+        // (phase 14); encoded plans carry the fades inside their commands.
+        val spanPlans = mutableMapOf<Int, TransitionSpan?>()
+        if (hasTransitions && !perSegmentEncode) {
+            for (i in clips.indices) {
+                val ld = if (i > 0) transitionDurations[i - 1] ?: 0L else 0L
+                val rd = if (i < clips.size - 1) transitionDurations[i] ?: 0L else 0L
+                if (ld <= 0L && rd <= 0L) continue
+                val pkts = probeVideoPackets(clips[i].path)
+                spanPlans[i] = pkts?.let {
+                    planTransitionSpan(it, clips[i].trimStartMs, clips[i].trimEndMs, ld / 2L, rd / 2L)
+                }
+            }
+        }
         for (i in clips.indices) {
             if (clips[i].trimEndMs <= clips[i].trimStartMs) return null
         }
@@ -738,6 +954,31 @@ object SmartExportPlanner {
             else -> "-c:a libopus -ar 48000 -b:a 128k"
         }
         val fpsFilter = "fps=" + refParams.fpsString
+        // Phase 14 match values: the source SAR (DAR follows from
+        // resolution + SAR) and the video track timescale, so every
+        // segment the planner writes is concat-uniform with the source
+        // whatever the source clips' own timescales are.
+        val sarSpec = if (refParams.sarNum > 0 && refParams.sarDen > 0) {
+            refParams.sarNum.toString() + ":" + refParams.sarDen
+        } else {
+            "1:1"
+        }
+        val segTbn = if (refParams.tbn > 0 && (segExt == ".mp4" || segExt == ".mov")) {
+            " -video_track_timescale " + refParams.tbn
+        } else {
+            ""
+        }
+        val outTbn = if (refParams.tbn > 0 && (outExt == ".mp4" || outExt == ".mov")) {
+            " -video_track_timescale " + refParams.tbn
+        } else {
+            ""
+        }
+        fun fadeColorFor(gap: Int): String =
+            if (gap >= 0 && transitionsRaw[gap]?.first.equals("fadewhite", ignoreCase = true)) {
+                ":color=white"
+            } else {
+                ""
+            }
         // ---- phase 13: one-flag-per-changed-option encoders ----
         // Same-as-input options write NO flag: codec -> -c:v (source
         // encoder family when unchanged), bitrate -> -b:v only when the
@@ -760,9 +1001,12 @@ object SmartExportPlanner {
             val spanMs = spanEnd - spanStart
             val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
             val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
-            val seg = if (perSegmentEncode) nextSegmentFile(outExt) else nextSegmentFile(segExt)
+            val leftD = if (i > 0) (transitionDurations[i - 1] ?: 0L) / 2L else 0L
+            val rightD = if (i < clips.size - 1) (transitionDurations[i] ?: 0L) / 2L else 0L
+            val adjacent = leftD > 0L || rightD > 0L
 
             if (perSegmentEncode) {
+                val seg = nextSegmentFile(outExt)
                 // Frame-accurate direct encode (phase 11/13): one command
                 // per segment with ONE flag per changed option. -ss before
                 // -i decodes forward, so cuts land on the exact frame;
@@ -783,20 +1027,185 @@ object SmartExportPlanner {
                 } else if (planHasAudio) {
                     sb.append(" -map 0:a:0")
                 }
-                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+                if (scaleFilter != null || adjacent) {
+                    val vParts = mutableListOf<String>()
+                    if (scaleFilter != null) vParts.add(scaleFilter)
+                    if (leftD > 0L) {
+                        vParts.add("fade=t=in:st=0:d=" + ms(leftD) + fadeColorFor(i - 1))
+                    }
+                    if (rightD > 0L) {
+                        vParts.add("fade=t=out:st=" + ms(spanMs - rightD) +
+                            ":d=" + ms(rightD) + fadeColorFor(i))
+                    }
+                    sb.append(" -vf \"").append(vParts.joinToString(",")).append("\"")
+                }
                 if (fpsArg != null) sb.append(" ").append(fpsArg)
                 sb.append(" ").append(vEncSimple)
                 if (silenceAudio) {
                     sb.append(" ").append(aEncSilence)
+                } else if (adjacent && planHasAudio) {
+                    sb.append(" ").append(aEnc)
+                    val aFades = mutableListOf<String>()
+                    if (leftD > 0L) aFades.add("afade=t=in:st=0:d=" + ms(leftD))
+                    if (rightD > 0L) {
+                        aFades.add("afade=t=out:st=" + ms(spanMs - rightD) + ":d=" + ms(rightD))
+                    }
+                    sb.append(" -af \"").append(aFades.joinToString(",")).append("\"")
                 } else if (planHasAudio) {
                     sb.append(" ").append(aEncSimple)
                 }
                 if (preserveMetadata) sb.append(" -map_metadata 0")
                 if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(outTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (adjacent && (!keyframeCut || spanPlans[i] == null)) {
+                // Phase 14: no clean keyframe boundary (or a normal cut), so
+                // the whole span re-encodes once with the fade windows riding
+                // on it - still matched to the source parameters.
+                val seg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")
+                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                val vParts = mutableListOf<String>()
+                vParts.add(fpsFilter)
+                vParts.add("setsar=" + sarSpec)
+                if (leftD > 0L) {
+                    vParts.add("fade=t=in:st=0:d=" + ms(leftD) + fadeColorFor(i - 1))
+                }
+                if (rightD > 0L) {
+                    vParts.add("fade=t=out:st=" + ms(spanMs - rightD) +
+                        ":d=" + ms(rightD) + fadeColorFor(i))
+                }
+                sb.append(" -vf \"").append(vParts.joinToString(",")).append("\"")
+                if (!silenceAudio && planHasAudio) {
+                    val aFades = mutableListOf<String>()
+                    if (leftD > 0L) aFades.add("afade=t=in:st=0:d=" + ms(leftD))
+                    if (rightD > 0L) {
+                        aFades.add("afade=t=out:st=" + ms(spanMs - rightD) + ":d=" + ms(rightD))
+                    }
+                    sb.append(" -af \"").append(aFades.joinToString(",")).append("\"")
+                }
+                sb.append(" ").append(enc)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(segTbn)
+                sb.append(" \"").append(seg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (adjacent) {
+                // Phase 14 keyframe mode: the fade pieces re-encode with
+                // parameters identical to the source, and the copied span
+                // between them is cut exactly at keyframe packet boundaries
+                // (-ss at the keyframe plus -frames:v N), so the concat
+                // joins everything with -c copy and no frame repeats.
+                val plan = spanPlans[i]!!
+                if (leftD > 0L) {
+                    // fade-in piece: [spanStart, startKf] - fade over the
+                    // first leftD, plain bridge up to the keyframe
+                    val pieceMs = plan.startKfMs - spanStart
+                    val pSeg = nextSegmentFile(segExt)
+                    val sb = StringBuilder("-y -noautorotate")
+                    if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                    sb.append(" -t ").append(ms(pieceMs)).append(" -i \"").append(clip.path).append("\"")
+                    if (silenceAudio) {
+                        sb.append(" -f lavfi -t ").append(ms(pieceMs))
+                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                    }
+                    sb.append(" -map 0:v:0")
+                    if (silenceAudio) {
+                        sb.append(" -map 1:a:0")
+                    } else if (planHasAudio) {
+                        sb.append(" -map 0:a:0")
+                    }
+                    sb.append(" -vf \"").append(fpsFilter).append(",setsar=").append(sarSpec)
+                        .append(",fade=t=in:st=0:d=").append(ms(leftD))
+                        .append(fadeColorFor(i - 1)).append("\"")
+                    if (!silenceAudio && planHasAudio) {
+                        sb.append(" -af \"afade=t=in:st=0:d=").append(ms(leftD)).append("\"")
+                    }
+                    sb.append(" ").append(enc)
+                    if (silenceAudio) {
+                        sb.append(" ").append(aEncSilence)
+                    } else if (planHasAudio) {
+                        sb.append(" ").append(aEnc)
+                    }
+                    sb.append(segTbn)
+                    sb.append(" \"").append(pSeg.absolutePath).append("\"")
+                    commands.add(Pair(sb.toString(), Math.max(0.5, pieceMs / 1000.0)))
+                }
+                // copied span: [startKf, endKf) - exact keyframe cut
+                val copyMs = plan.endKfMs - plan.startKfMs
+                val cSeg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")
+                if (plan.startKfMs > 0L) sb.append(" -ss ").append(ms(plan.startKfMs))
+                sb.append(" -t ").append(ms(copyMs)).append(" -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(copyMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                if (plan.framesV > 0) sb.append(" -frames:v ").append(plan.framesV)
+                if (silenceAudio) {
+                    sb.append(" -c:v copy -avoid_negative_ts make_zero").append(" ").append(aEnc)
+                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
+                }
+                sb.append(segTbn)
+                sb.append(" \"").append(cSeg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, copyMs / 1000.0)))
+                if (rightD > 0L) {
+                    // fade-out piece: [endKf, spanEnd] - bridge then fade
+                    // over the last rightD of the clip
+                    val pieceMs = spanEnd - plan.endKfMs
+                    val fadeStMs = spanEnd - rightD - plan.endKfMs
+                    val pSeg = nextSegmentFile(segExt)
+                    val sb2 = StringBuilder("-y -noautorotate")
+                    sb2.append(" -ss ").append(ms(plan.endKfMs))
+                    sb2.append(" -t ").append(ms(pieceMs)).append(" -i \"").append(clip.path).append("\"")
+                    if (silenceAudio) {
+                        sb2.append(" -f lavfi -t ").append(ms(pieceMs))
+                        sb2.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                    }
+                    sb2.append(" -map 0:v:0")
+                    if (silenceAudio) {
+                        sb2.append(" -map 1:a:0")
+                    } else if (planHasAudio) {
+                        sb2.append(" -map 0:a:0")
+                    }
+                    sb2.append(" -vf \"").append(fpsFilter).append(",setsar=").append(sarSpec)
+                        .append(",fade=t=out:st=").append(ms(fadeStMs))
+                        .append(":d=").append(ms(rightD)).append(fadeColorFor(i)).append("\"")
+                    if (!silenceAudio && planHasAudio) {
+                        sb2.append(" -af \"afade=t=out:st=").append(ms(fadeStMs))
+                            .append(":d=").append(ms(rightD)).append("\"")
+                    }
+                    sb2.append(" ").append(enc)
+                    if (silenceAudio) {
+                        sb2.append(" ").append(aEncSilence)
+                    } else if (planHasAudio) {
+                        sb2.append(" ").append(aEnc)
+                    }
+                    sb2.append(segTbn)
+                    sb2.append(" \"").append(pSeg.absolutePath).append("\"")
+                    commands.add(Pair(sb2.toString(), Math.max(0.5, pieceMs / 1000.0)))
+                }
             } else if (fullRange) {
                 // Whole clip unchanged -> pure stream copy remux
+                val seg = nextSegmentFile(segExt)
                 val sb = StringBuilder("-y -noautorotate -i \"").append(clip.path).append("\"")
                 if (silenceAudio) {
                     sb.append(" -f lavfi -t ").append(ms(spanMs))
@@ -807,6 +1216,7 @@ object SmartExportPlanner {
                 } else {
                     sb.append(" -map 0:v:0 -c copy")
                 }
+                sb.append(segTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             } else if (keyframeCut) {
@@ -814,6 +1224,7 @@ object SmartExportPlanner {
                 // preceding keyframe automatically, so the trimmed span is
                 // stream-copied - fully lossless, with up to one GOP of extra
                 // head material (same semantics as LosslessCut's keyframe cut).
+                val seg = nextSegmentFile(segExt)
                 val sb = StringBuilder("-y -noautorotate")
                 if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
                 sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
@@ -830,10 +1241,12 @@ object SmartExportPlanner {
                 } else {
                     sb.append(" -c copy -avoid_negative_ts make_zero")
                 }
+                sb.append(segTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             } else {
                 // Trimmed span -> re-encode ONLY this span with matching parameters
+                val seg = nextSegmentFile(segExt)
                 val sb = StringBuilder("-y -noautorotate")
                 if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
                 sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
@@ -847,9 +1260,10 @@ object SmartExportPlanner {
                 } else if (planHasAudio) {
                     sb.append(" -map 0:a:0")
                 }
-                sb.append(" -vf \"").append(fpsFilter).append(",setsar=1\" ")
+                sb.append(" -vf \"").append(fpsFilter).append(",setsar=").append(sarSpec).append("\" ")
                 sb.append(enc)
                 if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(segTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             }
@@ -895,6 +1309,7 @@ object SmartExportPlanner {
                 if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
                 if (preserveMetadata) sb.append(" -map_metadata 0")
                 if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(outTbn)
                 sb.append(" \"").append(outputFilePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(1.0, totalSpanSec)))
             }
@@ -912,6 +1327,7 @@ object SmartExportPlanner {
                 if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
                 if (preserveMetadata) sb.append(" -map_metadata 0")
                 if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(outTbn)
                 sb.append(" \"").append(out.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
                 encodedOutFiles.add(out)
@@ -943,7 +1359,8 @@ object SmartExportPlanner {
             "smart export planned: " + commands.size + " commands, clips=" + clips.size +
                 (if (merged) "" else ", separate mode") +
                 (if (twoStep) ", two-step (lossless cut + one finalize encode)" else "") +
-                (if (perSegmentEncode) ", direct per-segment encode" else "")
+                (if (perSegmentEncode) ", direct per-segment encode" else "") +
+                (if (hasTransitions) ", " + transitionDurations.size + " fade transition(s)" else "")
         )
         return SmartPlan(planFile)
     }

@@ -355,11 +355,16 @@ class ExportSettingsDialog(
         val anyTrimmed = a.clips.any {
             !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
         }
+        val nonEncodable = a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
+            a.pixFmt != "nv12" && a.pixFmt != "nv21"
         return customScale || resChange || fpsChange ||
             chosenBitrateString().isNotEmpty() || selCodec.isNotEmpty() ||
             selAudioBitrate.isNotEmpty() || selAudioCodec.isNotEmpty() ||
-            (a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
-                a.pixFmt != "nv12" && a.pixFmt != "nv21" && !selKeyframeCut && anyTrimmed)
+            (nonEncodable && !selKeyframeCut && anyTrimmed) ||
+            // phase 14 mirror: a fade segment on a non-encodable source
+            // cannot match its copied neighbours, so the uniform encode
+            // takes over and the fades ride the per-segment commands.
+            (nonEncodable && a.transitions.isNotEmpty() && !selSeparateFiles)
     }
 
     /**
@@ -386,6 +391,9 @@ class ExportSettingsDialog(
             } else if (enc > 0) {
                 sb.append("\n(faststart applies to the merged single-file mode only)")
             }
+            if (a.transitions.isNotEmpty()) {
+                sb.append("\ntransitions apply only to the merged single-file export")
+            }
             return sb.toString()
         }
         var copySec = 0.0
@@ -396,6 +404,30 @@ class ExportSettingsDialog(
             if (spanMs <= 0L) continue
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        // phase 14: the fade windows around each transition re-encode (the
+        // pieces); with a normal cut the whole adjacent clips do, because
+        // the fades ride their re-encode.
+        if (selKeyframeCut) {
+            for (dMs in a.transitions.values) {
+                val dSec = dMs / 1000.0
+                copySec = Math.max(0.0, copySec - dSec)
+                encSec += dSec
+            }
+        } else {
+            val adjacentIdx = mutableSetOf<Int>()
+            for (gap in a.transitions.keys) {
+                adjacentIdx.add(gap)
+                adjacentIdx.add(gap + 1)
+            }
+            for (idx in adjacentIdx) {
+                val c = a.clips.getOrNull(idx) ?: continue
+                if (!c.fullRange) continue
+                val spanMs = c.trimEndMs - c.trimStartMs
+                if (spanMs <= 0L) continue
+                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
+                encSec += spanMs / 1000.0
+            }
         }
         val outFmt = effectiveVideoFormat()
         val sb = StringBuilder()
@@ -413,7 +445,7 @@ class ExportSettingsDialog(
         if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
         if (a.transitions.isNotEmpty()) {
             sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) exported as straight cuts (no frame blending)")
+                .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
         }
         sb.append("; final assembly is a lossless concat)")
         return sb.toString()
@@ -490,6 +522,9 @@ class ExportSettingsDialog(
             if (a.hasAudio) sb.append(" -map 0:a:0")
             sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
             if (!selSeparateFiles) {
+                if (a.transitions.isNotEmpty()) {
+                    sb.append("\nffmpeg -ss S -t D -i input -vf \"fps,setsar,fade\" -af afade <matched enc> seg_T.mp4   (transition piece)")
+                }
                 sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
                 if (a.hasAudio) sb.append(" -map 0:a:0")
                 if (selPreserveMetadata) sb.append(" -map_metadata 1")
@@ -532,8 +567,12 @@ class ExportSettingsDialog(
         }
         if (fpsChange) sb.append(" @ ").append(selFps).append("fps")
         if (a.transitions.isNotEmpty()) {
-            sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) exported as straight cuts (no frame blending)")
+            if (selSeparateFiles) {
+                sb.append("; transitions apply only to the merged single-file export")
+            } else {
+                sb.append("; ").append(a.transitions.size)
+                    .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
+            }
         }
         sb.append(")")
         return sb.toString()
@@ -569,6 +608,29 @@ class ExportSettingsDialog(
             if (spanMs <= 0L) continue
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        // phase 14 mirror of the summary math: fade windows re-encode with
+        // a keyframe cut, whole adjacent clips with a normal cut.
+        if (selKeyframeCut) {
+            for (dMs in a.transitions.values) {
+                val dSec = dMs / 1000.0
+                copySec = Math.max(0.0, copySec - dSec)
+                encSec += dSec
+            }
+        } else {
+            val adjacentIdx = mutableSetOf<Int>()
+            for (gap in a.transitions.keys) {
+                adjacentIdx.add(gap)
+                adjacentIdx.add(gap + 1)
+            }
+            for (idx in adjacentIdx) {
+                val c = a.clips.getOrNull(idx) ?: continue
+                if (!c.fullRange) continue
+                val spanMs = c.trimEndMs - c.trimStartMs
+                if (spanMs <= 0L) continue
+                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
+                encSec += spanMs / 1000.0
+            }
         }
         val aKbps = when {
             selAudioCodec == "pcm_s16le" -> 1411

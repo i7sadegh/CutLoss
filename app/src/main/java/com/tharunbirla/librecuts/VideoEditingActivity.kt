@@ -3923,7 +3923,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     accumBoundaryMs += sequenceItems[i].trimmedDurationMs
                     val transOp = transitionOps.find { it.index == i }
                     if (transOp != null && transOp.type.lowercase() != "none") {
-                        val windowMs = 1000L
+                        val windowMs = transOp.durationMs.coerceAtLeast(200L)
                         val halfWindow = windowMs / 2
                         val transStart = accumBoundaryMs - halfWindow
                         val transEnd = accumBoundaryMs + halfWindow
