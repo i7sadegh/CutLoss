@@ -24,9 +24,12 @@ import java.io.FileOutputStream
  * bit-exact with the original footage.
  *
  * If anything is not copy-compatible (mixed codecs, image clips, text or
- * image overlays, speed changes, background audio, custom resolution or
- * fps, ...) the planner returns null and the caller falls back to the
- * legacy consolidated filter-graph render.
+ * image overlays, speed changes, background audio, ...) the planner
+ * returns null and the caller falls back to the legacy consolidated
+ * filter-graph render. Resolution / fps / custom-size changes do NOT
+ * fall back (phase 11): they switch the plan to the simple re-encode
+ * template - one flag per changed option (-vf scale=W:H, -r F) - and the
+ * final assembly is still the lossless concat.
  *
  * Command templates validated against the bundled ffmpeg (Lavf 62 / ffmpeg
  * 6.1, ffmpeg-kit-full-gpl 2.1.0):
@@ -92,8 +95,10 @@ object SmartExportPlanner {
         val transitions: Map<Int, Long>,
         val hasAudio: Boolean,
         val displayHeight: Int,
+        val displayWidth: Int,
         val shortSide: Int,
         val fpsRounded: Int,
+        val vCodec: String,
         val reason: String?
     )
 
@@ -109,7 +114,9 @@ object SmartExportPlanner {
     /**
      * Settings-level gates (cheap, no probing): returns a human readable
      * reason when the current export settings force the legacy render, or
-     * null when the smart path can run with these settings.
+     * null when the smart path can run with these settings. Resolution /
+     * fps / custom-size changes are handled by the simple re-encode plan
+     * (phase 11), so they never gate here.
      */
     fun settingsBlockSmart(
         analysis: SmartAnalysis,
@@ -125,17 +132,16 @@ object SmartExportPlanner {
         if (audioOnly) return "audio-only export"
         if (videoFormat != "mp4") return "non-MP4 container"
         if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return "custom codec requested"
-        if (customWidth >= 16 || customHeight >= 16) return "custom resolution"
-        if (exportResolution != 0 && exportResolution != analysis.displayHeight && exportResolution != analysis.shortSide) {
-            return "resolution change"
-        }
-        if (exportFps != 0 && exportFps != analysis.fpsRounded) return "fps change"
+        // Phase 11: resolution / fps / custom-size changes no longer disable
+        // the smart path -- they switch it to the simple re-encode template
+        // (a scale / -r flag per changed option), like the classic ffmpeg
+        // one-command workflow.
         return null
     }
 
     private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
         fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, reason)
+            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", reason)
 
         if (isImagePath(sourceFilePath)) return fail("image source")
         val ops = project.operations
@@ -242,8 +248,10 @@ object SmartExportPlanner {
             transitions = clampedTransitions,
             hasAudio = audioRef != null,
             displayHeight = displayHeight,
+            displayWidth = displayWidth,
             shortSide = Math.min(displayWidth, displayHeight),
             fpsRounded = Math.round(refParams.fpsValue).toInt(),
+            vCodec = refParams.vCodec,
             reason = null
         )
     }
@@ -488,7 +496,6 @@ object SmartExportPlanner {
         if (audioOnly) return null
         if (videoFormat != "mp4") return null
         if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return null
-        if (customWidth >= 16 || customHeight >= 16) return null
         if (isImagePath(sourceFilePath)) return null
 
         val ops = project.operations
@@ -525,11 +532,32 @@ object SmartExportPlanner {
             refParams.height
         }
         val shortSide = Math.min(displayWidth, displayHeight)
-        // Resolution is a no-op when it equals the display height or the short
-        // side (a "1080" preset on a portrait 1080x1920 clip). Anything else
-        // means the user asked for a real resize -> legacy render.
-        if (exportResolution != 0 && exportResolution != displayHeight && exportResolution != shortSide) return null
-        if (exportFps != 0 && exportFps != Math.round(refParams.fpsValue).toInt()) return null
+        // ---- simple re-encode mode (phase 11) ----
+        // A resolution / fps / custom-size change no longer kicks the project
+        // to the legacy filter-graph render. Every segment runs the classic
+        // simple command with one flag per changed option:
+        //   ffmpeg [-ss S] [-t D] -i SRC -vf scale=W:H -r F -c:v libx264 ...
+        // and the final assembly stays the lossless concat (-c copy), safe
+        // because all segments then share identical encode parameters. The
+        // re-encode templates drop -noautorotate on purpose: ffmpeg's default
+        // autorotate bakes the rotation BEFORE scale, so a rotated phone clip
+        // scales to its display dimensions (1080x1920 -> 720x1280).
+        val customScale = customWidth >= 16 && customHeight >= 16
+        val resChange = !customScale && exportResolution != 0 &&
+            exportResolution != displayHeight && exportResolution != shortSide
+        val fpsChange = exportFps != 0 && exportFps != Math.round(refParams.fpsValue).toInt()
+        val reencodeAll = customScale || resChange || fpsChange
+        val scaleFilter: String? = when {
+            customScale -> "scale=" + (customWidth - customWidth % 2) + ":" +
+                (customHeight - customHeight % 2) + ",setsar=1"
+            resChange -> if (displayHeight >= displayWidth) {
+                "scale=" + exportResolution + ":-2,setsar=1"
+            } else {
+                "scale=-2:" + exportResolution + ",setsar=1"
+            }
+            else -> null
+        }
+        val fpsArg: String? = if (fpsChange) "-r " + exportFps else null
 
         data class ClipInfo(
             val path: String,
@@ -639,6 +667,25 @@ object SmartExportPlanner {
         val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
         val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
         val fpsFilter = "fps=" + refParams.fpsString
+        // Simple-command encoder for the re-encode mode (phase 11): no
+        // profile / level matching (the source profile may not fit the
+        // target size) - just the classic "-c:v libx264 -b:v X" form.
+        val encSimple: String = if (refParams.vCodec == "hevc") {
+            val sb = StringBuilder("-c:v libx265 -tag:v hvc1 -pix_fmt yuv420p")
+            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 20")
+            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
+            sb.toString()
+        } else {
+            val sb = StringBuilder("-c:v libx264 -pix_fmt yuv420p")
+            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 18")
+            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
+            sb.toString()
+        }
+        // Transition chains follow the plan mode: the same scale filter and
+        // the target frame rate when the whole plan is re-encoded.
+        val transScalePrefix = if (reencodeAll && scaleFilter != null) scaleFilter + "," else ""
+        val transFpsFilter = if (reencodeAll && fpsChange) "fps=" + exportFps else fpsFilter
+        val transEnc = if (reencodeAll) encSimple else enc
 
         var segCounter = 0
         fun nextSegmentFile(): File {
@@ -659,7 +706,32 @@ object SmartExportPlanner {
             val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
             val seg = nextSegmentFile()
 
-            if (fullRange) {
+            if (reencodeAll) {
+                // Simple re-encode (phase 11): one flag per changed export
+                // option. -ss before -i decodes forward, so cuts are
+                // frame-accurate; autorotate runs before scale, so rotated
+                // phone clips land on their display dimensions.
+                val sb = StringBuilder("-y")
+                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                if (!fullRange) sb.append(" -t ").append(ms(spanMs))
+                sb.append(" -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+                if (fpsArg != null) sb.append(" ").append(fpsArg)
+                sb.append(" ").append(encSimple)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(" \"").append(seg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (fullRange) {
                 // Whole clip unchanged -> pure stream copy remux
                 val sb = StringBuilder("-y -noautorotate -i \"").append(clip.path).append("\"")
                 if (silenceAudio) {
@@ -731,9 +803,10 @@ object SmartExportPlanner {
                 val rightAudioReal = planHasAudio && right.params.hasAudio && !right.muted
                 val tSeg = nextSegmentFile()
 
-                val sb = StringBuilder("-y -noautorotate -ss ").append(leftTailStart)
+                val arFlag = if (reencodeAll) "" else " -noautorotate"
+                val sb = StringBuilder("-y").append(arFlag).append(" -ss ").append(leftTailStart)
                 sb.append(" -t ").append(dSec).append(" -i \"").append(clip.path).append("\"")
-                sb.append(" -noautorotate -ss ").append(rightHeadStart)
+                sb.append(arFlag).append(" -ss ").append(rightHeadStart)
                 sb.append(" -t ").append(dSec).append(" -i \"").append(right.path).append("\"")
 
                 var anullCounter = 2
@@ -762,8 +835,8 @@ object SmartExportPlanner {
                 }
 
                 val filterParts = mutableListOf<String>()
-                filterParts.add("[0:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[lv]")
-                filterParts.add("[1:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[rv]")
+                filterParts.add("[0:v:0]setpts=PTS-STARTPTS," + transScalePrefix + transFpsFilter + "[lv]")
+                filterParts.add("[1:v:0]setpts=PTS-STARTPTS," + transScalePrefix + transFpsFilter + "[rv]")
                 filterParts.add(
                     "[lv][rv]xfade=transition=" + sanitizeTransitionType(type) +
                         ":duration=" + dSec + ":offset=0[tv]"
@@ -795,7 +868,7 @@ object SmartExportPlanner {
                         sb.append(" -map ").append(leftALabel)
                     }
                 }
-                sb.append(" ").append(enc)
+                sb.append(" ").append(transEnc)
                 if (planHasAudio) sb.append(" ").append(aEnc)
                 sb.append(" \"").append(tSeg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, dMs / 1000.0)))
@@ -844,7 +917,9 @@ object SmartExportPlanner {
             TAG,
             "smart export planned: " + commands.size + " commands, clips=" + clips.size +
                 ", transitions=" + (if (merged) clampedTransitions.size else 0) +
-                (if (merged) "" else ", separate mode")
+                (if (merged) "" else ", separate mode") +
+                (if (reencodeAll) ", simple re-encode mode (scale=" + (scaleFilter ?: "none") +
+                    ", " + (fpsArg ?: "fps unchanged") + ")" else "")
         )
         return SmartPlan(planFile)
     }
