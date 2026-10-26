@@ -79,7 +79,11 @@ class VideoEditingViewModel : ViewModel() {
         val audioBitrate: String = "",        // "" = same as input (omit -b:a); 128k|192k|256k|320k
         val audioOnlyFormat: String = "m4a",  // m4a|mp3|opus|flac|wav (audio-only export extension)
         val customWidth: Int = 0,             // 0 = not set
-        val customHeight: Int = 0             // 0 = not set
+        val customHeight: Int = 0,            // 0 = not set
+        val keyframeCut: Boolean = false,     // trim points snap to keyframes -> pure stream copy
+        val exportSeparateFiles: Boolean = false, // one output file per timeline clip
+        val movFastStart: Boolean = true,     // -movflags +faststart on MP4 output
+        val preserveMetadata: Boolean = true  // keep the source's global metadata in the output
     )
 
     private val _advancedExport = MutableStateFlow(AdvancedExport())
@@ -100,6 +104,28 @@ class VideoEditingViewModel : ViewModel() {
         return when (adv.videoFormat) {
             "mkv" -> ".mkv"; "mov" -> ".mov"; "webm" -> ".webm"; "avi" -> ".avi"
             else -> ".mp4"
+        }
+    }
+
+    /**
+     * Output container flags shared by the legacy render paths (phase 10):
+     *  - metadata  : -map_metadata 0 keeps the source's global metadata
+     *                (which is also ffmpeg's default); -map_metadata -1
+     *                strips it from the output entirely.
+     *  - faststart : -movflags +faststart relocates the MP4 moov atom to
+     *                the front so players can start before the whole file
+     *                has been read (streaming-friendly).
+     */
+    private fun appendOutputContainerArgs(cmd: StringBuilder) {
+        val adv = _advancedExport.value
+        if (_exportAudioOnly.value) return
+        if (adv.preserveMetadata) {
+            cmd.append(" -map_metadata 0")
+        } else {
+            cmd.append(" -map_metadata -1")
+        }
+        if (adv.movFastStart && adv.videoFormat == "mp4") {
+            cmd.append(" -movflags +faststart")
         }
     }
 
@@ -652,7 +678,10 @@ class VideoEditingViewModel : ViewModel() {
         }
 
         if (currentProject.operations.isEmpty()) {
-            return "-y -i \"$sourceFilePath\" -c copy \"$outputFilePath\""
+            val remux = StringBuilder("-y -i \"").append(sourceFilePath).append("\"")
+            appendOutputContainerArgs(remux)
+            remux.append(" -c copy \"").append(outputFilePath).append("\"")
+            return remux.toString()
         }
 
         val operations = currentProject.operations
@@ -1213,6 +1242,7 @@ class VideoEditingViewModel : ViewModel() {
             if (outputDuration != null) {
                 cmd.append(" -t $outputDuration")
             }
+            appendOutputContainerArgs(cmd)
             cmd.append(" \"$outputFilePath\"")
 
             val finalCommand = cmd.toString()
@@ -1422,6 +1452,7 @@ class VideoEditingViewModel : ViewModel() {
         if (outputDuration != null) {
             cmd.append(" -t $outputDuration")
         }
+        appendOutputContainerArgs(cmd)
         cmd.append(" \"$outputFilePath\"")
 
         val finalCommand = cmd.toString()

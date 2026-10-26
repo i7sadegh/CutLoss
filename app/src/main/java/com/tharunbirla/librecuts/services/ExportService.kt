@@ -51,6 +51,15 @@ class ExportService : Service() {
         const val EXTRA_SMART_PLAN_PATH = "extra_smart_plan_path"
     }
 
+    /** Phase 10 plan.json parse result (commands + explicit output list). */
+    private data class ParsedPlan(val commands: List<Pair<String, Double>>, val outputs: List<String>)
+
+    /** runSmartExport result: render status plus the output files it produced. */
+    data class SmartExportOutcome(
+        val result: FFmpegRenderEngine.RenderResult,
+        val outputFiles: List<File>
+    )
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
@@ -77,8 +86,10 @@ class ExportService : Service() {
 
         serviceScope.launch {
             try {
+                val smartOutcome: SmartExportOutcome? =
+                    if (smartPlanPath != null) runSmartExport(smartPlanPath) else null
                 val result: FFmpegRenderEngine.RenderResult = when {
-                    smartPlanPath != null -> runSmartExport(smartPlanPath)
+                    smartOutcome != null -> smartOutcome.result
                     command != null -> ffmpegEngine.exportFinal(
                         ffmpegCommand = command,
                         totalDurationSecs = durationSecs,
@@ -95,14 +106,38 @@ class ExportService : Service() {
 
                 when (result) {
                     is FFmpegRenderEngine.RenderResult.Success -> {
-                        val savedUri = saveVideoToGallery(tempFile, isAudioOnly)
-                        if (savedUri != null) {
-                            showCompletionNotification("Export Complete", "Video saved to gallery", savedUri)
-                            broadcastSuccess(savedUri.toString())
-                            Log.d(TAG, "Export successful: $savedUri")
+                        // Phase 10: smart separate-files mode produces one output
+                        // file per timeline clip - each becomes its own gallery entry.
+                        val smartFiles = smartOutcome?.outputFiles ?: emptyList()
+                        val filesToSave = if (smartFiles.isNotEmpty()) smartFiles else listOf(tempFile)
+                        if (filesToSave.size > 1) {
+                            val saved = mutableListOf<Uri>()
+                            for (f in filesToSave) {
+                                val uri = saveVideoToGallery(f, false)
+                                if (uri != null) saved.add(uri)
+                            }
+                            if (saved.isNotEmpty()) {
+                                showCompletionNotification(
+                                    "Export Complete",
+                                    "${saved.size} of ${filesToSave.size} files saved to gallery",
+                                    saved.first()
+                                )
+                                broadcastSuccess(saved.first().toString())
+                                Log.d(TAG, "Separate export successful: ${saved.size} files")
+                            } else {
+                                showCompletionNotification("Export Failed", "Failed to save videos to gallery", null)
+                                broadcastFailure("Failed to save videos to gallery")
+                            }
                         } else {
-                            showCompletionNotification("Export Failed", "Failed to save video to gallery", null)
-                            broadcastFailure("Failed to save video to gallery")
+                            val savedUri = saveVideoToGallery(filesToSave[0], isAudioOnly)
+                            if (savedUri != null) {
+                                showCompletionNotification("Export Complete", "Video saved to gallery", savedUri)
+                                broadcastSuccess(savedUri.toString())
+                                Log.d(TAG, "Export successful: $savedUri")
+                            } else {
+                                showCompletionNotification("Export Failed", "Failed to save video to gallery", null)
+                                broadcastFailure("Failed to save video to gallery")
+                            }
                         }
                     }
                     is FFmpegRenderEngine.RenderResult.Failure -> {
@@ -141,30 +176,37 @@ class ExportService : Service() {
     }
 
     /**
-     * Smart export mode (phase 9): runs the plan produced by
-     * SmartExportPlanner command-by-command with aggregated progress. The
-     * last command is the concat step that writes the final output file, so
-     * its Success result carries the output path for the regular save flow.
+     * Smart export mode (phase 9/10): runs the plan produced by
+     * SmartExportPlanner command-by-command with aggregated progress. In
+     * merged mode the last command is the concat step that writes the final
+     * output file; in separate mode (phase 10) every segment file IS an
+     * output. plan.json is read in object form ({"separate":...,
+     * "outputs":[...], "commands":[...]}) with the phase 9 plain-array form
+     * still accepted.
      */
-    private suspend fun runSmartExport(planPath: String): FFmpegRenderEngine.RenderResult {
+    private suspend fun runSmartExport(planPath: String): SmartExportOutcome {
         val planFile = File(planPath)
         if (!planFile.exists()) {
-            return FFmpegRenderEngine.RenderResult.Failure("Smart export plan not found")
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Smart export plan not found"),
+                emptyList()
+            )
         }
-        val commands = try {
-            val arr = org.json.JSONArray(planFile.readText())
-            val list = mutableListOf<Pair<String, Double>>()
-            for (i in 0 until arr.length()) {
-                val o = arr.getJSONObject(i)
-                list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
-            }
-            list
+        val parsed: ParsedPlan = try {
+            parseSmartPlan(planFile)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to parse smart export plan: ${e.message}", e)
-            return FFmpegRenderEngine.RenderResult.Failure("Invalid smart export plan")
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Invalid smart export plan"),
+                emptyList()
+            )
         }
+        val commands = parsed.commands
         if (commands.isEmpty()) {
-            return FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan")
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan"),
+                emptyList()
+            )
         }
 
         val totalWeight = commands.sumOf { it.second }.coerceAtLeast(0.001)
@@ -195,7 +237,38 @@ class ExportService : Service() {
 
         broadcastProgress(100)
         updateNotification(100, "Exporting...")
-        return lastResult
+        return SmartExportOutcome(lastResult, parsed.outputs.map { File(it) })
+    }
+
+    /**
+     * Parse a phase 10 plan.json (object form) or a phase 9 plan (plain
+     * array of {cmd, weight} objects; outputs stay empty -> the caller falls
+     * back to the temp output path).
+     */
+    private fun parseSmartPlan(planFile: File): ParsedPlan {
+        val raw = planFile.readText().trim()
+        if (raw.startsWith("[")) {
+            val arr = org.json.JSONArray(raw)
+            val list = mutableListOf<Pair<String, Double>>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+            }
+            return ParsedPlan(list, emptyList())
+        }
+        val obj = org.json.JSONObject(raw)
+        val arr = obj.getJSONArray("commands")
+        val list = mutableListOf<Pair<String, Double>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+        }
+        val outArr = obj.optJSONArray("outputs")
+        val outs = mutableListOf<String>()
+        if (outArr != null) {
+            for (i in 0 until outArr.length()) outs.add(outArr.getString(i))
+        }
+        return ParsedPlan(list, outs)
     }
 
     private fun createNotificationChannel() {

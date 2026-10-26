@@ -243,6 +243,70 @@
             </com.google.android.material.chip.ChipGroup>
         </HorizontalScrollView>
 
+        <!-- ======================= Cut Mode (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Cut Mode"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgCutMode"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipCutNormal" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Normal (accurate)" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCutKeyframe" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Keyframe (fast, lossless)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= Export Mode (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Export Mode"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgExportMode"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipModeMerged" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Single file (merged)" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipModeSeparate" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Separate files (one per clip)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= MP4 Faststart (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="MP4 Faststart (instant playback)"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgFastStart"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipFsOn" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="On" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFsOff" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Off" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= Source Metadata (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Source Metadata"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgMetadata"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipMetaKeep" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Keep" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipMetaStrip" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Strip" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
         <!-- ======================= FFmpeg command preview ======================= -->
         <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
             android:layout_marginTop="16dp" android:text="FFmpeg command (what will run)"

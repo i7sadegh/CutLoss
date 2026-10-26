@@ -14,7 +14,16 @@ import java.io.File
 import java.util.Locale
 
 /**
- * CutStudio - Export settings dialog (v3).
+ * CutStudio - Export settings dialog (v4).
+ *
+ * v4 (phase 10, LosslessCut-inspired):
+ *  - Smart-export preview: eligibility is probed off-thread and the dialog
+ *    shows the plan that WILL run (stream-copied vs re-encoded seconds,
+ *    lossless concat) instead of always showing the legacy re-encode.
+ *  - Cut mode: Normal (accurate trim re-encode) vs Keyframe (trim points
+ *    snap to keyframes -> 100% stream copy, one-GOP tolerance).
+ *  - Export mode: single merged file or one file per timeline clip.
+ *  - MP4 faststart + source metadata preservation toggles.
  *
  * Every control change is pushed live into the ViewModel, then the REAL export
  * command is rebuilt through VideoEditingViewModel.buildConsolidatedFFmpegCommand()
@@ -60,6 +69,14 @@ class ExportSettingsDialog(
     private var customW = 0
     private var customH = 0
     private var suppressBoxClear = false
+    private var selKeyframeCut = false
+    private var selSeparateFiles = false
+    private var selFastStart = true
+    private var selPreserveMetadata = true
+
+    // ---- smart export analysis (phase 10, cached for the dialog lifetime) ----
+    private var smartAnalysis: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis? = null
+    private var smartAnalysisDone = false
 
     // ---- probed source info ----
     private var srcW = 0
@@ -103,6 +120,35 @@ class ExportSettingsDialog(
         customW = snapAdvanced.customWidth
         customH = snapAdvanced.customHeight
         parseBitrate(snapBitrate)
+
+        selKeyframeCut = snapAdvanced.keyframeCut
+        selSeparateFiles = snapAdvanced.exportSeparateFiles
+        selFastStart = snapAdvanced.movFastStart
+        selPreserveMetadata = snapAdvanced.preserveMetadata
+
+        // Smart-export eligibility depends only on the PROJECT (ops + clip
+        // parameters), never on the dialog settings - so it is probed once,
+        // off the main thread, and cached for the lifetime of the dialog.
+        smartAnalysisDone = false
+        smartAnalysis = null
+        val analysisProject = viewModel.project.value
+        val analysisSource = sourceFile?.absolutePath
+        if (analysisProject != null && analysisSource != null) {
+            Thread {
+                val result = try {
+                    com.tharunbirla.librecuts.services.SmartExportPlanner.analyzeSmartExport(
+                        activity, analysisProject, analysisSource
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                activity.runOnUiThread {
+                    smartAnalysis = result
+                    smartAnalysisDone = true
+                    refresh()
+                }
+            }.start()
+        }
 
         val dialogView = activity.layoutInflater.inflate(R.layout.dialog_export_settings, null)
         val dialog = MaterialAlertDialogBuilder(activity).setView(dialogView).create()
@@ -213,6 +259,8 @@ class ExportSettingsDialog(
     private fun estimateSizeText(cmd: String?): String {
         val durSec = durationMs / 1000.0
         if (durSec <= 0.0) return "..."
+        val smart = smartEstimateBytes()
+        if (smart != null) return "~" + formatBytes(smart) + " (smart export)"
         val vCopy = cmd != null && cmd.contains("-c:v copy")
         val aCopy = cmd != null && cmd.contains("-c:a copy")
         val muted = cmd != null && cmd.contains(" -an")
@@ -250,7 +298,11 @@ class ExportSettingsDialog(
                 audioBitrate = selAudioBitrate,
                 audioOnlyFormat = effectiveAudioOnlyFormat(),
                 customWidth = customW,
-                customHeight = customH
+                customHeight = customH,
+                keyframeCut = selKeyframeCut,
+                exportSeparateFiles = selSeparateFiles,
+                movFastStart = selFastStart,
+                preserveMetadata = selPreserveMetadata
             )
         )
         val ext = viewModel.getOutputExtension(false)
@@ -263,8 +315,10 @@ class ExportSettingsDialog(
         tvEstimatedSize.text = estimateSizeText(cmd)
     }
 
-    /** Real command + a short note when "Same as input" was requested but is impossible. */
+    /** Real command + notes. Shows the SMART plan when it will actually run. */
     private fun commandPreviewText(cmd: String?): String {
+        val smart = buildSmartSummary()
+        if (smart != null) return smart
         val base = when {
             cmd == null -> "(preview unavailable)"
             cmd.contains("(CONCAT_LIST:") ->
@@ -274,13 +328,118 @@ class ExportSettingsDialog(
         }
         if (cmd == null) return base
         val notes = mutableListOf<String>()
-        if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
-            notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
-        }
-        if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
-            notes.add("audio processing present -> audio re-encoded as shown")
+        val unavailable = smartUnavailableNote()
+        if (unavailable != null) {
+            notes.add(unavailable)
+        } else {
+            if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
+                notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
+            }
+            if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
+                notes.add("audio processing present -> audio re-encoded as shown")
+            }
         }
         return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
+    }
+
+    // ------------------------------------------------------ smart export preview
+
+    /**
+     * Non-null when the smart pipeline cannot run, with a human readable
+     * reason (project-level incompatibility or a settings gate).
+     */
+    private fun smartUnavailableNote(): String? {
+        val a = smartAnalysis ?: return if (smartAnalysisDone) "smart export analysis failed" else null
+        a.reason?.let { return "smart export unavailable: $it - full re-encode used" }
+        val gate = com.tharunbirla.librecuts.services.SmartExportPlanner.settingsBlockSmart(
+            a,
+            selRes, selFps,
+            viewModel.exportAudioOnly.value,
+            selCodec, selAudioCodec,
+            customW, customH,
+            effectiveVideoFormat()
+        )
+        return gate?.let { "smart export disabled by these settings: $it - full re-encode used" }
+    }
+
+    /**
+     * Human-readable summary of the smart plan that WILL run at export time:
+     * per-segment copy/encode split, cut mode, export mode and the final
+     * assembly command. Returns null when the smart path is unavailable, so
+     * the legacy command preview stays in charge.
+     */
+    private fun buildSmartSummary(): String? {
+        val a = smartAnalysis ?: return null
+        if (a.reason != null) return null
+        if (smartUnavailableNote() != null) return null
+        if (selSeparateFiles) {
+            val copy = a.clips.count { it.fullRange || selKeyframeCut }
+            val enc = a.clips.size - copy
+            val sb = StringBuilder()
+            sb.append("smart export: ").append(a.clips.size).append(" separate output files (")
+            sb.append(copy).append(" stream-copied losslessly")
+            if (enc > 0) sb.append(", ").append(enc).append(" re-encoded at trim points")
+            sb.append(")")
+            if (selKeyframeCut) {
+                sb.append("\nkeyframe cut ON: trim points snap to keyframes (all copy, +/- one GOP accuracy)")
+            } else if (enc > 0) {
+                sb.append("\n(transitions and faststart apply to the merged single-file mode only)")
+            }
+            return sb.toString()
+        }
+        var copySec = 0.0
+        var encSec = 0.0
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val dLeft = if (i > 0) a.transitions[i - 1] ?: 0L else 0L
+            val dRight = if (i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
+            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            if (spanMs <= 0L) continue
+            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        encSec += a.transitions.values.sum() / 1000.0
+        val sb = StringBuilder()
+        sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+        if (a.hasAudio) sb.append(" -map 0:a:0")
+        if (selPreserveMetadata) sb.append(" -map_metadata 1")
+        sb.append(" -c copy -bsf:v dump_extra")
+        if (selFastStart) sb.append(" -movflags +faststart")
+        sb.append(" output.mp4")
+        sb.append("\n\n(smart export: ").append(a.clips.size).append(" segments - ")
+        sb.append(String.format(Locale.US, "%.1fs", copySec)).append(" stream-copied losslessly")
+        if (encSec > 0.01) {
+            sb.append(", ").append(String.format(Locale.US, "%.1fs", encSec)).append(" re-encoded")
+        }
+        if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
+        sb.append("; final assembly is a lossless concat)")
+        return sb.toString()
+    }
+
+    /** Size estimate that follows the smart plan (copied vs re-encoded parts). */
+    private fun smartEstimateBytes(): Double? {
+        val a = smartAnalysis ?: return null
+        if (a.reason != null) return null
+        if (smartUnavailableNote() != null) return null
+        var copySec = 0.0
+        var encSec = 0.0
+        val srcKbpsTotal = if (srcKbps > 0) srcKbps else 8000
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val dLeft = if (!selSeparateFiles && i > 0) a.transitions[i - 1] ?: 0L else 0L
+            val dRight = if (!selSeparateFiles && i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
+            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            if (spanMs <= 0L) continue
+            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        if (!selSeparateFiles) encSec += a.transitions.values.sum() / 1000.0
+        val aKbps = when {
+            selAudioCodec == "pcm_s16le" -> 1411
+            selAudioCodec == "flac" -> 900
+            else -> selAudioBitrate.dropLast(1).toIntOrNull() ?: 128
+        }
+        return (copySec * srcKbpsTotal + encSec * (effectiveVideoKbps() + aKbps)) * 1000.0 / 8.0
     }
 
     // -------------------------------------------------------------- view setup
@@ -415,6 +574,30 @@ class ExportSettingsDialog(
             R.id.chipPresetVeryslow to "veryslow"),
             selPreset, true
         ) { picked -> selPreset = picked ?: "medium" }
+
+        // ---- Cut mode (phase 10): accurate trim vs keyframe snap ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgCutMode), mapOf(
+            R.id.chipCutNormal to false, R.id.chipCutKeyframe to true),
+            selKeyframeCut, true
+        ) { picked -> selKeyframeCut = picked ?: false }
+
+        // ---- Export mode (phase 10): merged single file vs one file per clip ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgExportMode), mapOf(
+            R.id.chipModeMerged to false, R.id.chipModeSeparate to true),
+            selSeparateFiles, true
+        ) { picked -> selSeparateFiles = picked ?: false }
+
+        // ---- MP4 faststart (phase 10): moov atom at the front ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgFastStart), mapOf(
+            R.id.chipFsOn to true, R.id.chipFsOff to false),
+            selFastStart, true
+        ) { picked -> selFastStart = picked ?: true }
+
+        // ---- Source metadata (phase 10): keep or strip ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgMetadata), mapOf(
+            R.id.chipMetaKeep to true, R.id.chipMetaStrip to false),
+            selPreserveMetadata, true
+        ) { picked -> selPreserveMetadata = picked ?: true }
 
         // ---- Video bitrate: textbox + "Same as input" chip ----
         chipBitrateSame.isChecked = bitrateSameAsInput

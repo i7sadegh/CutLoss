@@ -3302,7 +3302,11 @@ class VideoEditingActivity : AppCompatActivity() {
                             advancedAudioBitrate = viewModel.advancedExport.value.audioBitrate,
                             customWidth = viewModel.advancedExport.value.customWidth,
                             customHeight = viewModel.advancedExport.value.customHeight,
-                            videoFormat = viewModel.advancedExport.value.videoFormat
+                            videoFormat = viewModel.advancedExport.value.videoFormat,
+                            keyframeCut = viewModel.advancedExport.value.keyframeCut,
+                            exportSeparateFiles = viewModel.advancedExport.value.exportSeparateFiles,
+                            movFastStart = viewModel.advancedExport.value.movFastStart,
+                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata
                         )?.planFile?.absolutePath
                     }
                 } catch (e: Exception) {
@@ -3324,6 +3328,17 @@ class VideoEditingActivity : AppCompatActivity() {
                     }
                     Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
                     return@launch
+                }
+
+                // Separate-files mode only works on the smart pipeline; when the
+                // planner bailed out (speed / overlays / mixed codecs / ...) we
+                // tell the user instead of silently exporting one merged file.
+                if (viewModel.advancedExport.value.exportSeparateFiles) {
+                    Toast.makeText(
+                        this@VideoEditingActivity,
+                        "Separate-files export needs smart-compatible edits - exporting one merged file instead",
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
 
                 var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand(

@@ -35,7 +35,17 @@ import java.io.FileOutputStream
  *   freeze (2 steps) : PNG -> sensor-space encode, then -display_rotation remux
  *   transition       : -ss tail / -ss head + xfade offset=0 (fps= filter needed
  *                      for CFR) + acrossfade
- *   concat           : -f concat -safe 0 -i list.txt -c copy -bsf:v dump_extra
+ *   concat           : -f concat -safe 0 -i list.txt -i seg0 [-map_metadata 1]
+ *                      -c copy -bsf:v dump_extra [-movflags +faststart]
+ *
+ * Phase 10 additions:
+ *   keyframe cut     : trimmed spans use INPUT seeking (-ss before -i), which
+ *                      snaps to the preceding keyframe, so they are stream-
+ *                      copied - 100% lossless, LosslessCut keyframe-cut
+ *                      semantics (up to one GOP of extra head material)
+ *   separate files   : one output file per timeline clip; transitions and
+ *                      the concat step are skipped entirely
+ *   metadata/faststart flags are applied to the final merged output
  */
 object SmartExportPlanner {
 
@@ -59,6 +69,184 @@ object SmartExportPlanner {
     )
 
     data class SmartPlan(val planFile: File)
+
+    /** Per-clip trim info used by the export dialog's live smart preview. */
+    data class SmartClipInfo(
+        val trimStartMs: Long,
+        val trimEndMs: Long,
+        val durationMs: Long,
+        val fullRange: Boolean,
+        val muted: Boolean,
+        val hasAudio: Boolean
+    )
+
+    /**
+     * Read-only eligibility analysis for the export dialog (phase 10).
+     * reason != null means the project itself is not copy-compatible; the
+     * settings-level gates live in settingsBlockSmart so the dialog can
+     * re-check them instantly while the user flips chips. This function has
+     * NO side effects: no work dir, no cache copies, no command generation.
+     */
+    data class SmartAnalysis(
+        val clips: List<SmartClipInfo>,
+        val transitions: Map<Int, Long>,
+        val hasAudio: Boolean,
+        val displayHeight: Int,
+        val shortSide: Int,
+        val fpsRounded: Int,
+        val reason: String?
+    )
+
+    fun analyzeSmartExport(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis? {
+        try {
+            return analyzeInternal(context, project, sourceFilePath)
+        } catch (e: Exception) {
+            Log.w(TAG, "smart export analysis failed: " + e.message, e)
+            return null
+        }
+    }
+
+    /**
+     * Settings-level gates (cheap, no probing): returns a human readable
+     * reason when the current export settings force the legacy render, or
+     * null when the smart path can run with these settings.
+     */
+    fun settingsBlockSmart(
+        analysis: SmartAnalysis,
+        exportResolution: Int,
+        exportFps: Int,
+        audioOnly: Boolean,
+        advancedVideoCodec: String,
+        advancedAudioCodec: String,
+        customWidth: Int,
+        customHeight: Int,
+        videoFormat: String
+    ): String? {
+        if (audioOnly) return "audio-only export"
+        if (videoFormat != "mp4") return "non-MP4 container"
+        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return "custom codec requested"
+        if (customWidth >= 16 || customHeight >= 16) return "custom resolution"
+        if (exportResolution != 0 && exportResolution != analysis.displayHeight && exportResolution != analysis.shortSide) {
+            return "resolution change"
+        }
+        if (exportFps != 0 && exportFps != analysis.fpsRounded) return "fps change"
+        return null
+    }
+
+    private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
+        fun fail(reason: String): SmartAnalysis =
+            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, reason)
+
+        if (isImagePath(sourceFilePath)) return fail("image source")
+        val ops = project.operations
+        val allowed = ops.all {
+            it is EditOperation.Trim || it is EditOperation.Merge ||
+                it is EditOperation.Transition || it is EditOperation.MuteClip ||
+                it is EditOperation.MuteAudio
+        }
+        if (!allowed) return fail("edits that force a full re-encode are present")
+
+        val mergeOp = ops.filterIsInstance<EditOperation.Merge>().firstOrNull()
+        val trimOp = ops.filterIsInstance<EditOperation.Trim>().lastOrNull()
+
+        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath)
+            ?: return fail("source could not be probed")
+        if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return fail("source codec is not H.264/HEVC")
+        if (refParams.pixFmt != "yuv420p") return fail("source pixel format is not yuv420p")
+        if (refParams.width <= 0 || refParams.height <= 0) return fail("bad source dimensions")
+        if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return fail("odd source dimensions")
+        if (refParams.durationMs <= 0L) return fail("bad source duration")
+
+        data class AClip(
+            val params: MediaParams,
+            val trimStartMs: Long,
+            val trimEndMs: Long,
+            val muted: Boolean
+        )
+        val clips = mutableListOf<AClip>()
+        clips.add(
+            AClip(
+                params = refParams,
+                trimStartMs = trimOp?.startMs ?: 0L,
+                trimEndMs = trimOp?.endMs ?: refParams.durationMs,
+                muted = isClipMuted(ops, 0)
+            )
+        )
+        if (mergeOp != null) {
+            for (item in mergeOp.items) {
+                if (item.isImage) return fail("image clip in the sequence")
+                if (item.speed != 1.0f) return fail("speed-changed clip in the sequence")
+                if (item.proxyUri != null) return fail("proxy clip in the sequence")
+                val p = probeMedia(context, item.uri, null)
+                    ?: return fail("a clip could not be probed")
+                if (p.vCodec != refParams.vCodec) return fail("clips use different codecs")
+                if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return fail("clips use different profiles")
+                if (p.width != refParams.width || p.height != refParams.height) return fail("clips have different dimensions")
+                if (p.rotation != refParams.rotation) return fail("clips have different rotation")
+                if (p.fpsString != refParams.fpsString) return fail("clips have different frame rates")
+                if (p.pixFmt != "yuv420p") return fail("a clip is not yuv420p")
+                if (p.durationMs <= 0L) return fail("bad clip duration")
+                clips.add(
+                    AClip(
+                        params = p,
+                        trimStartMs = item.trimStartMs.coerceIn(0L, p.durationMs),
+                        trimEndMs = item.trimEndMs.coerceAtMost(p.durationMs),
+                        muted = isClipMuted(ops, clips.size)
+                    )
+                )
+            }
+        }
+
+        val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
+        if (audioRef != null) {
+            if (audioRef.aCodec != "aac" && audioRef.aCodec != "mp3") return fail("audio codec is not AAC/MP3")
+            if (audioRef.aSampleRate <= 0) return fail("bad audio sample rate")
+            if (audioRef.aChannels != 1 && audioRef.aChannels != 2) return fail("audio has more than 2 channels")
+            for (c in clips) {
+                if (c.params.hasAudio) {
+                    if (c.params.aCodec != audioRef.aCodec) return fail("clips use different audio codecs")
+                    if (c.params.aSampleRate != audioRef.aSampleRate) return fail("clips use different audio sample rates")
+                    if (c.params.aChannels != audioRef.aChannels) return fail("clips use different audio channel counts")
+                }
+            }
+        }
+
+        val transitions = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            transitions[t.index] = Pair(t.type, t.durationMs)
+        }
+        val clampedTransitions = mutableMapOf<Int, Long>()
+        for ((gap, td) in transitions) {
+            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
+            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
+            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
+            if (d >= 50L) clampedTransitions[gap] = d
+        }
+
+        val displayWidth = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.height else refParams.width
+        val displayHeight = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.width else refParams.height
+
+        return SmartAnalysis(
+            clips = clips.map {
+                SmartClipInfo(
+                    trimStartMs = it.trimStartMs,
+                    trimEndMs = it.trimEndMs,
+                    durationMs = it.params.durationMs,
+                    fullRange = it.trimStartMs <= 60L && it.trimEndMs >= it.params.durationMs - 60L,
+                    muted = it.muted,
+                    hasAudio = it.params.hasAudio
+                )
+            },
+            transitions = clampedTransitions,
+            hasAudio = audioRef != null,
+            displayHeight = displayHeight,
+            shortSide = Math.min(displayWidth, displayHeight),
+            fpsRounded = Math.round(refParams.fpsValue).toInt(),
+            reason = null
+        )
+    }
 
     data class FreezeCommands(val commands: List<String>, val tempFiles: List<String>)
 
@@ -254,14 +442,19 @@ object SmartExportPlanner {
         advancedAudioBitrate: String,
         customWidth: Int,
         customHeight: Int,
-        videoFormat: String
+        videoFormat: String,
+        keyframeCut: Boolean = false,
+        exportSeparateFiles: Boolean = false,
+        movFastStart: Boolean = true,
+        preserveMetadata: Boolean = true
     ): SmartPlan? {
         try {
             return planInternal(
                 context, project, sourceFilePath, outputFilePath,
                 exportResolution, exportFps, exportBitrate, audioOnly,
                 advancedVideoCodec, advancedAudioCodec, advancedPreset,
-                advancedAudioBitrate, customWidth, customHeight, videoFormat
+                advancedAudioBitrate, customWidth, customHeight, videoFormat,
+                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata
             )
         } catch (e: Exception) {
             Log.w(TAG, "smart export planning failed: " + e.message, e)
@@ -284,7 +477,11 @@ object SmartExportPlanner {
         advancedAudioBitrate: String,
         customWidth: Int,
         customHeight: Int,
-        videoFormat: String
+        videoFormat: String,
+        keyframeCut: Boolean,
+        exportSeparateFiles: Boolean,
+        movFastStart: Boolean,
+        preserveMetadata: Boolean
     ): SmartPlan? {
         sweepStaleWorkDirs(context)
 
@@ -425,9 +622,12 @@ object SmartExportPlanner {
         }
 
         // ---- effective spans + degenerate check ----
+        // Separate-files mode skips transitions entirely: each clip is its own
+        // output, so spans are NOT shrunk by transition overlaps.
+        val merged = !exportSeparateFiles
         for (i in clips.indices) {
-            val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
-            val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
             val start = clips[i].trimStartMs + dLeft
             val end = clips[i].trimEndMs - dRight
             if (end <= start) return null
@@ -450,8 +650,8 @@ object SmartExportPlanner {
 
         for (i in clips.indices) {
             val clip = clips[i]
-            val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
-            val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
             val spanStart = clip.trimStartMs + dLeft
             val spanEnd = clip.trimEndMs - dRight
             val spanMs = spanEnd - spanStart
@@ -470,6 +670,29 @@ object SmartExportPlanner {
                     sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
                 } else {
                     sb.append(" -map 0:v:0 -c copy")
+                }
+                sb.append(" \"").append(seg.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (keyframeCut) {
+                // Keyframe cut (LosslessCut-style): -ss BEFORE -i snaps to the
+                // preceding keyframe automatically, so the trimmed span is
+                // stream-copied - fully lossless, with up to one GOP of extra
+                // head material (same semantics as LosslessCut's keyframe cut).
+                val sb = StringBuilder("-y -noautorotate")
+                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                    sb.append(" -c:v copy -avoid_negative_ts make_zero").append(" ").append(aEnc)
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0 -c copy -avoid_negative_ts make_zero")
+                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
                 }
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
@@ -495,8 +718,8 @@ object SmartExportPlanner {
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             }
 
-            // Transition segment that starts right after this clip
-            val trans = clampedTransitions[i]
+            // Transition segment that starts right after this clip (merged only)
+            val trans = if (merged) clampedTransitions[i] else null
             if (trans != null && i < clips.size - 1) {
                 val type = trans.first
                 val dMs = trans.second
@@ -579,20 +802,29 @@ object SmartExportPlanner {
             }
         }
 
-        // ---- concat all segments with stream copy ----
-        val listFile = File(workDir, "concat_list.txt")
-        val listSb = StringBuilder()
-        for (f in segmentFiles) {
-            listSb.append("file '").append(f.absolutePath).append("'\n")
+        // ---- final assembly: concat with stream copy (merged mode only) ----
+        // seg_0 is attached as a second input purely so the output can
+        // inherit the source's global metadata (-map_metadata 1); faststart
+        // relocates the MP4 moov atom to the front of the file.
+        if (merged) {
+            val listFile = File(workDir, "concat_list.txt")
+            val listSb = StringBuilder()
+            for (f in segmentFiles) {
+                listSb.append("file '").append(f.absolutePath).append("'\n")
+            }
+            listFile.writeText(listSb.toString())
+
+            val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
+            val metaArg = if (preserveMetadata) " -map_metadata 1" else ""
+            val fastArg = if (movFastStart) " -movflags +faststart" else ""
+            val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
+                "\" -i \"" + segmentFiles[0].absolutePath + "\"" +
+                " -map 0:v:0" + audioMap + metaArg + " -c copy -bsf:v dump_extra" + fastArg +
+                " \"" + outputFilePath + "\""
+            commands.add(Pair(concatCmd, 1.0))
         }
-        listFile.writeText(listSb.toString())
 
-        val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
-        val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
-            "\" -map 0:v:0" + audioMap + " -c copy -bsf:v dump_extra \"" + outputFilePath + "\""
-        commands.add(Pair(concatCmd, 1.0))
-
-        // ---- plan json ----
+        // ---- plan json (phase 10: object form; plain array = phase 9 plan) ----
         val arr = JSONArray()
         for (pair in commands) {
             val o = JSONObject()
@@ -600,13 +832,19 @@ object SmartExportPlanner {
             o.put("weight", pair.second)
             arr.put(o)
         }
+        val outputs = if (merged) listOf(outputFilePath) else segmentFiles.map { it.absolutePath }
+        val planObj = JSONObject()
+        planObj.put("separate", exportSeparateFiles)
+        planObj.put("outputs", JSONArray(outputs))
+        planObj.put("commands", arr)
         val planFile = File(workDir, "plan.json")
-        planFile.writeText(arr.toString())
+        planFile.writeText(planObj.toString())
 
         Log.d(
             TAG,
             "smart export planned: " + commands.size + " commands, clips=" + clips.size +
-                ", transitions=" + clampedTransitions.size
+                ", transitions=" + (if (merged) clampedTransitions.size else 0) +
+                (if (merged) "" else ", separate mode")
         )
         return SmartPlan(planFile)
     }
