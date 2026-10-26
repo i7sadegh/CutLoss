@@ -229,7 +229,10 @@ class ExportService : Service() {
                 }
             )
             if (result !is FFmpegRenderEngine.RenderResult.Success) {
-                return result
+                // Phase 10.1: wrap the render failure so the return type
+                // matches SmartExportOutcome; outputFiles is only read on
+                // success, so an empty list is correct here.
+                return SmartExportOutcome(result, emptyList())
             }
             completedWeight += weight
             lastResult = result
