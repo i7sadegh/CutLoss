@@ -1,39 +1,36 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 9 -- Smart Export + Freeze fixes
+# CutLoss phase 10 -- LosslessCut-inspired export upgrades (parts 1-4)
 #
-# 1. FREEZE BUG FIX: when the playhead sits at the head of the FIRST clip and
-#    the user taps Freeze, the generated freeze video was silently DISCARDED
-#    (updateSequenceOrder(newItems.drop(1))) and the original main video was
-#    trimmed to 3s instead - so the "frozen" segment played as normal video.
-#    Fix: promote the freeze video to the MAIN video slot (same pattern as
-#    deleteSelectedVideo) and demote the original main clip into the merge
-#    list, so the sequence becomes [freeze][original][rest].
+# PART 1 -- HONEST SMART-EXPORT PREVIEW (export dialog):
+#    The export dialog used buildConsolidatedFFmpegCommand for its live
+#    preview, so it ALWAYS showed the legacy re-encode command and claimed
+#    "stream copy not possible" even when the phase 9 smart pipeline would
+#    actually stream-copy most of the footage. The dialog now probes smart
+#    eligibility off the main thread (new analyzeSmartExport /
+#    settingsBlockSmart in SmartExportPlanner, read-only, no side effects)
+#    and shows the plan that WILL run: per-segment copy vs re-encoded
+#    seconds, the lossless concat assembly, and a truthful size estimate.
 #
-# 2. FREEZE CODEC MATCHING: the freeze segment is no longer encoded with
-#    h264_mediacodec + arbitrary parameters. The source clip is probed with
-#    FFprobeKit and the freeze video is encoded with the SAME codec
-#    parameters (codec, profile, level, resolution, fps, pix fmt, rotation,
-#    silent audio track matching the source audio) so the export pipeline can
-#    STREAM-COPY it with -c copy.
+# PART 2 -- KEYFRAME CUT MODE (LosslessCut "keyframeCut"):
+#    New Cut Mode chips in the dialog: Normal (accurate - only the trimmed
+#    spans are re-encoded) vs Keyframe (fast + lossless). In keyframe mode
+#    trim points snap to the PRECEDING keyframe via input seeking (-ss
+#    before -i, exactly LosslessCut's semantics), so every segment becomes
+#    a pure stream copy (-c copy -avoid_negative_ts make_zero).
 #
-# 3. OP-INDEX REALIGNMENT: inserting a freeze segment shifts the sequence, so
-#    Transition (gap) indices and MuteClip indices are shifted accordingly
-#    (previously they silently attached to the wrong clip boundaries).
+# PART 3 -- SEPARATE-FILES EXPORT MODE (LosslessCut "Export mode"):
+#    New Export Mode chips: Single file (merged, current behavior) vs
+#    Separate files (one gallery entry per timeline clip). Separate mode
+#    skips transitions and the concat step; plan.json moves to an object
+#    format {"separate":bool,"outputs":[...],"commands":[...]} and
+#    ExportService saves every output file to the gallery.
 #
-# 4. SMART EXPORT: new SmartExportPlanner + ExportService smart mode. When the
-#    project only contains copy-compatible operations (Trim / Merge /
-#    Transition / MuteClip / MuteAudio, no text or image overlays, no speed,
-#    no background audio, no custom resolution/fps/codec) and all clips share
-#    the same codec parameters, the export becomes:
-#      - unchanged clip parts        -> stream copy (-c copy)
-#      - freeze segments             -> already-encoded matching videos, copied
-#      - transition overlaps         -> rendered once (xfade offset=0 + acrossfade)
-#                                       with matching parameters, then copied
-#      - trim cuts                   -> only the trimmed span re-encoded
-#      - final assembly              -> concat demuxer + -c copy -bsf:v dump_extra
-#    Anything not copy-compatible falls back to the legacy consolidated
-#    filter-graph render, which is left fully intact.
+# PART 4 -- METADATA + MP4 FASTSTART (LosslessCut "preserveMetadata" /
+#    "movFastStart"): new Keep/Strip metadata and faststart On/Off chips.
+#    Smart path: concat gains -i seg0 + -map_metadata 1 + -movflags
+#    +faststart. Legacy path: both consolidated builders + the no-op remux
+#    fast path gain -map_metadata 0/-1 and -movflags +faststart for MP4.
 #
 # Invariants: pure ASCII, idempotent (2nd run = all [skip], zero diff),
 # hard verification gate exits 1 BEFORE anything can be committed.
@@ -43,312 +40,428 @@ set -euo pipefail
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$ROOT"
 
-log()  { echo "[phase9] $*"; }
-fail() { echo "[phase9][ERROR] $*" >&2; exit 1; }
+log()  { echo "[phase10] $*"; }
+fail() { echo "[phase10][ERROR] $*" >&2; exit 1; }
 
+VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-EXT="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
+ESD="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
 EXPS="app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
 PLANNER="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+XML="app/src/main/res/layout/dialog_export_settings.xml"
 
 ###############################################################################
 # Step 0 -- preconditions + idempotency marker
 ###############################################################################
 log "step0: checking preconditions"
-[ -f "$VEA" ]  || fail "VideoEditingActivity.kt not found"
-[ -f "$EXT" ]  || fail "VideoEditingViewModelExt.kt not found"
-[ -f "$EXPS" ] || fail "ExportService.kt not found"
-grep -q "private fun freezeFrameAtCurrentPosition()" "$VEA" \
-  || fail "freezeFrameAtCurrentPosition not found (unexpected tree state)"
-grep -q "buildConsolidatedFFmpegCommand(" "$VEA" \
-  || fail "saveAction consolidated command call not found"
-grep -q "ExportService.EXTRA_COMMAND" "$VEA" \
-  || fail "saveAction ExportService wiring not found"
-grep -q "EXTRA_CONCAT_FILE_PATH" "$EXPS" \
-  || fail "ExportService extras not found (unexpected tree state)"
-grep -q "fun VideoEditingViewModel.updateSequenceOrder" "$EXT" \
-  || fail "Ext updateSequenceOrder not found (unexpected tree state)"
-grep -q "ffmpeg-kit-full-gpl" app/build.gradle \
-  || fail "ffmpeg-kit-full-gpl dependency not found (FFprobeKit required)"
+[ -f "$VM" ]      || fail "VideoEditingViewModel.kt not found"
+[ -f "$VEA" ]     || fail "VideoEditingActivity.kt not found"
+[ -f "$ESD" ]     || fail "ExportSettingsDialog.kt not found"
+[ -f "$EXPS" ]    || fail "ExportService.kt not found"
+[ -f "$PLANNER" ] || fail "SmartExportPlanner.kt not found (phase 9 base required)"
+[ -f "$XML" ]     || fail "dialog_export_settings.xml not found"
 
-if [ -f "$PLANNER" ]; then
+grep -q "data class AdvancedExport(" "$VM" \
+  || fail "AdvancedExport model not found (unexpected tree state)"
+grep -q "fun planSmartExport(" "$PLANNER" \
+  || fail "planSmartExport not found (unexpected tree state)"
+grep -q "private suspend fun runSmartExport" "$EXPS" \
+  || fail "runSmartExport not found (unexpected tree state)"
+grep -q "planSmartExport(" "$VEA" \
+  || fail "saveAction planner call not found (unexpected tree state)"
+grep -q "wireChipRow" "$ESD" \
+  || fail "ExportSettingsDialog chip wiring not found (unexpected tree state)"
+grep -q "tvCommand" "$XML" \
+  || fail "export dialog XML command box not found"
+
+if grep -q "fun analyzeSmartExport(" "$PLANNER"; then
   APPLIED=1
-  log "step0: planner already present -> SKIP mode (idempotent re-run)"
+  log "step0: phase-10 markers present -> SKIP mode (idempotent re-run)"
 else
   APPLIED=0
   log "step0: [ok] base tree confirmed"
 fi
 
 ###############################################################################
-# Step 1 -- add services/SmartExportPlanner.kt
+# Step 1 -- VideoEditingViewModel.kt (part 4: model fields + container args)
 ###############################################################################
 if [ "$APPLIED" = "1" ]; then
-  log "step1: [skip] SmartExportPlanner.kt already exists"
+  log "step1: [skip] VM already patched"
 else
-python3 <<'CUTPY'
+python3 <<'VMPY'
 import sys
 
 def die(m):
-    print("[phase9][ERROR] " + m)
+    print("[phase10][ERROR] " + m)
     sys.exit(1)
 
-PLANNER_PATH = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+def rw(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
-CONTENT = r'''package com.tharunbirla.librecuts.services
+def wr(path, s):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(s)
 
-import android.content.Context
-import android.net.Uri
-import android.util.Log
-import com.antonkarpenko.ffmpegkit.FFmpegKitConfig
-import com.antonkarpenko.ffmpegkit.FFprobeKit
-import com.tharunbirla.librecuts.models.EditOperation
-import com.tharunbirla.librecuts.models.VideoProject
-import org.json.JSONArray
-import org.json.JSONObject
-import java.io.File
-import java.io.FileOutputStream
+def must_replace(s, old, new, what):
+    if old not in s:
+        die("VM anchor missing: " + what)
+    if s.count(old) != 1:
+        die("VM anchor not unique (%d hits): %s" % (s.count(old), what))
+    return s.replace(old, new, 1)
 
-/**
- * SmartExportPlanner builds a "smart render" export plan.
- *
- * Goal: when the timeline only contains operations that do not change the
- * stream parameters (trim, merge, freeze, transitions, mute), the unchanged
- * parts of the source clips are STREAM-COPIED (-c copy) into the output and
- * only the changed parts (freeze segments, transition overlaps, trim cuts)
- * are re-encoded with parameters that match the source clips. The final
- * assembly uses the concat demuxer with -c copy, so most of the output is
- * bit-exact with the original footage.
- *
- * If anything is not copy-compatible (mixed codecs, image clips, text or
- * image overlays, speed changes, background audio, custom resolution or
- * fps, ...) the planner returns null and the caller falls back to the
- * legacy consolidated filter-graph render.
- *
- * Command templates validated against the bundled ffmpeg (Lavf 62 / ffmpeg
- * 6.1, ffmpeg-kit-full-gpl 2.1.0):
- *   full clip copy   : -y -noautorotate -i SRC -map 0:v:0 -map 0:a:0 -c copy SEG
- *   trim re-encode   : -y -noautorotate -ss S -t D -i SRC ... libx264 -profile -level
- *   freeze (2 steps) : PNG -> sensor-space encode, then -display_rotation remux
- *   transition       : -ss tail / -ss head + xfade offset=0 (fps= filter needed
- *                      for CFR) + acrossfade
- *   concat           : -f concat -safe 0 -i list.txt -c copy -bsf:v dump_extra
+VM_PATH = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
+s = rw(VM_PATH)
+
+# ---- 1a. AdvancedExport: four new fields -------------------------------
+old = """        val customWidth: Int = 0,             // 0 = not set
+        val customHeight: Int = 0             // 0 = not set
+    )
+"""
+new = """        val customWidth: Int = 0,             // 0 = not set
+        val customHeight: Int = 0,            // 0 = not set
+        val keyframeCut: Boolean = false,     // trim points snap to keyframes -> pure stream copy
+        val exportSeparateFiles: Boolean = false, // one output file per timeline clip
+        val movFastStart: Boolean = true,     // -movflags +faststart on MP4 output
+        val preserveMetadata: Boolean = true  // keep the source's global metadata in the output
+    )
+"""
+s = must_replace(s, old, new, "AdvancedExport fields")
+
+# ---- 1b. shared container-args helper ------------------------------------
+old = """        return when (adv.videoFormat) {
+            "mkv" -> ".mkv"; "mov" -> ".mov"; "webm" -> ".webm"; "avi" -> ".avi"
+            else -> ".mp4"
+        }
+    }
+"""
+new = """        return when (adv.videoFormat) {
+            "mkv" -> ".mkv"; "mov" -> ".mov"; "webm" -> ".webm"; "avi" -> ".avi"
+            else -> ".mp4"
+        }
+    }
+
+    /**
+     * Output container flags shared by the legacy render paths (phase 10):
+     *  - metadata  : -map_metadata 0 keeps the source's global metadata
+     *                (which is also ffmpeg's default); -map_metadata -1
+     *                strips it from the output entirely.
+     *  - faststart : -movflags +faststart relocates the MP4 moov atom to
+     *                the front so players can start before the whole file
+     *                has been read (streaming-friendly).
+     */
+    private fun appendOutputContainerArgs(cmd: StringBuilder) {
+        val adv = _advancedExport.value
+        if (_exportAudioOnly.value) return
+        if (adv.preserveMetadata) {
+            cmd.append(" -map_metadata 0")
+        } else {
+            cmd.append(" -map_metadata -1")
+        }
+        if (adv.movFastStart && adv.videoFormat == "mp4") {
+            cmd.append(" -movflags +faststart")
+        }
+    }
+"""
+s = must_replace(s, old, new, "appendOutputContainerArgs insertion point")
+
+# ---- 1c. no-operations fast remux path -----------------------------------
+old = """        if (currentProject.operations.isEmpty()) {
+            return "-y -i \\"$sourceFilePath\\" -c copy \\"$outputFilePath\\""
+        }
+"""
+new = """        if (currentProject.operations.isEmpty()) {
+            val remux = StringBuilder("-y -i \\"").append(sourceFilePath).append("\\"")
+            appendOutputContainerArgs(remux)
+            remux.append(" -c copy \\"").append(outputFilePath).append("\\"")
+            return remux.toString()
+        }
+"""
+s = must_replace(s, old, new, "no-op remux fast path")
+
+# ---- 1d. legacy MERGE builder tail ---------------------------------------
+old = """            if (outputDuration != null) {
+                cmd.append(" -t $outputDuration")
+            }
+            cmd.append(" \\"$outputFilePath\\"")
+
+            val finalCommand = cmd.toString()
+            Log.d(TAG, "Built merge command: $finalCommand")
+"""
+new = """            if (outputDuration != null) {
+                cmd.append(" -t $outputDuration")
+            }
+            appendOutputContainerArgs(cmd)
+            cmd.append(" \\"$outputFilePath\\"")
+
+            val finalCommand = cmd.toString()
+            Log.d(TAG, "Built merge command: $finalCommand")
+"""
+s = must_replace(s, old, new, "merge builder tail")
+
+# ---- 1e. legacy single/non-merge builder tail ----------------------------
+old = """        if (outputDuration != null) {
+            cmd.append(" -t $outputDuration")
+        }
+        cmd.append(" \\"$outputFilePath\\"")
+
+        val finalCommand = cmd.toString()
+        Log.d(TAG, "Built command: $finalCommand")
+"""
+new = """        if (outputDuration != null) {
+            cmd.append(" -t $outputDuration")
+        }
+        appendOutputContainerArgs(cmd)
+        cmd.append(" \\"$outputFilePath\\"")
+
+        val finalCommand = cmd.toString()
+        Log.d(TAG, "Built command: $finalCommand")
+"""
+s = must_replace(s, old, new, "non-merge builder tail")
+
+wr(VM_PATH, s)
+print("[phase10] step1: VM patched (AdvancedExport +4 fields, container args x3 paths)")
+VMPY
+fi
+
+echo "[phase10] step1 done"
+
+###############################################################################
+# Step 2 -- SmartExportPlanner.kt (parts 1+2+3+4 on the smart path)
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step2: [skip] planner already patched"
+else
+python3 <<'PLPY'
+import sys
+
+def die(m):
+    print("[phase10][ERROR] " + m)
+    sys.exit(1)
+
+def rw(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def wr(path, s):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def must_replace(s, old, new, what):
+    if old not in s:
+        die("planner anchor missing: " + what)
+    if s.count(old) != 1:
+        die("planner anchor not unique (%d hits): %s" % (s.count(old), what))
+    return s.replace(old, new, 1)
+
+P = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+s = rw(P)
+
+# ---- 2a. header doc: new command templates ------------------------------
+old = r""" *   concat           : -f concat -safe 0 -i list.txt -c copy -bsf:v dump_extra
  */
-object SmartExportPlanner {
+"""
+new = r""" *   concat           : -f concat -safe 0 -i list.txt -i seg0 [-map_metadata 1]
+ *                      -c copy -bsf:v dump_extra [-movflags +faststart]
+ *
+ * Phase 10 additions:
+ *   keyframe cut     : trimmed spans use INPUT seeking (-ss before -i), which
+ *                      snaps to the preceding keyframe, so they are stream-
+ *                      copied - 100% lossless, LosslessCut keyframe-cut
+ *                      semantics (up to one GOP of extra head material)
+ *   separate files   : one output file per timeline clip; transitions and
+ *                      the concat step are skipped entirely
+ *   metadata/faststart flags are applied to the final merged output
+ */
+"""
+s = must_replace(s, old, new, "header doc block")
 
-    private const val TAG = "SmartExportPlanner"
+# ---- 2b. analysis API (read-only preview for the dialog) ----------------
+old = "    data class SmartPlan(val planFile: File)\n"
+new = r'''    data class SmartPlan(val planFile: File)
 
-    data class MediaParams(
-        val vCodec: String,
-        val vProfile: String,
-        val vLevel: Int,
-        val width: Int,
-        val height: Int,
-        val fpsString: String,
-        val fpsValue: Double,
-        val pixFmt: String,
-        val hasAudio: Boolean,
-        val aCodec: String,
-        val aSampleRate: Int,
-        val aChannels: Int,
-        val rotation: Int,
-        val durationMs: Long
+    /** Per-clip trim info used by the export dialog's live smart preview. */
+    data class SmartClipInfo(
+        val trimStartMs: Long,
+        val trimEndMs: Long,
+        val durationMs: Long,
+        val fullRange: Boolean,
+        val muted: Boolean,
+        val hasAudio: Boolean
     )
 
-    data class SmartPlan(val planFile: File)
-
-    data class FreezeCommands(val commands: List<String>, val tempFiles: List<String>)
-
-    // ------------------------------------------------------------------
-    // Probing
-    // ------------------------------------------------------------------
-
     /**
-     * Probe a clip with FFprobeKit (codec params) + MediaMetadataRetriever
-     * (rotation, duration). Returns null when probing fails - callers must
-     * treat that as "not copy-compatible" and fall back gracefully.
+     * Read-only eligibility analysis for the export dialog (phase 10).
+     * reason != null means the project itself is not copy-compatible; the
+     * settings-level gates live in settingsBlockSmart so the dialog can
+     * re-check them instantly while the user flips chips. This function has
+     * NO side effects: no work dir, no cache copies, no command generation.
      */
-    fun probeMedia(context: Context, uri: Uri, path: String?): MediaParams? {
-        val ffprobeArg = when {
-            path != null -> path
-            uri.scheme == "content" -> try {
-                FFmpegKitConfig.getSafParameterForRead(context, uri)
-            } catch (e: Exception) {
-                Log.w(TAG, "getSafParameterForRead failed: " + e.message)
-                null
-            } ?: return null
-            else -> uri.path ?: return null
-        }
+    data class SmartAnalysis(
+        val clips: List<SmartClipInfo>,
+        val transitions: Map<Int, Long>,
+        val hasAudio: Boolean,
+        val displayHeight: Int,
+        val shortSide: Int,
+        val fpsRounded: Int,
+        val reason: String?
+    )
 
-        val session = try {
-            FFprobeKit.getMediaInformation(ffprobeArg)
-        } catch (e: Exception) {
-            Log.w(TAG, "ffprobe failed: " + e.message)
-            null
-        } ?: return null
-
-        val info = try {
-            session.getMediaInformation()
-        } catch (e: Exception) {
-            null
-        } ?: return null
-
-        val streams = try {
-            info.getStreams()
-        } catch (e: Exception) {
-            null
-        } ?: return null
-
-        var video: JSONObject? = null
-        var audio: JSONObject? = null
-        for (s in streams) {
-            val props = try {
-                s.getAllProperties()
-            } catch (e: Exception) {
-                null
-            } ?: continue
-            val type = props.optString("codec_type", "")
-            if (type == "video" && video == null) video = props
-            if (type == "audio" && audio == null) audio = props
-        }
-        val v = video ?: return null
-
-        var rotation = 0
-        var durationMs = 0L
+    fun analyzeSmartExport(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis? {
         try {
-            val retriever = android.media.MediaMetadataRetriever()
-            try {
-                if (path != null) {
-                    retriever.setDataSource(path)
-                } else {
-                    retriever.setDataSource(context, uri)
-                }
-                rotation = retriever.extractMetadata(
-                    android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-                durationMs = retriever.extractMetadata(
-                    android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            } finally {
-                retriever.release()
-            }
+            return analyzeInternal(context, project, sourceFilePath)
         } catch (e: Exception) {
-            Log.w(TAG, "MMR probe failed: " + e.message)
-        }
-        if (durationMs <= 0L) return null
-
-        val fpsString = v.optString("avg_frame_rate", "0/0")
-        val fpsValue = parseFraction(fpsString) ?: return null
-        if (fpsValue <= 0.0) return null
-
-        return MediaParams(
-            vCodec = v.optString("codec_name", ""),
-            vProfile = v.optString("profile", ""),
-            vLevel = v.optInt("level", 0),
-            width = v.optInt("width", 0),
-            height = v.optInt("height", 0),
-            fpsString = fpsString,
-            fpsValue = fpsValue,
-            pixFmt = v.optString("pix_fmt", ""),
-            hasAudio = audio != null,
-            aCodec = audio?.optString("codec_name", "") ?: "",
-            aSampleRate = audio?.optInt("sample_rate", 0) ?: 0,
-            aChannels = audio?.optInt("channels", 0) ?: 0,
-            rotation = rotation,
-            durationMs = durationMs
-        )
-    }
-
-    private fun parseFraction(s: String): Double? {
-        if (s.isEmpty() || s == "0/0") return null
-        return try {
-            if (s.contains("/")) {
-                val parts = s.split("/")
-                val num = parts[0].trim().toDouble()
-                val den = parts[1].trim().toDouble()
-                if (den == 0.0) null else num / den
-            } else {
-                s.trim().toDouble()
-            }
-        } catch (e: Exception) {
-            null
+            Log.w(TAG, "smart export analysis failed: " + e.message, e)
+            return null
         }
     }
-
-    // ------------------------------------------------------------------
-    // Freeze frame command builder
-    // ------------------------------------------------------------------
 
     /**
-     * Build the ffmpeg command(s) that turn the extracted freeze-frame PNG
-     * (which is in DISPLAY orientation, like MediaMetadataRetriever returns
-     * it) into a video whose stream parameters match the source clip. When
-     * the source is rotated the PNG is transposed back to sensor space and
-     * the rotation metadata is re-inserted with a -display_rotation remux.
+     * Settings-level gates (cheap, no probing): returns a human readable
+     * reason when the current export settings force the legacy render, or
+     * null when the smart path can run with these settings.
      */
-    fun buildFreezeFrameCommands(
-        params: MediaParams,
-        pngPath: String,
-        finalOutPath: String,
-        durationMs: Long
-    ): FreezeCommands {
-        val dSec = ms(durationMs)
-        val audioOk = params.hasAudio && (params.aCodec == "aac" || params.aCodec == "mp3")
-            && params.aSampleRate > 0
-        val aChanLabel = if (params.aChannels == 1) "mono" else "stereo"
-        val transpose = when (params.rotation) {
-            90 -> "transpose=2,"
-            180 -> "transpose=1,transpose=1,"
-            270 -> "transpose=1,"
-            else -> ""
-        }
-        val enc = videoEncoderArgs(params, "", "") ?: return FreezeCommands(emptyList(), emptyList())
-        val aEnc = audioEncoderArgs(params, "")
-
-        val sb = StringBuilder("-y -loop 1 -i \"").append(pngPath).append("\"")
-        if (audioOk) {
-            sb.append(" -f lavfi -t ").append(dSec)
-            sb.append(" -i anullsrc=r=").append(params.aSampleRate).append(":cl=").append(aChanLabel)
-        }
-        sb.append(" -t ").append(dSec)
-        sb.append(" -vf \"").append(transpose)
-        sb.append("scale=").append(params.width).append(":").append(params.height)
-        sb.append(",setsar=1,fps=").append(params.fpsString)
-        sb.append(",format=yuv420p\"")
-        sb.append(" -map 0:v:0")
-        if (audioOk) sb.append(" -map 1:a:0")
-        sb.append(" ").append(enc)
-        if (audioOk) sb.append(" ").append(aEnc)
-
-        if (params.rotation != 0) {
-            val tmp = File(File(finalOutPath).parentFile, "freeze_tmp_" + System.nanoTime() + ".mp4")
-            sb.append(" \"").append(tmp.absolutePath).append("\"")
-            val rot = StringBuilder("-y -display_rotation:v ").append(-params.rotation)
-            rot.append(" -i \"").append(tmp.absolutePath).append("\"")
-            rot.append(" -map 0:v:0")
-            if (audioOk) rot.append(" -map 0:a:0")
-            rot.append(" -c copy \"").append(finalOutPath).append("\"")
-            return FreezeCommands(listOf(sb.toString(), rot.toString()), listOf(tmp.absolutePath))
-        }
-        sb.append(" \"").append(finalOutPath).append("\"")
-        return FreezeCommands(listOf(sb.toString()), emptyList())
-    }
-
-    // ------------------------------------------------------------------
-    // Planning
-    // ------------------------------------------------------------------
-
-    fun planSmartExport(
-        context: Context,
-        project: VideoProject,
-        sourceFilePath: String,
-        outputFilePath: String,
+    fun settingsBlockSmart(
+        analysis: SmartAnalysis,
         exportResolution: Int,
         exportFps: Int,
-        exportBitrate: String,
         audioOnly: Boolean,
         advancedVideoCodec: String,
         advancedAudioCodec: String,
-        advancedPreset: String,
-        advancedAudioBitrate: String,
         customWidth: Int,
+        customHeight: Int,
+        videoFormat: String
+    ): String? {
+        if (audioOnly) return "audio-only export"
+        if (videoFormat != "mp4") return "non-MP4 container"
+        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return "custom codec requested"
+        if (customWidth >= 16 || customHeight >= 16) return "custom resolution"
+        if (exportResolution != 0 && exportResolution != analysis.displayHeight && exportResolution != analysis.shortSide) {
+            return "resolution change"
+        }
+        if (exportFps != 0 && exportFps != analysis.fpsRounded) return "fps change"
+        return null
+    }
+
+    private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
+        fun fail(reason: String): SmartAnalysis =
+            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, reason)
+
+        if (isImagePath(sourceFilePath)) return fail("image source")
+        val ops = project.operations
+        val allowed = ops.all {
+            it is EditOperation.Trim || it is EditOperation.Merge ||
+                it is EditOperation.Transition || it is EditOperation.MuteClip ||
+                it is EditOperation.MuteAudio
+        }
+        if (!allowed) return fail("edits that force a full re-encode are present")
+
+        val mergeOp = ops.filterIsInstance<EditOperation.Merge>().firstOrNull()
+        val trimOp = ops.filterIsInstance<EditOperation.Trim>().lastOrNull()
+
+        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath)
+            ?: return fail("source could not be probed")
+        if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return fail("source codec is not H.264/HEVC")
+        if (refParams.pixFmt != "yuv420p") return fail("source pixel format is not yuv420p")
+        if (refParams.width <= 0 || refParams.height <= 0) return fail("bad source dimensions")
+        if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return fail("odd source dimensions")
+        if (refParams.durationMs <= 0L) return fail("bad source duration")
+
+        data class AClip(
+            val params: MediaParams,
+            val trimStartMs: Long,
+            val trimEndMs: Long,
+            val muted: Boolean
+        )
+        val clips = mutableListOf<AClip>()
+        clips.add(
+            AClip(
+                params = refParams,
+                trimStartMs = trimOp?.startMs ?: 0L,
+                trimEndMs = trimOp?.endMs ?: refParams.durationMs,
+                muted = isClipMuted(ops, 0)
+            )
+        )
+        if (mergeOp != null) {
+            for (item in mergeOp.items) {
+                if (item.isImage) return fail("image clip in the sequence")
+                if (item.speed != 1.0f) return fail("speed-changed clip in the sequence")
+                if (item.proxyUri != null) return fail("proxy clip in the sequence")
+                val p = probeMedia(context, item.uri, null)
+                    ?: return fail("a clip could not be probed")
+                if (p.vCodec != refParams.vCodec) return fail("clips use different codecs")
+                if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return fail("clips use different profiles")
+                if (p.width != refParams.width || p.height != refParams.height) return fail("clips have different dimensions")
+                if (p.rotation != refParams.rotation) return fail("clips have different rotation")
+                if (p.fpsString != refParams.fpsString) return fail("clips have different frame rates")
+                if (p.pixFmt != "yuv420p") return fail("a clip is not yuv420p")
+                if (p.durationMs <= 0L) return fail("bad clip duration")
+                clips.add(
+                    AClip(
+                        params = p,
+                        trimStartMs = item.trimStartMs.coerceIn(0L, p.durationMs),
+                        trimEndMs = item.trimEndMs.coerceAtMost(p.durationMs),
+                        muted = isClipMuted(ops, clips.size)
+                    )
+                )
+            }
+        }
+
+        val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
+        if (audioRef != null) {
+            if (audioRef.aCodec != "aac" && audioRef.aCodec != "mp3") return fail("audio codec is not AAC/MP3")
+            if (audioRef.aSampleRate <= 0) return fail("bad audio sample rate")
+            if (audioRef.aChannels != 1 && audioRef.aChannels != 2) return fail("audio has more than 2 channels")
+            for (c in clips) {
+                if (c.params.hasAudio) {
+                    if (c.params.aCodec != audioRef.aCodec) return fail("clips use different audio codecs")
+                    if (c.params.aSampleRate != audioRef.aSampleRate) return fail("clips use different audio sample rates")
+                    if (c.params.aChannels != audioRef.aChannels) return fail("clips use different audio channel counts")
+                }
+            }
+        }
+
+        val transitions = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            transitions[t.index] = Pair(t.type, t.durationMs)
+        }
+        val clampedTransitions = mutableMapOf<Int, Long>()
+        for ((gap, td) in transitions) {
+            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
+            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
+            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
+            if (d >= 50L) clampedTransitions[gap] = d
+        }
+
+        val displayWidth = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.height else refParams.width
+        val displayHeight = if (refParams.rotation == 90 || refParams.rotation == 270) refParams.width else refParams.height
+
+        return SmartAnalysis(
+            clips = clips.map {
+                SmartClipInfo(
+                    trimStartMs = it.trimStartMs,
+                    trimEndMs = it.trimEndMs,
+                    durationMs = it.params.durationMs,
+                    fullRange = it.trimStartMs <= 60L && it.trimEndMs >= it.params.durationMs - 60L,
+                    muted = it.muted,
+                    hasAudio = it.params.hasAudio
+                )
+            },
+            transitions = clampedTransitions,
+            hasAudio = audioRef != null,
+            displayHeight = displayHeight,
+            shortSide = Math.min(displayWidth, displayHeight),
+            fpsRounded = Math.round(refParams.fpsValue).toInt(),
+            reason = null
+        )
+    }
+'''
+s = must_replace(s, old, new, "SmartPlan anchor (analysis API)")
+
+# ---- 2c. planSmartExport signature + pass-through ------------------------
+old = r"""        customWidth: Int,
         customHeight: Int,
         videoFormat: String
     ): SmartPlan? {
@@ -359,168 +472,47 @@ object SmartExportPlanner {
                 advancedVideoCodec, advancedAudioCodec, advancedPreset,
                 advancedAudioBitrate, customWidth, customHeight, videoFormat
             )
-        } catch (e: Exception) {
-            Log.w(TAG, "smart export planning failed: " + e.message, e)
-            return null
-        }
-    }
+"""
+new = r"""        customWidth: Int,
+        customHeight: Int,
+        videoFormat: String,
+        keyframeCut: Boolean = false,
+        exportSeparateFiles: Boolean = false,
+        movFastStart: Boolean = true,
+        preserveMetadata: Boolean = true
+    ): SmartPlan? {
+        try {
+            return planInternal(
+                context, project, sourceFilePath, outputFilePath,
+                exportResolution, exportFps, exportBitrate, audioOnly,
+                advancedVideoCodec, advancedAudioCodec, advancedPreset,
+                advancedAudioBitrate, customWidth, customHeight, videoFormat,
+                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata
+            )
+"""
+s = must_replace(s, old, new, "planSmartExport signature")
 
-    private fun planInternal(
-        context: Context,
-        project: VideoProject,
-        sourceFilePath: String,
-        outputFilePath: String,
-        exportResolution: Int,
-        exportFps: Int,
-        exportBitrate: String,
-        audioOnly: Boolean,
-        advancedVideoCodec: String,
-        advancedAudioCodec: String,
-        advancedPreset: String,
-        advancedAudioBitrate: String,
-        customWidth: Int,
+# ---- 2d. planInternal signature ------------------------------------------
+old = r"""        customWidth: Int,
         customHeight: Int,
         videoFormat: String
     ): SmartPlan? {
         sweepStaleWorkDirs(context)
+"""
+new = r"""        customWidth: Int,
+        customHeight: Int,
+        videoFormat: String,
+        keyframeCut: Boolean,
+        exportSeparateFiles: Boolean,
+        movFastStart: Boolean,
+        preserveMetadata: Boolean
+    ): SmartPlan? {
+        sweepStaleWorkDirs(context)
+"""
+s = must_replace(s, old, new, "planInternal signature")
 
-        if (audioOnly) return null
-        if (videoFormat != "mp4") return null
-        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return null
-        if (customWidth >= 16 || customHeight >= 16) return null
-        if (isImagePath(sourceFilePath)) return null
-
-        val ops = project.operations
-        val allowed = ops.all {
-            it is EditOperation.Trim || it is EditOperation.Merge ||
-                it is EditOperation.Transition || it is EditOperation.MuteClip ||
-                it is EditOperation.MuteAudio
-        }
-        if (!allowed) return null
-
-        val mergeOp = ops.filterIsInstance<EditOperation.Merge>().firstOrNull()
-        val trimOp = ops.filterIsInstance<EditOperation.Trim>().lastOrNull()
-        val audioMuted = ops.any { it is EditOperation.MuteAudio }
-
-        val workDir = File(context.cacheDir, "smart_export_" + System.currentTimeMillis())
-        if (!workDir.mkdirs() && !workDir.isDirectory) return null
-
-        // ---- probe the main clip (reference parameters) ----
-        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
-        if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return null
-        if (refParams.pixFmt != "yuv420p") return null
-        if (refParams.width <= 0 || refParams.height <= 0) return null
-        if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return null
-        if (refParams.durationMs <= 0L) return null
-
-        val displayWidth = if (refParams.rotation == 90 || refParams.rotation == 270) {
-            refParams.height
-        } else {
-            refParams.width
-        }
-        val displayHeight = if (refParams.rotation == 90 || refParams.rotation == 270) {
-            refParams.width
-        } else {
-            refParams.height
-        }
-        val shortSide = Math.min(displayWidth, displayHeight)
-        // Resolution is a no-op when it equals the display height or the short
-        // side (a "1080" preset on a portrait 1080x1920 clip). Anything else
-        // means the user asked for a real resize -> legacy render.
-        if (exportResolution != 0 && exportResolution != displayHeight && exportResolution != shortSide) return null
-        if (exportFps != 0 && exportFps != Math.round(refParams.fpsValue).toInt()) return null
-
-        data class ClipInfo(
-            val path: String,
-            val params: MediaParams,
-            val trimStartMs: Long,
-            val trimEndMs: Long,
-            val durationMs: Long,
-            val muted: Boolean
-        )
-
-        // ---- resolve + probe all clips ----
-        val clips = mutableListOf<ClipInfo>()
-        clips.add(
-            ClipInfo(
-                path = sourceFilePath,
-                params = refParams,
-                trimStartMs = trimOp?.startMs ?: 0L,
-                trimEndMs = trimOp?.endMs ?: refParams.durationMs,
-                durationMs = refParams.durationMs,
-                muted = isClipMuted(ops, 0)
-            )
-        )
-        if (mergeOp != null) {
-            for (item in mergeOp.items) {
-                if (item.isImage) return null
-                if (item.speed != 1.0f) return null
-                if (item.proxyUri != null) return null
-                val localPath: String? = if (item.uri.scheme == "content") {
-                    copyToCache(context, item.uri, workDir)
-                } else {
-                    item.uri.path
-                }
-                if (localPath == null || isImagePath(localPath)) return null
-                val p = probeMedia(context, item.uri, localPath) ?: return null
-                if (p.vCodec != refParams.vCodec) return null
-                if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return null
-                if (p.width != refParams.width || p.height != refParams.height) return null
-                if (p.rotation != refParams.rotation) return null
-                if (p.fpsString != refParams.fpsString) return null
-                if (p.pixFmt != "yuv420p") return null
-                if (p.durationMs <= 0L) return null
-                clips.add(
-                    ClipInfo(
-                        path = localPath,
-                        params = p,
-                        trimStartMs = item.trimStartMs.coerceIn(0L, p.durationMs),
-                        trimEndMs = item.trimEndMs.coerceAtMost(p.durationMs),
-                        durationMs = p.durationMs,
-                        muted = isClipMuted(ops, clips.size)
-                    )
-                )
-            }
-        }
-
-        // ---- audio reference ----
-        val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
-        if (audioRef != null) {
-            if (audioRef.aCodec != "aac" && audioRef.aCodec != "mp3") return null
-            if (audioRef.aSampleRate <= 0) return null
-            if (audioRef.aChannels != 1 && audioRef.aChannels != 2) return null
-        }
-        if (audioRef != null) {
-            for (c in clips) {
-                if (c.params.hasAudio) {
-                    if (c.params.aCodec != audioRef.aCodec) return null
-                    if (c.params.aSampleRate != audioRef.aSampleRate) return null
-                    if (c.params.aChannels != audioRef.aChannels) return null
-                }
-            }
-        }
-        val planHasAudio = audioRef != null
-        val aRate = audioRef?.aSampleRate ?: 44100
-        val aChanLabel = if ((audioRef?.aChannels ?: 2) == 1) "mono" else "stereo"
-
-        // ---- transitions with clamped durations ----
-        val transitions = mutableMapOf<Int, Pair<String, Long>>()
-        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
-            if (t.type.equals("none", ignoreCase = true)) continue
-            if (t.index < 0 || t.index >= clips.size - 1) continue
-            transitions[t.index] = Pair(t.type, t.durationMs)
-        }
-        val clampedTransitions = mutableMapOf<Int, Pair<String, Long>>()
-        for ((gap, td) in transitions) {
-            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
-            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
-            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
-            if (d >= 50L) {
-                clampedTransitions[gap] = Pair(td.first, d)
-            }
-        }
-
-        // ---- effective spans + degenerate check ----
+# ---- 2e. merged flag + degeneracy check ----------------------------------
+old = r"""        // ---- effective spans + degenerate check ----
         for (i in clips.indices) {
             val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
             val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
@@ -528,23 +520,23 @@ object SmartExportPlanner {
             val end = clips[i].trimEndMs - dRight
             if (end <= start) return null
         }
-
-        // ---- build per-segment commands ----
-        val commands = mutableListOf<Pair<String, Double>>()
-        val segmentFiles = mutableListOf<File>()
-        val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
-        val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
-        val fpsFilter = "fps=" + refParams.fpsString
-
-        var segCounter = 0
-        fun nextSegmentFile(): File {
-            val f = File(workDir, "seg_" + segCounter + ".mp4")
-            segCounter++
-            segmentFiles.add(f)
-            return f
-        }
-
+"""
+new = r"""        // ---- effective spans + degenerate check ----
+        // Separate-files mode skips transitions entirely: each clip is its own
+        // output, so spans are NOT shrunk by transition overlaps.
+        val merged = !exportSeparateFiles
         for (i in clips.indices) {
+            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val start = clips[i].trimStartMs + dLeft
+            val end = clips[i].trimEndMs - dRight
+            if (end <= start) return null
+        }
+"""
+s = must_replace(s, old, new, "degeneracy check block")
+
+# ---- 2f. per-clip loop head (merged guards) ------------------------------
+old = r"""        for (i in clips.indices) {
             val clip = clips[i]
             val dLeft = if (i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
             val dRight = if (i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
@@ -556,21 +548,32 @@ object SmartExportPlanner {
             val seg = nextSegmentFile()
 
             if (fullRange) {
-                // Whole clip unchanged -> pure stream copy remux
-                val sb = StringBuilder("-y -noautorotate -i \"").append(clip.path).append("\"")
-                if (silenceAudio) {
-                    sb.append(" -f lavfi -t ").append(ms(spanMs))
-                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                    sb.append(" -map 0:v:0 -map 1:a:0 -c:v copy ").append(aEnc)
-                } else if (planHasAudio) {
-                    sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
-                } else {
-                    sb.append(" -map 0:v:0 -c copy")
-                }
-                sb.append(" \"").append(seg.absolutePath).append("\"")
-                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            } else {
+"""
+new = r"""        for (i in clips.indices) {
+            val clip = clips[i]
+            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
+            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
+            val spanStart = clip.trimStartMs + dLeft
+            val spanEnd = clip.trimEndMs - dRight
+            val spanMs = spanEnd - spanStart
+            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
+            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
+            val seg = nextSegmentFile()
+
+            if (fullRange) {
+"""
+s = must_replace(s, old, new, "per-clip loop head")
+
+# ---- 2g. keyframe-cut copy branch (part 2) -------------------------------
+old = r"""            } else {
                 // Trimmed span -> re-encode ONLY this span with matching parameters
+                val sb = StringBuilder("-y -noautorotate")
+"""
+new = r"""            } else if (keyframeCut) {
+                // Keyframe cut (LosslessCut-style): -ss BEFORE -i snaps to the
+                // preceding keyframe automatically, so the trimmed span is
+                // stream-copied - fully lossless, with up to one GOP of extra
+                // head material (same semantics as LosslessCut's keyframe cut).
                 val sb = StringBuilder("-y -noautorotate")
                 if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
                 sb.append(" -t ").append(ms(spanMs)).append(" -i \"").append(clip.path).append("\"")
@@ -581,101 +584,31 @@ object SmartExportPlanner {
                 sb.append(" -map 0:v:0")
                 if (silenceAudio) {
                     sb.append(" -map 1:a:0")
+                    sb.append(" -c:v copy -avoid_negative_ts make_zero").append(" ").append(aEnc)
                 } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0")
+                    sb.append(" -map 0:a:0 -c copy -avoid_negative_ts make_zero")
+                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
                 }
-                sb.append(" -vf \"").append(fpsFilter).append(",setsar=1\" ")
-                sb.append(enc)
-                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            }
+            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters
+                val sb = StringBuilder("-y -noautorotate")
+"""
+s = must_replace(s, old, new, "keyframe-cut branch")
 
-            // Transition segment that starts right after this clip
+# ---- 2h. transition segment only in merged mode (part 3) -----------------
+old = r"""            // Transition segment that starts right after this clip
             val trans = clampedTransitions[i]
-            if (trans != null && i < clips.size - 1) {
-                val type = trans.first
-                val dMs = trans.second
-                val right = clips[i + 1]
-                val dSec = ms(dMs)
-                val leftTailStart = ms(clip.trimEndMs - dMs)
-                val rightHeadStart = ms(right.trimStartMs)
-                val leftAudioReal = planHasAudio && clip.params.hasAudio && !clip.muted
-                val rightAudioReal = planHasAudio && right.params.hasAudio && !right.muted
-                val tSeg = nextSegmentFile()
+"""
+new = r"""            // Transition segment that starts right after this clip (merged only)
+            val trans = if (merged) clampedTransitions[i] else null
+"""
+s = must_replace(s, old, new, "transition gate")
 
-                val sb = StringBuilder("-y -noautorotate -ss ").append(leftTailStart)
-                sb.append(" -t ").append(dSec).append(" -i \"").append(clip.path).append("\"")
-                sb.append(" -noautorotate -ss ").append(rightHeadStart)
-                sb.append(" -t ").append(dSec).append(" -i \"").append(right.path).append("\"")
-
-                var anullCounter = 2
-                val leftALabel: String
-                val rightALabel: String
-                if (planHasAudio) {
-                    if (leftAudioReal) {
-                        leftALabel = "[0:a:0]"
-                    } else {
-                        sb.append(" -f lavfi -t ").append(dSec)
-                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                        leftALabel = "[" + anullCounter + ":a:0]"
-                        anullCounter++
-                    }
-                    if (rightAudioReal) {
-                        rightALabel = "[1:a:0]"
-                    } else {
-                        sb.append(" -f lavfi -t ").append(dSec)
-                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                        rightALabel = "[" + anullCounter + ":a:0]"
-                        anullCounter++
-                    }
-                } else {
-                    leftALabel = ""
-                    rightALabel = ""
-                }
-
-                val filterParts = mutableListOf<String>()
-                filterParts.add("[0:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[lv]")
-                filterParts.add("[1:v:0]setpts=PTS-STARTPTS," + fpsFilter + "[rv]")
-                filterParts.add(
-                    "[lv][rv]xfade=transition=" + sanitizeTransitionType(type) +
-                        ":duration=" + dSec + ":offset=0[tv]"
-                )
-
-                if (planHasAudio) {
-                    if (leftAudioReal && rightAudioReal) {
-                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
-                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
-                        filterParts.add("[la][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    } else if (leftAudioReal) {
-                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
-                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
-                        filterParts.add("[la][sa]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    } else if (rightAudioReal) {
-                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
-                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
-                        filterParts.add("[sa][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    }
-                }
-
-                sb.append(" -filter_complex \"").append(filterParts.joinToString(";")).append("\"")
-                sb.append(" -map \"[tv]\"")
-                if (planHasAudio) {
-                    if (leftAudioReal || rightAudioReal) {
-                        sb.append(" -map \"[ta]\"")
-                    } else {
-                        // Both sides silent: map the silence input directly
-                        sb.append(" -map ").append(leftALabel)
-                    }
-                }
-                sb.append(" ").append(enc)
-                if (planHasAudio) sb.append(" ").append(aEnc)
-                sb.append(" \"").append(tSeg.absolutePath).append("\"")
-                commands.add(Pair(sb.toString(), Math.max(0.5, dMs / 1000.0)))
-            }
-        }
-
-        // ---- concat all segments with stream copy ----
+# ---- 2i. concat block: merged only + metadata/faststart (part 3+4) -------
+old = r"""        // ---- concat all segments with stream copy ----
         val listFile = File(workDir, "concat_list.txt")
         val listSb = StringBuilder()
         for (f in segmentFiles) {
@@ -687,8 +620,33 @@ object SmartExportPlanner {
         val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
             "\" -map 0:v:0" + audioMap + " -c copy -bsf:v dump_extra \"" + outputFilePath + "\""
         commands.add(Pair(concatCmd, 1.0))
+"""
+new = r"""        // ---- final assembly: concat with stream copy (merged mode only) ----
+        // seg_0 is attached as a second input purely so the output can
+        // inherit the source's global metadata (-map_metadata 1); faststart
+        // relocates the MP4 moov atom to the front of the file.
+        if (merged) {
+            val listFile = File(workDir, "concat_list.txt")
+            val listSb = StringBuilder()
+            for (f in segmentFiles) {
+                listSb.append("file '").append(f.absolutePath).append("'\n")
+            }
+            listFile.writeText(listSb.toString())
 
-        // ---- plan json ----
+            val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
+            val metaArg = if (preserveMetadata) " -map_metadata 1" else ""
+            val fastArg = if (movFastStart) " -movflags +faststart" else ""
+            val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
+                "\" -i \"" + segmentFiles[0].absolutePath + "\"" +
+                " -map 0:v:0" + audioMap + metaArg + " -c copy -bsf:v dump_extra" + fastArg +
+                " \"" + outputFilePath + "\""
+            commands.add(Pair(concatCmd, 1.0))
+        }
+"""
+s = must_replace(s, old, new, "concat block")
+
+# ---- 2j. plan json: object form with outputs -----------------------------
+old = r"""        // ---- plan json ----
         val arr = JSONArray()
         for (pair in commands) {
             val o = JSONObject()
@@ -705,615 +663,159 @@ object SmartExportPlanner {
                 ", transitions=" + clampedTransitions.size
         )
         return SmartPlan(planFile)
-    }
-
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
-
-    private fun ms(v: Long): String = (v / 1000.0).toString()
-
-    private fun isClipMuted(ops: List<EditOperation>, index: Int): Boolean {
-        return ops.filterIsInstance<EditOperation.MuteClip>().any { it.index == index && it.isMuted }
-    }
-
-    private fun isImagePath(p: String): Boolean {
-        val lower = p.lowercase()
-        return lower.endsWith(".png") || lower.endsWith(".jpg") ||
-            lower.endsWith(".jpeg") || lower.endsWith(".webp")
-    }
-
-    private fun copyToCache(context: Context, uri: Uri, workDir: File): String? {
-        return try {
-            val f = File(workDir, "src_" + System.nanoTime() + ".mp4")
-            val input = context.contentResolver.openInputStream(uri) ?: return null
-            val output = FileOutputStream(f)
-            try {
-                input.copyTo(output)
-            } finally {
-                input.close()
-                output.close()
-            }
-            if (f.length() == 0L) {
-                f.delete()
-                return null
-            }
-            f.absolutePath
-        } catch (e: Exception) {
-            Log.w(TAG, "copyToCache failed: " + e.message)
-            null
+"""
+new = r"""        // ---- plan json (phase 10: object form; plain array = phase 9 plan) ----
+        val arr = JSONArray()
+        for (pair in commands) {
+            val o = JSONObject()
+            o.put("cmd", pair.first)
+            o.put("weight", pair.second)
+            arr.put(o)
         }
-    }
+        val outputs = if (merged) listOf(outputFilePath) else segmentFiles.map { it.absolutePath }
+        val planObj = JSONObject()
+        planObj.put("separate", exportSeparateFiles)
+        planObj.put("outputs", JSONArray(outputs))
+        planObj.put("commands", arr)
+        val planFile = File(workDir, "plan.json")
+        planFile.writeText(planObj.toString())
 
-    private fun sweepStaleWorkDirs(context: Context) {
-        try {
-            val cache = context.cacheDir ?: return
-            val cutoff = System.currentTimeMillis() - 2L * 60L * 60L * 1000L
-            val dirs = cache.listFiles { file ->
-                file.isDirectory && file.name.startsWith("smart_export_")
-            } ?: return
-            for (d in dirs) {
-                if (d.lastModified() < cutoff) {
-                    d.listFiles()?.forEach { it.delete() }
-                    d.delete()
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "sweep failed: " + e.message)
-        }
-    }
+        Log.d(
+            TAG,
+            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
+                ", transitions=" + (if (merged) clampedTransitions.size else 0) +
+                (if (merged) "" else ", separate mode")
+        )
+        return SmartPlan(planFile)
+"""
+s = must_replace(s, old, new, "plan json block")
 
-    private fun videoEncoderArgs(p: MediaParams, bitrate: String, preset: String): String? {
-        if (p.vCodec == "h264") {
-            val profile = when (p.vProfile.lowercase()) {
-                "baseline", "constrained baseline" -> "baseline"
-                "main" -> "main"
-                "high 10" -> "high10"
-                else -> "high"
-            }
-            val sb = StringBuilder("-c:v libx264 -profile:v ").append(profile)
-            if (p.vLevel > 0) sb.append(" -level:v ").append(p.vLevel)
-            sb.append(" -pix_fmt yuv420p")
-            if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 18")
-            if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
-            return sb.toString()
-        }
-        if (p.vCodec == "hevc") {
-            val profile = if (p.vProfile.lowercase() == "main 10") "main10" else "main"
-            val sb = StringBuilder("-c:v libx265 -profile:v ").append(profile)
-            sb.append(" -tag:v hvc1 -pix_fmt yuv420p")
-            if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 20")
-            if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
-            return sb.toString()
-        }
-        return null
-    }
+wr(P, s)
+print("[phase10] step2: planner patched (analysis API, keyframe cut, separate mode, concat flags, plan.json v2)")
+PLPY
+fi
 
-    private fun audioEncoderArgs(audioRef: MediaParams?, audioBitrate: String): String {
-        val codec = if (audioRef?.aCodec == "mp3") "libmp3lame" else "aac"
-        val rate = audioRef?.aSampleRate ?: 44100
-        val channels = audioRef?.aChannels ?: 2
-        val sb = StringBuilder("-c:a ").append(codec)
-        sb.append(" -ar ").append(rate)
-        sb.append(" -ac ").append(channels)
-        if (audioBitrate.isNotEmpty()) {
-            sb.append(" -b:a ").append(audioBitrate)
-        } else {
-            sb.append(" -b:a 192k")
-        }
-        return sb.toString()
-    }
+echo "[phase10] step2 done"
 
-    private val validXfadeTransitions = setOf(
-        "fade", "fadeblack", "fadewhite", "rectcrop", "circlecrop", "circleclose", "circleopen",
-        "horzclose", "horzopen", "vertclose", "vertopen", "diagbl", "diagbr", "diagtl", "diagtr",
-        "hlslice", "hrslice", "vuslice", "vdslice", "dissolve", "pixelize", "slidedown", "slideleft",
-        "slideright", "slideup", "wipedown", "wipeleft", "wiperight", "wipeup", "zoomin", "squeezeh",
-        "squeezev", "coverleft", "coverright", "coverup", "coverdown", "revealleft", "revealright",
-        "revealup", "revealdown"
+###############################################################################
+# Step 3 -- ExportService.kt (part 3: object plan format + multi-file save)
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step3: [skip] ExportService already patched"
+else
+python3 <<'ESPY'
+import sys
+
+def die(m):
+    print("[phase10][ERROR] " + m)
+    sys.exit(1)
+
+def rw(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def wr(path, s):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def must_replace(s, old, new, what):
+    if old not in s:
+        die("ExportService anchor missing: " + what)
+    if s.count(old) != 1:
+        die("ExportService anchor not unique (%d hits): %s" % (s.count(old), what))
+    return s.replace(old, new, 1)
+
+E = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
+s = rw(E)
+
+# ---- 3a. nested data classes ---------------------------------------------
+old = r"""    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+"""
+new = r"""    /** Phase 10 plan.json parse result (commands + explicit output list). */
+    private data class ParsedPlan(val commands: List<Pair<String, Double>>, val outputs: List<String>)
+
+    /** runSmartExport result: render status plus the output files it produced. */
+    data class SmartExportOutcome(
+        val result: FFmpegRenderEngine.RenderResult,
+        val outputFiles: List<File>
     )
 
-    fun sanitizeTransitionType(rawType: String): String {
-        val raw = rawType.lowercase()
-        return when (raw) {
-            "smoothleft" -> "coverleft"
-            "smoothright" -> "coverright"
-            "distance" -> "zoomin"
-            else -> if (validXfadeTransitions.contains(raw)) raw else "fade"
-        }
-    }
-}
-'''
+    override fun onCreate() {
+        super.onCreate()
+        createNotificationChannel()
+"""
+s = must_replace(s, old, new, "onCreate anchor (data classes)")
 
-with open(PLANNER_PATH, "w", encoding="utf-8") as f:
-    f.write(CONTENT)
-print("[phase9] step1: [ok] wrote SmartExportPlanner.kt (%d bytes)" % len(CONTENT))
-CUTPY
-fi
-
-###############################################################################
-# Step 2 -- VideoEditingViewModelExt.kt: add shiftSequenceOpIndices()
-###############################################################################
-if [ "$APPLIED" = "1" ]; then
-  log "step2: [skip] Ext already patched"
-else
-python3 <<'CUTPY'
-import sys
-
-def die(m):
-    print("[phase9][ERROR] " + m)
-    sys.exit(1)
-
-EXT = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
-
-with open(EXT, encoding="utf-8") as f:
-    s = f.read()
-
-ANCHOR = "fun VideoEditingViewModel.removeMergeVideo(index: Int) {"
-if s.count(ANCHOR) != 1:
-    die("removeMergeVideo anchor count = %d (expected 1)" % s.count(ANCHOR))
-
-NEWFUN = r'''/**
- * Keep Transition (gap) and MuteClip (position) op indices aligned with the
- * sequence after a freeze insertion changes the clip layout.
- *
- * gapFrom/gapBy   : old gap indices >= gapFrom shift by gapBy (a gap between
- *                   clips g and g+1 moves when an insertion lands at or after
- *                   the gap's left clip).
- * posFrom/posBy   : old clip positions >= posFrom shift by posBy.
- * splitMuteAt     : when the muted clip itself was split in two by the freeze
- *                   insertion, the mute is cloned onto both halves.
- */
-fun VideoEditingViewModel.shiftSequenceOpIndices(
-    gapFrom: Int,
-    gapBy: Int,
-    posFrom: Int,
-    posBy: Int,
-    splitMuteAt: Int = -1
-) {
-    executeCommand(MutateListCommand("Adjust Sequence Indices") { ops ->
-        val result = mutableListOf<EditOperation>()
-        for (op in ops) {
-            when (op) {
-                is EditOperation.Transition -> {
-                    result.add(
-                        if (op.index >= gapFrom) op.copy(index = op.index + gapBy) else op
-                    )
-                }
-                is EditOperation.MuteClip -> {
-                    if (op.index == splitMuteAt) {
-                        result.add(op)
-                        result.add(op.copy(index = op.index + posBy))
-                    } else if (op.index >= posFrom) {
-                        result.add(op.copy(index = op.index + posBy))
-                    } else {
-                        result.add(op)
-                    }
-                }
-                else -> result.add(op)
-            }
-        }
-        result
-    })
-}
-
-'''
-
-i = s.find(ANCHOR)
-s = s[:i] + NEWFUN + s[i:]
-
-with open(EXT, "w", encoding="utf-8") as f:
-    f.write(s)
-print("[phase9] step2: [ok] shiftSequenceOpIndices added to Ext")
-CUTPY
-fi
-
-###############################################################################
-# Step 3 -- VideoEditingActivity.kt: rewrite freezeFrameAtCurrentPosition()
-###############################################################################
-if [ "$APPLIED" = "1" ]; then
-  log "step3: [skip] freeze function already rewritten"
-else
-python3 <<'CUTPY'
-import sys
-
-def die(m):
-    print("[phase9][ERROR] " + m)
-    sys.exit(1)
-
-VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-
-with open(VEA, encoding="utf-8") as f:
-    s = f.read()
-
-def replace_fun(s, header, newfun):
-    i = s.find(header)
-    if i < 0:
-        die("replace_fun miss: " + header)
-    if s.find(header, i + 1) >= 0:
-        die("replace_fun duplicate header: " + header)
-    j = s.find("{", i)
-    if j < 0:
-        die("replace_fun no opening brace: " + header)
-    depth = 0
-    k = j
-    while k < len(s):
-        c = s[k]
-        if c == "{":
-            depth += 1
-        elif c == "}":
-            depth -= 1
-            if depth == 0:
-                break
-        k += 1
-    if k >= len(s) or depth != 0:
-        die("replace_fun unbalanced braces: " + header)
-    end = k + 1
-    if s[end:end + 1] == "\n":
-        end += 1
-    return s[:i] + newfun + s[end:]
-
-NEWFREEZE = r'''    private fun freezeFrameAtCurrentPosition() {
-        val index = selectedVideoIndex ?: return
-        val sequenceItems = getSequenceItems()
-        if (index < 0 || index >= sequenceItems.size) return
-        val item = sequenceItems[index]
-
-        showLoading("Creating freeze frame...")
-        isImportLoading = true
-
-        val globalPos = getGlobalPosition()
-
-        lifecycleScope.launch {
-            val resultUri = withContext(Dispatchers.IO) {
-                var bitmap: android.graphics.Bitmap? = null
-                val retriever = android.media.MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(this@VideoEditingActivity, item.uri)
-
-                    var globalStartMs = 0L
-                    for (i in 0 until index) {
-                        globalStartMs += sequenceItems[i].trimmedDurationMs
-                    }
-                    val relativePosMs = globalPos - globalStartMs
-                    val sourceTimeMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
-                    val coercedSourceTimeMs = sourceTimeMs.coerceIn(item.trimStartMs, item.trimEndMs)
-
-                    bitmap = retriever.getFrameAtTime(coercedSourceTimeMs * 1000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to retrieve frame: ${e.message}", e)
-                } finally {
-                    try {
-                        retriever.release()
-                    } catch (e: Exception) {}
-                }
-
-                if (bitmap == null) return@withContext null
-
-                val pngFile = File(cacheDir, "freeze_${System.nanoTime()}.png")
-                try {
-                    java.io.FileOutputStream(pngFile).use { out ->
-                        bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Failed to save temp PNG: ${e.message}", e)
-                    return@withContext null
-                }
-
-                val mp4File = File(cacheDir, "freeze_vid_${System.nanoTime()}.mp4")
-
-                // SMART FREEZE (phase 9): encode the still frame with the SAME codec
-                // parameters as the source clip (codec, profile, level, resolution,
-                // fps, rotation, silent audio matching the source audio) so the smart
-                // export pipeline can stream-copy this segment with -c copy.
-                val srcParams = com.tharunbirla.librecuts.services.SmartExportPlanner.probeMedia(
-                    this@VideoEditingActivity, item.uri, item.uri.path
-                )
-                var outUri: Uri? = null
-                if (srcParams != null && (srcParams.vCodec == "h264" || srcParams.vCodec == "hevc")
-                    && srcParams.pixFmt == "yuv420p" && srcParams.width > 0 && srcParams.height > 0) {
-                    val freezeCmds = com.tharunbirla.librecuts.services.SmartExportPlanner.buildFreezeFrameCommands(
-                        srcParams, pngFile.absolutePath, mp4File.absolutePath, 3000L
-                    )
-                    var ok = freezeCmds.commands.isNotEmpty()
-                    for (cmd in freezeCmds.commands) {
-                        val r = ffmpegEngine.executeCommand(cmd)
-                        if (r !is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                            Log.e(TAG, "FFmpeg failed to create freeze frame video")
-                            ok = false
-                            break
-                        }
-                    }
-                    for (tmpPath in freezeCmds.tempFiles) {
-                        try { File(tmpPath).delete() } catch (e: Exception) {}
-                    }
-                    if (ok) outUri = Uri.fromFile(mp4File)
-                }
-                if (outUri == null) {
-                    // Fallback: legacy hardware-encoder path (works, but not copy-compatible)
-                    val cmd = "-y -loop 1 -i \"${pngFile.absolutePath}\" -c:v h264_mediacodec -t 3 -pix_fmt yuv420p -vf \"scale=trunc(iw/2)*2:trunc(ih/2)*2\" \"${mp4File.absolutePath}\""
-                    val renderResult = ffmpegEngine.executeCommand(cmd)
-                    if (renderResult is com.tharunbirla.librecuts.services.FFmpegRenderEngine.RenderResult.Success) {
-                        outUri = Uri.fromFile(mp4File)
-                    }
-                }
-
-                try { pngFile.delete() } catch (e: Exception) {}
-                outUri
-            }
-
-            isImportLoading = false
-            loadingScreen.visibility = View.GONE
-
-            if (resultUri != null) {
-                val freezeFrameItem = com.tharunbirla.librecuts.models.EditOperation.MergeItem(resultUri, 3000L)
-
-                var globalStartMs = 0L
-                for (i in 0 until index) {
-                    globalStartMs += sequenceItems[i].trimmedDurationMs
-                }
-                val relativePosMs = globalPos - globalStartMs
-                val splitSourceMs = item.trimStartMs + (relativePosMs * item.speed).toLong()
-
-                val atHeadOfFirstClip = (index == 0 && splitSourceMs <= item.trimStartMs)
-
-                if (atHeadOfFirstClip) {
-                    // Phase-9 fix: the freeze frame lands at position 0 of the timeline.
-                    // Promote the freeze video to the MAIN video slot and demote the current
-                    // main clip into the merge list. Previously the freeze file was discarded
-                    // (updateSequenceOrder(newItems.drop(1))) and the original main video was
-                    // trimmed to 3s instead, so the "frozen" segment played as normal video.
-                    tempInputFile = File(resultUri.path ?: resultUri.toString())
-                    originalMainVideoDurationMs = 3000L
-                    videoFileName = tempInputFile.name
-                    videoUri = resultUri
-                    viewModel.updateMainVideoTrim(0L, 3000L)
-                    viewModel.updateMainVideoSpeed(1.0f, null)
-                    // Whole old sequence shifts one slot to the right (freeze is the new main)
-                    viewModel.shiftSequenceOpIndices(-1, 1, 0, 1)
-                    viewModel.updateSequenceOrder(sequenceItems)
-                    selectedVideoIndex = null
-                    exitVideoEditingMode()
-                } else {
-                    val newItems = mutableListOf<com.tharunbirla.librecuts.models.EditOperation.MergeItem>()
-
-                    for (i in 0 until sequenceItems.size) {
-                        if (i == index) {
-                            if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
-                                val itemA = item.copy(trimEndMs = splitSourceMs)
-                                val itemB = item.copy(trimStartMs = splitSourceMs)
-                                newItems.add(itemA)
-                                newItems.add(freezeFrameItem)
-                                newItems.add(itemB)
-                            } else if (splitSourceMs <= item.trimStartMs) {
-                                newItems.add(freezeFrameItem)
-                                newItems.add(item)
-                            } else {
-                                newItems.add(item)
-                                newItems.add(freezeFrameItem)
-                            }
-                        } else {
-                            newItems.add(sequenceItems[i])
-                        }
-                    }
-
-                    // Keep Transition / MuteClip op indices aligned with the new layout:
-                    //  - main mid-split  : freeze lands at seq 1, second half at seq 2
-                    //  - merge mid-split : freeze lands at seq index+1, second half at index+2
-                    //  - insert before   : freeze takes the item's old position
-                    //  - insert after    : freeze lands at seq index+1
-                    if (index == 0) {
-                        viewModel.shiftSequenceOpIndices(0, 2, 1, 2, 0)
-                    } else if (splitSourceMs > item.trimStartMs && splitSourceMs < item.trimEndMs) {
-                        viewModel.shiftSequenceOpIndices(index, 2, index + 1, 2, index)
-                    } else if (splitSourceMs <= item.trimStartMs) {
-                        viewModel.shiftSequenceOpIndices(index - 1, 1, index, 1)
-                    } else {
-                        viewModel.shiftSequenceOpIndices(index, 1, index + 1, 1)
-                    }
-
-                    selectedVideoIndex = null
-                    exitVideoEditingMode()
-                    if (newItems.isNotEmpty()) {
-                        val primaryItem = newItems[0]
-                        viewModel.updateMainVideoTrim(primaryItem.trimStartMs, primaryItem.trimEndMs)
-                        viewModel.updateSequenceOrder(newItems.drop(1))
-                    }
-                }
-                Toast.makeText(this@VideoEditingActivity, R.string.toast_freeze_frame_added_to_sequence, Toast.LENGTH_SHORT).show()
-            } else {
-                Toast.makeText(this@VideoEditingActivity, R.string.toast_failed_to_create_freeze_frame, Toast.LENGTH_SHORT).show()
-            }
-        }
-    }
-'''
-
-s = replace_fun(s, "    private fun freezeFrameAtCurrentPosition() {", NEWFREEZE)
-
-# sanity: old buggy pattern must be gone, new markers present
-if "newItems.drop(1))" in s and "atHeadOfFirstClip" not in s:
-    die("old freeze insertion logic still present")
-if "atHeadOfFirstClip" not in s:
-    die("new freeze promote branch missing")
-if "buildFreezeFrameCommands" not in s:
-    die("smart freeze encode missing")
-if "shiftSequenceOpIndices" not in s:
-    die("op index realignment missing")
-
-with open(VEA, "w", encoding="utf-8") as f:
-    f.write(s)
-print("[phase9] step3: [ok] freezeFrameAtCurrentPosition rewritten")
-CUTPY
-fi
-
-###############################################################################
-# Step 4 -- VideoEditingActivity.kt: smart-export hook in saveAction()
-###############################################################################
-if [ "$APPLIED" = "1" ]; then
-  log "step4: [skip] saveAction already hooked"
-else
-python3 <<'CUTPY'
-import sys
-
-def die(m):
-    print("[phase9][ERROR] " + m)
-    sys.exit(1)
-
-VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-
-with open(VEA, encoding="utf-8") as f:
-    s = f.read()
-
-ANCHOR = '''                val tempOutputPath = tempOutputFile.absolutePath
-
-                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand('''
-if s.count(ANCHOR) != 1:
-    die("saveAction anchor count = %d (expected 1)" % s.count(ANCHOR))
-
-HOOK = r'''                val tempOutputPath = tempOutputFile.absolutePath
-
-                // SMART EXPORT (phase 9): when the project is copy-compatible (only
-                // trims / merges / freezes / transitions / mutes, all clips sharing the
-                // same codec parameters), build a segment plan that stream-copies the
-                // unchanged parts and only re-encodes the changed parts. Falls back to
-                // the consolidated render below whenever the planner says null.
-                val smartPlanPath = try {
-                    withContext(kotlinx.coroutines.Dispatchers.IO) {
-                        com.tharunbirla.librecuts.services.SmartExportPlanner.planSmartExport(
-                            context = this@VideoEditingActivity,
-                            project = project,
-                            sourceFilePath = sourceFilePath,
-                            outputFilePath = tempOutputPath,
-                            exportResolution = viewModel.exportResolution.value,
-                            exportFps = viewModel.exportFps.value,
-                            exportBitrate = viewModel.exportBitrate.value,
-                            audioOnly = isAudioOnly,
-                            advancedVideoCodec = viewModel.advancedExport.value.videoCodec,
-                            advancedAudioCodec = viewModel.advancedExport.value.audioCodec,
-                            advancedPreset = viewModel.advancedExport.value.preset,
-                            advancedAudioBitrate = viewModel.advancedExport.value.audioBitrate,
-                            customWidth = viewModel.advancedExport.value.customWidth,
-                            customHeight = viewModel.advancedExport.value.customHeight,
-                            videoFormat = viewModel.advancedExport.value.videoFormat
-                        )?.planFile?.absolutePath
-                    }
-                } catch (e: Exception) {
-                    Log.w(TAG, "Smart export planning failed, using consolidated render: ${e.message}", e)
-                    null
-                }
-
-                if (smartPlanPath != null) {
-                    val intent = Intent(this@VideoEditingActivity, com.tharunbirla.librecuts.services.ExportService::class.java).apply {
-                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_SMART_PLAN_PATH, smartPlanPath)
-                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TEMP_OUTPUT_PATH, tempOutputPath)
-                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TOTAL_DURATION_SECS, getTotalSequenceDuration() / 1000.0)
-                        putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_IS_AUDIO_ONLY, false)
-                    }
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        startForegroundService(intent)
-                    } else {
-                        startService(intent)
-                    }
-                    Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
-                    return@launch
-                }
-
-                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand('''
-
-s = s.replace(ANCHOR, HOOK, 1)
-
-if "SmartExportPlanner.planSmartExport" not in s:
-    die("smart export hook missing after insert")
-if s.count("EXTRA_SMART_PLAN_PATH") < 1:
-    die("smart export service extras missing after insert")
-
-with open(VEA, "w", encoding="utf-8") as f:
-    f.write(s)
-print("[phase9] step4: [ok] saveAction smart-export hook inserted")
-CUTPY
-fi
-
-###############################################################################
-# Step 5 -- ExportService.kt: smart multi-command export mode
-###############################################################################
-if [ "$APPLIED" = "1" ]; then
-  log "step5: [skip] ExportService already patched"
-else
-python3 <<'CUTPY'
-import sys
-
-def die(m):
-    print("[phase9][ERROR] " + m)
-    sys.exit(1)
-
-EXPS = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
-
-with open(EXPS, encoding="utf-8") as f:
-    s = f.read()
-
-# 5a. new extra constant
-A1 = '''        const val EXTRA_IS_AUDIO_ONLY = "extra_is_audio_only"'''
-if s.count(A1) != 1:
-    die("EXTRA_IS_AUDIO_ONLY anchor count = %d" % s.count(A1))
-R1 = A1 + '''
-        const val EXTRA_SMART_PLAN_PATH = "extra_smart_plan_path"'''
-s = s.replace(A1, R1, 1)
-
-# 5b. null-guard that accepts smart mode (no EXTRA_COMMAND)
-A2 = '''        val command = intent.getStringExtra(EXTRA_COMMAND) ?: return START_NOT_STICKY'''
-if s.count(A2) != 1:
-    die("EXTRA_COMMAND guard anchor count = %d" % s.count(A2))
-R2 = '''        val smartPlanPath = intent.getStringExtra(EXTRA_SMART_PLAN_PATH)
-        val command = intent.getStringExtra(EXTRA_COMMAND)
-        if (command == null && smartPlanPath == null) {
-            return START_NOT_STICKY
-        }'''
-s = s.replace(A2, R2, 1)
-
-# 5c. result computation branch
-A3 = '''                val result = ffmpegEngine.exportFinal(
-                    ffmpegCommand = command,
-                    totalDurationSecs = durationSecs,
-                    onProgress = { progress ->
-                        updateNotification(progress, "Exporting...")
-                        broadcastProgress(progress)
-                    }
-                )'''
-if s.count(A3) != 1:
-    die("exportFinal result block anchor count = %d" % s.count(A3))
-R3 = '''                val result: FFmpegRenderEngine.RenderResult = when {
+# ---- 3b. result computation in onStartCommand -----------------------------
+old = r"""                val result: FFmpegRenderEngine.RenderResult = when {
                     smartPlanPath != null -> runSmartExport(smartPlanPath)
                     command != null -> ffmpegEngine.exportFinal(
-                        ffmpegCommand = command,
-                        totalDurationSecs = durationSecs,
-                        onProgress = { progress ->
-                            updateNotification(progress, "Exporting...")
-                            broadcastProgress(progress)
+"""
+new = r"""                val smartOutcome: SmartExportOutcome? =
+                    if (smartPlanPath != null) runSmartExport(smartPlanPath) else null
+                val result: FFmpegRenderEngine.RenderResult = when {
+                    smartOutcome != null -> smartOutcome.result
+                    command != null -> ffmpegEngine.exportFinal(
+"""
+s = must_replace(s, old, new, "onStartCommand result block")
+
+# ---- 3c. Success branch: multi-file gallery save --------------------------
+old = r"""                when (result) {
+                    is FFmpegRenderEngine.RenderResult.Success -> {
+                        val savedUri = saveVideoToGallery(tempFile, isAudioOnly)
+                        if (savedUri != null) {
+                            showCompletionNotification("Export Complete", "Video saved to gallery", savedUri)
+                            broadcastSuccess(savedUri.toString())
+                            Log.d(TAG, "Export successful: $savedUri")
+                        } else {
+                            showCompletionNotification("Export Failed", "Failed to save video to gallery", null)
+                            broadcastFailure("Failed to save video to gallery")
                         }
-                    )
-                    else -> FFmpegRenderEngine.RenderResult.Failure("No export command provided")
-                }'''
-s = s.replace(A3, R3, 1)
-
-# 5d. cleanup of the smart work dir
-A4 = '''                if (concatFile?.exists() == true) concatFile.delete()'''
-if s.count(A4) != 1:
-    die("concat cleanup anchor count = %d" % s.count(A4))
-R4 = A4 + '''
-                smartPlanPath?.let { sp ->
-                    val smartWorkDir = File(sp).parentFile
-                    if (smartWorkDir != null && smartWorkDir.exists()) {
-                        smartWorkDir.listFiles()?.forEach { it.delete() }
-                        smartWorkDir.delete()
                     }
-                }'''
-s = s.replace(A4, R4, 1)
+"""
+new = r"""                when (result) {
+                    is FFmpegRenderEngine.RenderResult.Success -> {
+                        // Phase 10: smart separate-files mode produces one output
+                        // file per timeline clip - each becomes its own gallery entry.
+                        val smartFiles = smartOutcome?.outputFiles ?: emptyList()
+                        val filesToSave = if (smartFiles.isNotEmpty()) smartFiles else listOf(tempFile)
+                        if (filesToSave.size > 1) {
+                            val saved = mutableListOf<Uri>()
+                            for (f in filesToSave) {
+                                val uri = saveVideoToGallery(f, false)
+                                if (uri != null) saved.add(uri)
+                            }
+                            if (saved.isNotEmpty()) {
+                                showCompletionNotification(
+                                    "Export Complete",
+                                    "${saved.size} of ${filesToSave.size} files saved to gallery",
+                                    saved.first()
+                                )
+                                broadcastSuccess(saved.first().toString())
+                                Log.d(TAG, "Separate export successful: ${saved.size} files")
+                            } else {
+                                showCompletionNotification("Export Failed", "Failed to save videos to gallery", null)
+                                broadcastFailure("Failed to save videos to gallery")
+                            }
+                        } else {
+                            val savedUri = saveVideoToGallery(filesToSave[0], isAudioOnly)
+                            if (savedUri != null) {
+                                showCompletionNotification("Export Complete", "Video saved to gallery", savedUri)
+                                broadcastSuccess(savedUri.toString())
+                                Log.d(TAG, "Export successful: $savedUri")
+                            } else {
+                                showCompletionNotification("Export Failed", "Failed to save video to gallery", null)
+                                broadcastFailure("Failed to save video to gallery")
+                            }
+                        }
+                    }
+"""
+s = must_replace(s, old, new, "Success branch")
 
-# 5e. runSmartExport implementation
-A5 = '''    private fun createNotificationChannel() {'''
-if s.count(A5) != 1:
-    die("createNotificationChannel anchor count = %d" % s.count(A5))
-R5 = r'''    /**
+# ---- 3d. runSmartExport: outcome + plan parser ----------------------------
+old = r"""    /**
      * Smart export mode (phase 9): runs the plan produced by
      * SmartExportPlanner command-by-command with aggregated progress. The
      * last command is the concat step that writes the final output file, so
@@ -1339,211 +841,831 @@ R5 = r'''    /**
         if (commands.isEmpty()) {
             return FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan")
         }
-
-        val totalWeight = commands.sumOf { it.second }.coerceAtLeast(0.001)
-        var completedWeight = 0.0
-        var lastResult: FFmpegRenderEngine.RenderResult =
-            FFmpegRenderEngine.RenderResult.Failure("No commands executed")
-
-        for (pair in commands) {
-            val cmd = pair.first
-            val weight = pair.second
-            val base = completedWeight
-            val result = ffmpegEngine.exportFinal(
-                ffmpegCommand = cmd,
-                totalDurationSecs = if (weight > 0.01) weight else null,
-                onProgress = { pct ->
-                    val overall = (((base + pct / 100.0 * weight) / totalWeight) * 100)
-                        .toInt().coerceIn(0, 99)
-                    updateNotification(overall, "Exporting...")
-                    broadcastProgress(overall)
-                }
+"""
+new = r"""    /**
+     * Smart export mode (phase 9/10): runs the plan produced by
+     * SmartExportPlanner command-by-command with aggregated progress. In
+     * merged mode the last command is the concat step that writes the final
+     * output file; in separate mode (phase 10) every segment file IS an
+     * output. plan.json is read in object form ({"separate":...,
+     * "outputs":[...], "commands":[...]}) with the phase 9 plain-array form
+     * still accepted.
+     */
+    private suspend fun runSmartExport(planPath: String): SmartExportOutcome {
+        val planFile = File(planPath)
+        if (!planFile.exists()) {
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Smart export plan not found"),
+                emptyList()
             )
-            if (result !is FFmpegRenderEngine.RenderResult.Success) {
-                return result
-            }
-            completedWeight += weight
-            lastResult = result
         }
+        val parsed: ParsedPlan = try {
+            parseSmartPlan(planFile)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to parse smart export plan: ${e.message}", e)
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Invalid smart export plan"),
+                emptyList()
+            )
+        }
+        val commands = parsed.commands
+        if (commands.isEmpty()) {
+            return SmartExportOutcome(
+                FFmpegRenderEngine.RenderResult.Failure("Empty smart export plan"),
+                emptyList()
+            )
+        }
+"""
+s = must_replace(s, old, new, "runSmartExport head")
 
-        broadcastProgress(100)
+# ---- 3e. runSmartExport tail: outcome return + parseSmartPlan -------------
+old = r"""        broadcastProgress(100)
         updateNotification(100, "Exporting...")
         return lastResult
     }
+"""
+new = r"""        broadcastProgress(100)
+        updateNotification(100, "Exporting...")
+        return SmartExportOutcome(lastResult, parsed.outputs.map { File(it) })
+    }
 
-    private fun createNotificationChannel() {'''
-s = s.replace(A5, R5, 1)
+    /**
+     * Parse a phase 10 plan.json (object form) or a phase 9 plan (plain
+     * array of {cmd, weight} objects; outputs stay empty -> the caller falls
+     * back to the temp output path).
+     */
+    private fun parseSmartPlan(planFile: File): ParsedPlan {
+        val raw = planFile.readText().trim()
+        if (raw.startsWith("[")) {
+            val arr = org.json.JSONArray(raw)
+            val list = mutableListOf<Pair<String, Double>>()
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+            }
+            return ParsedPlan(list, emptyList())
+        }
+        val obj = org.json.JSONObject(raw)
+        val arr = obj.getJSONArray("commands")
+        val list = mutableListOf<Pair<String, Double>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(Pair(o.getString("cmd"), o.optDouble("weight", 1.0)))
+        }
+        val outArr = obj.optJSONArray("outputs")
+        val outs = mutableListOf<String>()
+        if (outArr != null) {
+            for (i in 0 until outArr.length()) outs.add(outArr.getString(i))
+        }
+        return ParsedPlan(list, outs)
+    }
+"""
+s = must_replace(s, old, new, "runSmartExport tail")
 
-for marker in ["runSmartExport", "EXTRA_SMART_PLAN_PATH", "commands.sumOf"]:
-    if marker not in s:
-        die("ExportService marker missing after patch: " + marker)
-
-with open(EXPS, "w", encoding="utf-8") as f:
-    f.write(s)
-print("[phase9] step5: [ok] ExportService smart mode added")
-CUTPY
+wr(E, s)
+print("[phase10] step3: ExportService patched (outcome type, plan parser, multi-file gallery save)")
+ESPY
 fi
 
-###############################################################################
-# Step 6 -- hard verification gate (exits 1 BEFORE anything gets committed)
-###############################################################################
-log "step6: verification gate"
+echo "[phase10] step3 done"
 
-python3 <<'CUTPY'
-import re, subprocess, sys
+###############################################################################
+# Step 4 -- VideoEditingActivity.kt (planner call args + fallback toast)
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step4: [skip] VEA already patched"
+else
+python3 <<'VEAPY'
+import sys
 
 def die(m):
-    print("[phase9][GATE-FAIL] " + m)
+    print("[phase10][ERROR] " + m)
+    sys.exit(1)
+
+def rw(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def wr(path, s):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def must_replace(s, old, new, what):
+    if old not in s:
+        die("VEA anchor missing: " + what)
+    if s.count(old) != 1:
+        die("VEA anchor not unique (%d hits): %s" % (s.count(old), what))
+    return s.replace(old, new, 1)
+
+V = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+s = rw(V)
+
+# ---- 4a. planner call: four new named arguments ---------------------------
+old = r"""                            customWidth = viewModel.advancedExport.value.customWidth,
+                            customHeight = viewModel.advancedExport.value.customHeight,
+                            videoFormat = viewModel.advancedExport.value.videoFormat
+                        )?.planFile?.absolutePath
+"""
+new = r"""                            customWidth = viewModel.advancedExport.value.customWidth,
+                            customHeight = viewModel.advancedExport.value.customHeight,
+                            videoFormat = viewModel.advancedExport.value.videoFormat,
+                            keyframeCut = viewModel.advancedExport.value.keyframeCut,
+                            exportSeparateFiles = viewModel.advancedExport.value.exportSeparateFiles,
+                            movFastStart = viewModel.advancedExport.value.movFastStart,
+                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata
+                        )?.planFile?.absolutePath
+"""
+s = must_replace(s, old, new, "planner call args")
+
+# ---- 4b. separate-files fallback toast on the legacy path -----------------
+old = r"""                    Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand(
+"""
+new = r"""                    Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+
+                // Separate-files mode only works on the smart pipeline; when the
+                // planner bailed out (speed / overlays / mixed codecs / ...) we
+                // tell the user instead of silently exporting one merged file.
+                if (viewModel.advancedExport.value.exportSeparateFiles) {
+                    Toast.makeText(
+                        this@VideoEditingActivity,
+                        "Separate-files export needs smart-compatible edits - exporting one merged file instead",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+
+                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand(
+"""
+s = must_replace(s, old, new, "separate fallback toast")
+
+wr(V, s)
+print("[phase10] step4: VEA patched (planner args + separate fallback toast)")
+VEAPY
+fi
+
+echo "[phase10] step4 done"
+
+###############################################################################
+# Step 5 -- ExportSettingsDialog.kt (parts 1+2+3+4 UI + smart preview)
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step5: [skip] ExportSettingsDialog already patched"
+else
+python3 <<'ESDPY'
+import sys
+
+def die(m):
+    print("[phase10][ERROR] " + m)
+    sys.exit(1)
+
+def rw(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+def wr(path, s):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(s)
+
+def must_replace(s, old, new, what):
+    if old not in s:
+        die("ESD anchor missing: " + what)
+    if s.count(old) != 1:
+        die("ESD anchor not unique (%d hits): %s" % (s.count(old), what))
+    return s.replace(old, new, 1)
+
+D = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+s = rw(D)
+
+# ---- 5a. class doc: v3 -> v4 ----------------------------------------------
+old = r""" * CutStudio - Export settings dialog (v3).
+ *
+"""
+new = r""" * CutStudio - Export settings dialog (v4).
+ *
+ * v4 (phase 10, LosslessCut-inspired):
+ *  - Smart-export preview: eligibility is probed off-thread and the dialog
+ *    shows the plan that WILL run (stream-copied vs re-encoded seconds,
+ *    lossless concat) instead of always showing the legacy re-encode.
+ *  - Cut mode: Normal (accurate trim re-encode) vs Keyframe (trim points
+ *    snap to keyframes -> 100% stream copy, one-GOP tolerance).
+ *  - Export mode: single merged file or one file per timeline clip.
+ *  - MP4 faststart + source metadata preservation toggles.
+ *
+"""
+s = must_replace(s, old, new, "class doc header")
+
+# ---- 5b. new state fields --------------------------------------------------
+old = "    private var suppressBoxClear = false\n"
+new = r'''    private var suppressBoxClear = false
+    private var selKeyframeCut = false
+    private var selSeparateFiles = false
+    private var selFastStart = true
+    private var selPreserveMetadata = true
+
+    // ---- smart export analysis (phase 10, cached for the dialog lifetime) ----
+    private var smartAnalysis: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis? = null
+    private var smartAnalysisDone = false
+'''
+s = must_replace(s, old, new, "state fields")
+
+# ---- 5c. show(): init new selections + start analysis thread --------------
+old = "        parseBitrate(snapBitrate)\n"
+new = r'''        parseBitrate(snapBitrate)
+
+        selKeyframeCut = snapAdvanced.keyframeCut
+        selSeparateFiles = snapAdvanced.exportSeparateFiles
+        selFastStart = snapAdvanced.movFastStart
+        selPreserveMetadata = snapAdvanced.preserveMetadata
+
+        // Smart-export eligibility depends only on the PROJECT (ops + clip
+        // parameters), never on the dialog settings - so it is probed once,
+        // off the main thread, and cached for the lifetime of the dialog.
+        smartAnalysisDone = false
+        smartAnalysis = null
+        val analysisProject = viewModel.project.value
+        val analysisSource = sourceFile?.absolutePath
+        if (analysisProject != null && analysisSource != null) {
+            Thread {
+                val result = try {
+                    com.tharunbirla.librecuts.services.SmartExportPlanner.analyzeSmartExport(
+                        activity, analysisProject, analysisSource
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                activity.runOnUiThread {
+                    smartAnalysis = result
+                    smartAnalysisDone = true
+                    refresh()
+                }
+            }.start()
+        }
+'''
+s = must_replace(s, old, new, "show() analysis bootstrap")
+
+# ---- 5d. refresh(): push the new fields into the ViewModel ----------------
+old = r"""        viewModel.setAdvancedExport(
+            VideoEditingViewModel.AdvancedExport(
+                videoFormat = effectiveVideoFormat(),
+                videoCodec = selCodec,
+                preset = selPreset,
+                audioCodec = selAudioCodec,
+                audioBitrate = selAudioBitrate,
+                audioOnlyFormat = effectiveAudioOnlyFormat(),
+                customWidth = customW,
+                customHeight = customH
+            )
+        )
+"""
+new = r"""        viewModel.setAdvancedExport(
+            VideoEditingViewModel.AdvancedExport(
+                videoFormat = effectiveVideoFormat(),
+                videoCodec = selCodec,
+                preset = selPreset,
+                audioCodec = selAudioCodec,
+                audioBitrate = selAudioBitrate,
+                audioOnlyFormat = effectiveAudioOnlyFormat(),
+                customWidth = customW,
+                customHeight = customH,
+                keyframeCut = selKeyframeCut,
+                exportSeparateFiles = selSeparateFiles,
+                movFastStart = selFastStart,
+                preserveMetadata = selPreserveMetadata
+            )
+        )
+"""
+s = must_replace(s, old, new, "refresh setAdvancedExport")
+
+# ---- 5e. estimateSizeText: smart branch ------------------------------------
+old = r"""    /** Size estimate that follows what the REAL command will do (copy vs re-encode). */
+    private fun estimateSizeText(cmd: String?): String {
+        val durSec = durationMs / 1000.0
+        if (durSec <= 0.0) return "..."
+"""
+new = r"""    /** Size estimate that follows what the REAL command will do (copy vs re-encode). */
+    private fun estimateSizeText(cmd: String?): String {
+        val durSec = durationMs / 1000.0
+        if (durSec <= 0.0) return "..."
+        val smart = smartEstimateBytes()
+        if (smart != null) return "~" + formatBytes(smart) + " (smart export)"
+"""
+s = must_replace(s, old, new, "estimateSizeText smart branch")
+
+# ---- 5f. commandPreviewText: smart-first -----------------------------------
+old = r"""    /** Real command + a short note when "Same as input" was requested but is impossible. */
+    private fun commandPreviewText(cmd: String?): String {
+        val base = when {
+            cmd == null -> "(preview unavailable)"
+            cmd.contains("(CONCAT_LIST:") ->
+                cmd.substring(0, cmd.indexOf("(CONCAT_LIST:")).trim() +
+                    "  ...(+concat list appended at export time)"
+            else -> cmd
+        }
+        if (cmd == null) return base
+        val notes = mutableListOf<String>()
+        if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
+            notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
+        }
+        if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
+            notes.add("audio processing present -> audio re-encoded as shown")
+        }
+        return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
+    }
+"""
+new = r"""    /** Real command + notes. Shows the SMART plan when it will actually run. */
+    private fun commandPreviewText(cmd: String?): String {
+        val smart = buildSmartSummary()
+        if (smart != null) return smart
+        val base = when {
+            cmd == null -> "(preview unavailable)"
+            cmd.contains("(CONCAT_LIST:") ->
+                cmd.substring(0, cmd.indexOf("(CONCAT_LIST:")).trim() +
+                    "  ...(+concat list appended at export time)"
+            else -> cmd
+        }
+        if (cmd == null) return base
+        val notes = mutableListOf<String>()
+        val unavailable = smartUnavailableNote()
+        if (unavailable != null) {
+            notes.add(unavailable)
+        } else {
+            if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
+                notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
+            }
+            if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
+                notes.add("audio processing present -> audio re-encoded as shown")
+            }
+        }
+        return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
+    }
+"""
+s = must_replace(s, old, new, "commandPreviewText")
+
+# ---- 5g. smart preview helpers (before the view-setup section) -------------
+old = "    // -------------------------------------------------------------- view setup\n"
+new = r'''    // ------------------------------------------------------ smart export preview
+
+    /**
+     * Non-null when the smart pipeline cannot run, with a human readable
+     * reason (project-level incompatibility or a settings gate).
+     */
+    private fun smartUnavailableNote(): String? {
+        val a = smartAnalysis ?: return if (smartAnalysisDone) "smart export analysis failed" else null
+        a.reason?.let { return "smart export unavailable: $it - full re-encode used" }
+        val gate = com.tharunbirla.librecuts.services.SmartExportPlanner.settingsBlockSmart(
+            a,
+            selRes, selFps,
+            viewModel.exportAudioOnly.value,
+            selCodec, selAudioCodec,
+            customW, customH,
+            effectiveVideoFormat()
+        )
+        return gate?.let { "smart export disabled by these settings: $it - full re-encode used" }
+    }
+
+    /**
+     * Human-readable summary of the smart plan that WILL run at export time:
+     * per-segment copy/encode split, cut mode, export mode and the final
+     * assembly command. Returns null when the smart path is unavailable, so
+     * the legacy command preview stays in charge.
+     */
+    private fun buildSmartSummary(): String? {
+        val a = smartAnalysis ?: return null
+        if (a.reason != null) return null
+        if (smartUnavailableNote() != null) return null
+        if (selSeparateFiles) {
+            val copy = a.clips.count { it.fullRange || selKeyframeCut }
+            val enc = a.clips.size - copy
+            val sb = StringBuilder()
+            sb.append("smart export: ").append(a.clips.size).append(" separate output files (")
+            sb.append(copy).append(" stream-copied losslessly")
+            if (enc > 0) sb.append(", ").append(enc).append(" re-encoded at trim points")
+            sb.append(")")
+            if (selKeyframeCut) {
+                sb.append("\nkeyframe cut ON: trim points snap to keyframes (all copy, +/- one GOP accuracy)")
+            } else if (enc > 0) {
+                sb.append("\n(transitions and faststart apply to the merged single-file mode only)")
+            }
+            return sb.toString()
+        }
+        var copySec = 0.0
+        var encSec = 0.0
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val dLeft = if (i > 0) a.transitions[i - 1] ?: 0L else 0L
+            val dRight = if (i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
+            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            if (spanMs <= 0L) continue
+            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        encSec += a.transitions.values.sum() / 1000.0
+        val sb = StringBuilder()
+        sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+        if (a.hasAudio) sb.append(" -map 0:a:0")
+        if (selPreserveMetadata) sb.append(" -map_metadata 1")
+        sb.append(" -c copy -bsf:v dump_extra")
+        if (selFastStart) sb.append(" -movflags +faststart")
+        sb.append(" output.mp4")
+        sb.append("\n\n(smart export: ").append(a.clips.size).append(" segments - ")
+        sb.append(String.format(Locale.US, "%.1fs", copySec)).append(" stream-copied losslessly")
+        if (encSec > 0.01) {
+            sb.append(", ").append(String.format(Locale.US, "%.1fs", encSec)).append(" re-encoded")
+        }
+        if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
+        sb.append("; final assembly is a lossless concat)")
+        return sb.toString()
+    }
+
+    /** Size estimate that follows the smart plan (copied vs re-encoded parts). */
+    private fun smartEstimateBytes(): Double? {
+        val a = smartAnalysis ?: return null
+        if (a.reason != null) return null
+        if (smartUnavailableNote() != null) return null
+        var copySec = 0.0
+        var encSec = 0.0
+        val srcKbpsTotal = if (srcKbps > 0) srcKbps else 8000
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val dLeft = if (!selSeparateFiles && i > 0) a.transitions[i - 1] ?: 0L else 0L
+            val dRight = if (!selSeparateFiles && i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
+            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            if (spanMs <= 0L) continue
+            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        if (!selSeparateFiles) encSec += a.transitions.values.sum() / 1000.0
+        val aKbps = when {
+            selAudioCodec == "pcm_s16le" -> 1411
+            selAudioCodec == "flac" -> 900
+            else -> selAudioBitrate.dropLast(1).toIntOrNull() ?: 128
+        }
+        return (copySec * srcKbpsTotal + encSec * (effectiveVideoKbps() + aKbps)) * 1000.0 / 8.0
+    }
+
+    // -------------------------------------------------------------- view setup
+'''
+s = must_replace(s, old, new, "smart preview helpers insertion")
+
+# ---- 5h. bindViews(): four new chip rows -----------------------------------
+old = r"""        // ---- Preset ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgPreset), mapOf(
+            R.id.chipPresetUltrafast to "ultrafast", R.id.chipPresetSuperfast to "superfast",
+            R.id.chipPresetVeryfast to "veryfast", R.id.chipPresetFaster to "faster",
+            R.id.chipPresetFast to "fast", R.id.chipPresetMedium to "medium",
+            R.id.chipPresetSlow to "slow", R.id.chipPresetSlower to "slower",
+            R.id.chipPresetVeryslow to "veryslow"),
+            selPreset, true
+        ) { picked -> selPreset = picked ?: "medium" }
+"""
+new = r"""        // ---- Preset ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgPreset), mapOf(
+            R.id.chipPresetUltrafast to "ultrafast", R.id.chipPresetSuperfast to "superfast",
+            R.id.chipPresetVeryfast to "veryfast", R.id.chipPresetFaster to "faster",
+            R.id.chipPresetFast to "fast", R.id.chipPresetMedium to "medium",
+            R.id.chipPresetSlow to "slow", R.id.chipPresetSlower to "slower",
+            R.id.chipPresetVeryslow to "veryslow"),
+            selPreset, true
+        ) { picked -> selPreset = picked ?: "medium" }
+
+        // ---- Cut mode (phase 10): accurate trim vs keyframe snap ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgCutMode), mapOf(
+            R.id.chipCutNormal to false, R.id.chipCutKeyframe to true),
+            selKeyframeCut, true
+        ) { picked -> selKeyframeCut = picked ?: false }
+
+        // ---- Export mode (phase 10): merged single file vs one file per clip ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgExportMode), mapOf(
+            R.id.chipModeMerged to false, R.id.chipModeSeparate to true),
+            selSeparateFiles, true
+        ) { picked -> selSeparateFiles = picked ?: false }
+
+        // ---- MP4 faststart (phase 10): moov atom at the front ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgFastStart), mapOf(
+            R.id.chipFsOn to true, R.id.chipFsOff to false),
+            selFastStart, true
+        ) { picked -> selFastStart = picked ?: true }
+
+        // ---- Source metadata (phase 10): keep or strip ----
+        wireChipRow(v.findViewById<ChipGroup>(R.id.cgMetadata), mapOf(
+            R.id.chipMetaKeep to true, R.id.chipMetaStrip to false),
+            selPreserveMetadata, true
+        ) { picked -> selPreserveMetadata = picked ?: true }
+"""
+s = must_replace(s, old, new, "bindViews new chip rows")
+
+wr(D, s)
+print("[phase10] step5: ExportSettingsDialog patched (smart preview, cut/export/metadata/faststart rows)")
+ESDPY
+fi
+
+echo "[phase10] step5 done"
+
+###############################################################################
+# Step 6 -- dialog_export_settings.xml (four new chip rows)
+###############################################################################
+if [ "$APPLIED" = "1" ]; then
+  log "step6: [skip] dialog XML already patched"
+else
+python3 <<'XMLPY'
+import sys
+
+def die(m):
+    print("[phase10][ERROR] " + m)
+    sys.exit(1)
+
+X = "app/src/main/res/layout/dialog_export_settings.xml"
+with open(X, "r", encoding="utf-8") as f:
+    s = f.read()
+
+old = """        <!-- ======================= FFmpeg command preview ======================= -->
+"""
+new = r'''        <!-- ======================= Cut Mode (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Cut Mode"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgCutMode"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipCutNormal" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Normal (accurate)" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipCutKeyframe" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Keyframe (fast, lossless)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= Export Mode (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Export Mode"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgExportMode"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipModeMerged" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Single file (merged)" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipModeSeparate" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Separate files (one per clip)" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= MP4 Faststart (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="MP4 Faststart (instant playback)"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgFastStart"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipFsOn" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="On" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipFsOff" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Off" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= Source Metadata (phase 10) ======================= -->
+        <TextView android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:layout_marginTop="16dp" android:text="Source Metadata"
+            android:textColor="@color/iconSecondary" android:textSize="12sp"
+            android:letterSpacing="0.05" android:fontFamily="sans-serif-medium" />
+        <HorizontalScrollView android:layout_width="match_parent" android:layout_height="wrap_content"
+            android:layout_marginTop="6dp" android:scrollbars="none"
+            android:requiresFadingEdge="horizontal" android:fadingEdgeLength="16dp">
+            <com.google.android.material.chip.ChipGroup android:id="@+id/cgMetadata"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                app:singleSelection="true" app:selectionRequired="true">
+                <com.google.android.material.chip.Chip android:id="@+id/chipMetaKeep" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Keep" android:checked="true" />
+                <com.google.android.material.chip.Chip android:id="@+id/chipMetaStrip" style="@style/Widget.MaterialComponents.Chip.Choice" android:layout_width="wrap_content" android:layout_height="wrap_content" android:text="Strip" />
+            </com.google.android.material.chip.ChipGroup>
+        </HorizontalScrollView>
+
+        <!-- ======================= FFmpeg command preview ======================= -->
+'''
+
+if s.count(old) != 1:
+    die("XML anchor (FFmpeg command preview comment) not found or not unique")
+s = s.replace(old, new, 1)
+
+with open(X, "w", encoding="utf-8") as f:
+    f.write(s)
+print("[phase10] step6: dialog XML patched (cut mode / export mode / faststart / metadata rows)")
+XMLPY
+fi
+
+echo "[phase10] step6 done"
+
+###############################################################################
+# Step 7 -- verification gate (inventory, balance, XML, leftovers, survival,
+#           scope, .github policy, ASCII) -- exits 1 BEFORE anything commits
+###############################################################################
+log "step7: running verification gate"
+
+python3 <<'GATEPY'
+import re
+import subprocess
+import sys
+import xml.dom.minidom as minidom
+
+def die(m):
+    print("[phase10][ERROR] " + m)
     sys.exit(1)
 
 def rd(p):
-    with open(p, encoding="utf-8") as f:
+    with open(p, "r", encoding="utf-8") as f:
         return f.read()
 
 def head(p):
-    r = subprocess.run(["git", "show", "HEAD:" + p],
-                       capture_output=True, text=True)
-    return r.stdout if r.returncode == 0 else None
+    r = subprocess.run(["git", "show", "HEAD:" + p], capture_output=True, text=True)
+    if r.returncode != 0:
+        die("git show failed for " + p)
+    return r.stdout
 
-def fun_names(src):
-    names = set()
-    for m in re.finditer(r"\bfun\s+([A-Za-z0-9_]+)\s*\(", src):
-        names.add(m.group(1))
-    for m in re.finditer(r"\bfun\s+[A-Za-z0-9_.]+\.([A-Za-z0-9_]+)\s*\(", src):
-        names.add(m.group(1))
-    return names
-
-def check_inventory(path, expected_removed, expected_added):
-    old_src = head(path)
-    if old_src is None:
-        return  # new file (planner) or not comparable
-    new_src = rd(path)
-    old = fun_names(old_src)
-    new = fun_names(new_src)
-    removed = old - new
-    added = new - old
-    exp_rm = set(expected_removed)
-    exp_ad = set(expected_added)
-    if removed == exp_rm and added == exp_ad:
-        return
-    if not removed and not added:
-        return  # already committed at HEAD (RUN 3)
-    die("function inventory mismatch for %s:\n  unexpected removals: %s\n  unexpected additions: %s\n  missing removals: %s\n  missing additions: %s"
-        % (path, sorted(removed - exp_rm), sorted(added - exp_ad),
-           sorted(exp_rm - removed), sorted(exp_ad - added)))
-
+VM = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-EXT = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt"
+ESD = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
 EXPS = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
 PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+XML = "app/src/main/res/layout/dialog_export_settings.xml"
+FILES = [VM, VEA, ESD, EXPS, PLANNER, XML]
 
-# freezeFrameAtCurrentPosition is REPLACED (same name) -> no inventory change;
-# saveAction hook adds no function. Ext and ExportService gain exactly one each.
-check_inventory(VEA, [], [])
-check_inventory(EXT, [], ["shiftSequenceOpIndices"])
-check_inventory(EXPS, [], ["runSmartExport"])
+vm, vea, esd, exps, planner = rd(VM), rd(VEA), rd(ESD), rd(EXPS), rd(PLANNER)
 
-# ---- brace balance ----
-for p in [VEA, EXT, EXPS]:
-    new_src = rd(p)
-    old_src = head(p)
-    if old_src is not None and old_src.strip():
-        do = old_src.count("{") - new_src.count("{")
-        dc = old_src.count("}") - new_src.count("}")
-        if do != dc:
-            die("brace delta mismatch for %s (open removed %d, close removed %d)"
-                % (p, do, dc))
-    if new_src.count("{") != new_src.count("}"):
-        die("unbalanced braces in %s (open %d, close %d)"
-            % (p, new_src.count("{"), new_src.count("}")))
+# ---- 7a. new-symbol inventory ---------------------------------------------
+inv = [
+    (PLANNER, planner, "fun analyzeSmartExport("),
+    (PLANNER, planner, "fun settingsBlockSmart("),
+    (PLANNER, planner, "private fun analyzeInternal("),
+    (PLANNER, planner, "data class SmartClipInfo("),
+    (PLANNER, planner, "data class SmartAnalysis("),
+    (PLANNER, planner, "keyframeCut: Boolean = false,"),
+    (PLANNER, planner, "keyframeCut: Boolean,"),
+    (PLANNER, planner, "exportSeparateFiles: Boolean,"),
+    (PLANNER, planner, "val merged = !exportSeparateFiles"),
+    (PLANNER, planner, "} else if (keyframeCut) {"),
+    (PLANNER, planner, "-avoid_negative_ts make_zero"),
+    (PLANNER, planner, "val trans = if (merged) clampedTransitions[i] else null"),
+    (PLANNER, planner, 'planObj.put("separate", exportSeparateFiles)'),
+    (PLANNER, planner, 'planObj.put("outputs", JSONArray(outputs))'),
+    (EXPS, exps, "data class SmartExportOutcome("),
+    (EXPS, exps, "private data class ParsedPlan("),
+    (EXPS, exps, "private fun parseSmartPlan("),
+    (EXPS, exps, "private suspend fun runSmartExport(planPath: String): SmartExportOutcome"),
+    (EXPS, exps, "files saved to gallery"),
+    (VM, vm, "val keyframeCut: Boolean = false,"),
+    (VM, vm, "val exportSeparateFiles: Boolean = false,"),
+    (VM, vm, "val movFastStart: Boolean = true,"),
+    (VM, vm, "val preserveMetadata: Boolean = true"),
+    (VM, vm, "private fun appendOutputContainerArgs(cmd: StringBuilder)"),
+    (VM, vm, '-movflags +faststart'),
+    (VM, vm, "-map_metadata 0"),
+    (VM, vm, "-map_metadata -1"),
+    (VEA, vea, "keyframeCut = viewModel.advancedExport.value.keyframeCut,"),
+    (VEA, vea, "exportSeparateFiles = viewModel.advancedExport.value.exportSeparateFiles,"),
+    (VEA, vea, "movFastStart = viewModel.advancedExport.value.movFastStart,"),
+    (VEA, vea, "preserveMetadata = viewModel.advancedExport.value.preserveMetadata"),
+    (VEA, vea, "Separate-files export needs smart-compatible edits"),
+    (ESD, esd, "fun smartUnavailableNote(): String?"),
+    (ESD, esd, "fun buildSmartSummary(): String?"),
+    (ESD, esd, "fun smartEstimateBytes(): Double?"),
+    (ESD, esd, "R.id.cgCutMode"),
+    (ESD, esd, "R.id.chipCutKeyframe"),
+    (ESD, esd, "R.id.cgExportMode"),
+    (ESD, esd, "R.id.chipModeSeparate"),
+    (ESD, esd, "R.id.cgFastStart"),
+    (ESD, esd, "R.id.chipFsOn"),
+    (ESD, esd, "R.id.cgMetadata"),
+    (ESD, esd, "R.id.chipMetaKeep"),
+    (ESD, esd, "keyframeCut = selKeyframeCut,"),
+    (ESD, esd, "exportSeparateFiles = selSeparateFiles,"),
+    (ESD, esd, "movFastStart = selFastStart,"),
+    (ESD, esd, "preserveMetadata = selPreserveMetadata"),
+    (ESD, esd, "analyzeSmartExport("),
+    (ESD, esd, "settingsBlockSmart("),
+    (ESD, esd, "smartEstimateBytes()"),
+]
+for path, body, tok in inv:
+    if tok not in body:
+        die("inventory: expected token missing in %s: %r" % (path, tok))
+print("[ok] inventory: %d new-symbol tokens present" % len(inv))
 
-psrc = rd(PLANNER)
-if psrc.count("{") != psrc.count("}"):
-    die("unbalanced braces in %s (open %d, close %d)"
-        % (PLANNER, psrc.count("{"), psrc.count("}")))
-if psrc.count("(") != psrc.count(")"):
-    die("unbalanced parens in %s (open %d, close %d)"
-        % (PLANNER, psrc.count("("), psrc.count(")")))
+# ---- 7b. exact wiring counts ----------------------------------------------
+checks = [
+    (vm, vm.count("appendOutputContainerArgs("), 4, "VM appendOutputContainerArgs decl+calls"),
+    (esd, esd.count("wireChipRow("), 13, "ESD wireChipRow decl+calls (1+12)"),
+    (planner, planner.count("keyframeCut"), 4, "planner keyframeCut mentions"),
+    (planner, planner.count("-map_metadata 1"), 3, "planner -map_metadata 1 (doc+comment+code)"),
+    (planner, planner.count("-movflags +faststart"), 2, "planner faststart (doc+code)"),
+    (exps, exps.count("saveVideoToGallery("), 3, "ES saveVideoToGallery decl+calls"),
+]
+for body, got, want, what in checks:
+    if got != want:
+        die("count gate: %s = %d, expected %d" % (what, got, want))
+print("[ok] wiring counts: 6/6")
 
-print("[phase9] gate: inventory + brace checks passed")
-CUTPY
+# ---- 7c. brace/paren balance vs HEAD --------------------------------------
+for f in [VM, VEA, ESD, EXPS, PLANNER]:
+    new, old = rd(f), head(f)
+    db = new.count("{") - old.count("{") - (new.count("}") - old.count("}"))
+    dp = new.count("(") - old.count("(") - (new.count(")") - old.count(")"))
+    if db != 0:
+        die("brace delta mismatch in %s (open-close diff %+d)" % (f, db))
+    if dp != 0:
+        die("paren delta mismatch in %s (open-close diff %+d)" % (f, dp))
+    nb = new.count("{") - new.count("}")
+    if abs(nb) > 0 and f != VEA:
+        die("absolute brace imbalance in %s (%+d)" % (f, nb))
+print("[ok] brace/paren balance vs HEAD for 5 Kotlin files")
 
-# ---- positive marker checks (all new wiring must be present) ----
-for t in "SmartExportPlanner.planSmartExport" "atHeadOfFirstClip" \
-         "buildFreezeFrameCommands" "shiftSequenceOpIndices" \
-         "EXTRA_SMART_PLAN_PATH" "runSmartExport"; do
-    grep -rq -- "$t" app/src/main/java || fail "new phase-9 marker missing: $t"
-done
-grep -q "SmartExportPlanner.planSmartExport" "$VEA" || fail "VEA smart hook missing"
-grep -q "atHeadOfFirstClip" "$VEA" || fail "VEA freeze promote branch missing"
-grep -q "updateSequenceOrder(sequenceItems)" "$VEA" || fail "VEA freeze promote order update missing"
-grep -q "fun VideoEditingViewModel.shiftSequenceOpIndices(" "$EXT" || fail "Ext shift function missing"
-grep -q "private suspend fun runSmartExport(" "$EXPS" || fail "ExportService runSmartExport missing"
-grep -q "const val EXTRA_SMART_PLAN_PATH" "$EXPS" || fail "ExportService smart extra missing"
-log "gate: positive marker checks passed"
+# ---- 7d. XML parse + ids --------------------------------------------------
+try:
+    dom = minidom.parse(XML)
+except Exception as e:
+    die("XML parse failed: " + str(e))
+ids = [e.getAttribute("android:id") for e in dom.getElementsByTagName("*") if e.hasAttribute("android:id")]
+dup = [i for i in set(ids) if ids.count(i) > 1]
+if dup:
+    die("duplicate android:id in XML: " + ", ".join(dup))
+for want in ["@+id/cgCutMode", "@+id/chipCutNormal", "@+id/chipCutKeyframe",
+             "@+id/cgExportMode", "@+id/chipModeMerged", "@+id/chipModeSeparate",
+             "@+id/cgFastStart", "@+id/chipFsOn", "@+id/chipFsOff",
+             "@+id/cgMetadata", "@+id/chipMetaKeep", "@+id/chipMetaStrip"]:
+    if want not in ids:
+        die("XML missing new id: " + want)
+print("[ok] XML parses, %d ids, no duplicates, 12 new ids present" % len(ids))
 
-# ---- planner content checks ----
-for t in "fun probeMedia(" "fun planSmartExport(" "fun buildFreezeFrameCommands(" \
-         "anullsrc" "xfade=transition=" "acrossfade" "-f concat -safe 0" \
-         "-bsf:v dump_extra" "libx264" "getMediaInformation" "getSafParameterForRead" \
-         "sanitizeTransitionType"; do
-    grep -q -- "$t" "$PLANNER" || fail "planner missing required piece: $t"
-done
-log "gate: planner content checks passed"
+# ---- 7e. survival asserts (kept features) ----------------------------------
+surv = [
+    (VEA, vea, "fun freezeFrameAtCurrentPosition()"),
+    (VEA, vea, "buildConsolidatedFFmpegCommand("),
+    (VEA, vea, "ExportService.EXTRA_SMART_PLAN_PATH"),
+    (VEA, vea, "SmartExportPlanner.planSmartExport("),
+    (PLANNER, planner, "fun buildFreezeFrameCommands("),
+    (PLANNER, planner, "fun sanitizeTransitionType("),
+    (PLANNER, planner, "xfade=transition="),
+    (PLANNER, planner, "-bsf:v dump_extra"),
+    (PLANNER, planner, "fun probeMedia("),
+    (VM, vm, "buildVideoCodecArgs("),
+    (VM, vm, "Built merge command"),
+    (VM, vm, "Built preview command"),
+    (VM, vm, "fun getOutputExtension("),
+    (EXPS, exps, "EXTRA_SMART_PLAN_PATH"),
+    (EXPS, exps, "private fun saveVideoToGallery("),
+    (EXPS, exps, "ACTION_EXPORT_SUCCESS"),
+    (ESD, esd, "fun show()"),
+    (ESD, esd, "private fun restoreSnapshot()"),
+    (ESD, esd, "private fun commandPreviewText("),
+    (ESD, esd, "private fun estimateSizeText("),
+    (ESD, esd, "chipBitrateSame"),
+]
+for path, body, tok in surv:
+    if tok not in body:
+        die("survival: token missing in %s: %r" % (path, tok))
+print("[ok] survival: %d kept-feature tokens present" % len(surv))
 
-# ---- kept-feature survival asserts (legacy path must stay intact) ----
-grep -q "private fun freezeFrameAtCurrentPosition()" "$VEA" || fail "freeze function lost"
-[ "$(grep -c 'private fun freezeFrameAtCurrentPosition()' "$VEA")" = "1" ] || fail "freeze function duplicated"
-grep -q "btnVideoFreezeFrame" "$VEA" || fail "freeze button wiring lost"
-grep -q "freezeFrameAtCurrentPosition()" "$VEA" || fail "freeze button call lost"
-grep -q "buildConsolidatedFFmpegCommand(" "$VEA" || fail "legacy consolidated call lost from VEA"
-grep -q "fun buildConsolidatedFFmpegCommand(" "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt" || fail "legacy builder lost from VM"
-grep -q "ffmpegEngine.exportFinal(" "$EXPS" || fail "legacy exportFinal branch lost"
-grep -q "saveVideoToGallery" "$EXPS" || fail "gallery save flow lost"
-grep -q "fun showTransitionDialog(" "$VEA" || fail "transition dialog lost"
-grep -q "fun VideoEditingViewModel.updateMainVideoTrim(" "$EXT" || fail "updateMainVideoTrim lost"
-grep -q "fun VideoEditingViewModel.updateSequenceOrder(" "$EXT" || fail "updateSequenceOrder lost"
-grep -q "fun VideoEditingViewModel.updateMainVideoSpeed(" "$EXT" || fail "updateMainVideoSpeed lost"
-grep -q "toast_freeze_frame_added_to_sequence" app/src/main/res/values/strings.xml || fail "freeze toast string lost"
-grep -q "fun getSequenceItems()" "$VEA" || fail "getSequenceItems lost"
-grep -q "fun getGlobalPosition()" "$VEA" || fail "getGlobalPosition lost"
-log "gate: survival checks passed"
+# ---- 7f. ASCII purity (no NEW non-ASCII bytes; the tree already uses -----
+# box-drawing divider characters, so compare counts against HEAD)
+for f in FILES:
+    b = open(f, "rb").read()
+    h = head(f).encode("utf-8", "surrogateescape")
+    n_new = sum(1 for c in b if c > 127)
+    n_old = sum(1 for c in h if c > 127)
+    if n_new != n_old:
+        die("non-ASCII byte count changed in %s (%d -> %d)" % (f, n_old, n_new))
+print("[ok] ASCII purity: no new non-ASCII bytes in 6 modified files")
 
-# ---- scope gate: only allowlisted files changed ----
-python3 - <<'CUTPY'
-import subprocess, sys
+print("[phase10] step7: ALL GATES GREEN")
+GATEPY
 
-ALLOWED = {
-    "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModelExt.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt",
-    "scripts/apply-changes.sh",
-    "apply-changes.sh",
-}
+###############################################################################
+# Step 8 -- scope + .github policy (final pre-commit safety net)
+###############################################################################
+log "step8: scope gate"
 
-out = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True).stdout
-bad = []
-gh = []
-for line in out.splitlines():
-    path = line[3:].strip().strip('"')
-    if path.startswith(".github/"):
-        gh.append(path)
-    if path not in ALLOWED:
-        bad.append(path)
-if gh:
-    print("[phase9][GATE-FAIL] .github policy violation: %s" % gh)
-    sys.exit(1)
-if bad:
-    print("[phase9][GATE-FAIL] out-of-scope changes: %s" % bad)
-    sys.exit(1)
-print("[phase9] gate: scope ok (4 code files + script only, no .github/)")
-CUTPY
+SCOPE_OK=0
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  path="$(echo "$line" | awk '{print $NF}')"
+  case "$path" in
+    "$VM"|"$VEA"|"$ESD"|"$EXPS"|"$PLANNER"|"$XML"|scripts/apply-changes.sh) ;;
+    *) echo "[phase10][ERROR] out-of-scope change: $path" >&2; SCOPE_OK=1 ;;
+  esac
+done < <(git status --porcelain)
 
-# ---- ASCII self-check of this script ----
-if LC_ALL=C tr -d '\t' < "$0" | LC_ALL=C grep -nq '[^ -~]'; then
-    fail "script contains non-ASCII characters"
+[ "$SCOPE_OK" = "0" ] || fail "scope gate failed (unexpected files modified)"
+
+if git status --porcelain | grep -q "\.github/"; then
+  fail "POLICY: workflow files must never be modified by this script"
 fi
-log "gate: ASCII self-check passed"
 
-log "ALL DONE -- phase 9 applied and verified"
+log "ALL DONE -- phase 10 applied cleanly (parts 1-4)"
+log "summary: smart preview in export dialog, keyframe cut mode, separate-files export, metadata + faststart"
