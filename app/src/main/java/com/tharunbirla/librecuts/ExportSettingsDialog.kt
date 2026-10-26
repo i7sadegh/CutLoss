@@ -56,8 +56,8 @@ class ExportSettingsDialog(
     private var snapAdvanced = VideoEditingViewModel.AdvancedExport()
 
     // ---- current dialog state ----
-    private var selRes = 1080            // 0 = same as input
-    private var selFps = 30              // 0 = same as input
+    private var selRes = 0               // 0 = same as input (default)
+    private var selFps = 0               // 0 = same as input (default)
     private var bitrateSameAsInput = true
     private var manualBitrateKbps = 8000
     private var selFormat = "same"       // same|mp4|mkv|mov|webm|avi
@@ -69,7 +69,7 @@ class ExportSettingsDialog(
     private var customW = 0
     private var customH = 0
     private var suppressBoxClear = false
-    private var selKeyframeCut = false
+    private var selKeyframeCut = true
     private var selSeparateFiles = false
     private var selFastStart = true
     private var selPreserveMetadata = true

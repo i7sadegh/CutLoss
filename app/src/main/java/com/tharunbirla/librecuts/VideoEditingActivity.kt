@@ -3446,6 +3446,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val isAudioOnly = viewModel.exportAudioOnly.value
 
         when (currentRes) {
+            0 -> cgResolution.check(R.id.chipResSame)
             360 -> cgResolution.check(R.id.chipRes360)
             480 -> cgResolution.check(R.id.chipRes480)
             720 -> cgResolution.check(R.id.chipRes720)
@@ -3456,6 +3457,7 @@ class VideoEditingActivity : AppCompatActivity() {
         }
 
         when (currentFps) {
+            0 -> cgFps.check(R.id.chipFpsSame)
             24 -> cgFps.check(R.id.chipFps24)
             25 -> cgFps.check(R.id.chipFps25)
             30 -> cgFps.check(R.id.chipFps30)
@@ -3476,6 +3478,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
         fun saveSettings() {
             val res = when (cgResolution.checkedChipId) {
+                R.id.chipResSame -> 0
                 R.id.chipRes360 -> 360
                 R.id.chipRes480 -> 480
                 R.id.chipRes720 -> 720
@@ -3485,6 +3488,7 @@ class VideoEditingActivity : AppCompatActivity() {
                 else -> 1080
             }
             val fps = when (cgFps.checkedChipId) {
+                R.id.chipFpsSame -> 0
                 R.id.chipFps24 -> 24
                 R.id.chipFps25 -> 25
                 R.id.chipFps30 -> 30

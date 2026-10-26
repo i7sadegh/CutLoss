@@ -33,8 +33,8 @@ class VideoEditingViewModel : ViewModel() {
     private val _uiState = MutableStateFlow(VideoEditingUiState())
     private val _undoStack = MutableStateFlow<List<HistoryState>>(emptyList())
     private val _redoStack = MutableStateFlow<List<HistoryState>>(emptyList())
-    private val _exportResolution = MutableStateFlow(1080)
-    private val _exportFps = MutableStateFlow(30)
+    private val _exportResolution = MutableStateFlow(0)   // 0 = same as input
+    private val _exportFps = MutableStateFlow(0)          // 0 = same as input
     private val _exportAudioOnly = MutableStateFlow(false)
     private val _exportBitrate = MutableStateFlow("8M")
     private val _selectedOperationId = MutableStateFlow<String?>(null)
@@ -80,7 +80,7 @@ class VideoEditingViewModel : ViewModel() {
         val audioOnlyFormat: String = "m4a",  // m4a|mp3|opus|flac|wav (audio-only export extension)
         val customWidth: Int = 0,             // 0 = not set
         val customHeight: Int = 0,            // 0 = not set
-        val keyframeCut: Boolean = false,     // trim points snap to keyframes -> pure stream copy
+        val keyframeCut: Boolean = true,      // DEFAULT: lossless keyframe trim (pure stream copy)
         val exportSeparateFiles: Boolean = false, // one output file per timeline clip
         val movFastStart: Boolean = true,     // -movflags +faststart on MP4 output
         val preserveMetadata: Boolean = true  // keep the source's global metadata in the output
