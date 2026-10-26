@@ -1,492 +1,537 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 13 -- "the flag contract"
+# CutLoss phase 14 -- "the transition contract"
 #
-# User directive (the export settings contract, spelled out by the user):
-#   - The export page has: resolution, video format, video bitrate, video
-#     codec, video fps, audio format, audio codec, audio bitrate, preset.
-#   - When EVERY setting is "same as input" the export is a pure -c copy.
-#   - When ONE setting changes, its ONE ffmpeg flag appears:
-#       resolution -> -vf scale=W:H (audio stays -c:a copy, NO -b flags)
-#       fps        -> -r F
-#       bitrate    -> -b:v / -b:a
-#       codec      -> -c:v / -c:a
-#   - A setting left on "same as input" writes NO flag at all.
-#   - A long video cut with split/trim + a bitrate change runs TWO steps:
-#     the lossless cut first (-c copy, seconds), then ONE re-encode of the
-#     assembled cut with -b:v. Never a filter graph, never a per-segment
-#     re-encode for the default (keyframe) cut mode.
+# User directive (spelled out by the user):
+#   When a transition sits between two videos, the program must first make
+#   that small segment MATCH the main video, then attach it to the rest
+#   like a separate clip, so the whole thing assembles with -c copy and no
+#   second encode. The values that must be identical to the main video:
+#     codec, profile, resolution, pixel format, sar, dar, fps, tbn,
+#     sample rate, channel layout.
 #
-# What changes (6 files):
+# What changes (3 files):
 #   SmartExportPlanner.kt:
-#     - New simpleVideoEncoderArgs / simpleAudioEncoderArgs helpers: one
-#       flag per CHANGED option only. Codec -> -c:v (source encoder family
-#       when unchanged); bitrate -> -b:v only when the user set one (CRF
-#       quality otherwise; VP9/AV1 get -crf X -b:v 0 because their default
-#       2-pass bitrate is unusable); preset -> x264/x265 only (hardware /
-#       VP9 / AV1 encoders do not take -preset); -pix_fmt only when the
-#       source format must be converted for the 8-bit encoders.
-#     - planInternal modes: twoStep (keyframe cut + changed settings =
-#       lossless per-segment -c copy + concat + ONE finalize command on the
-#       assembled cut) / perSegmentEncode (normal cut + changed settings =
-#       direct frame-accurate encode per segment) / pure copy (unchanged).
-#       The old reencodeAll template is gone.
-#     - Container support: MP4/MKV/MOV remux losslessly (segments and the
-#       concat get the target extension, faststart only for MP4/MOV), WebM
-#       requires VP9/AV1 video + Opus audio (settingsBlockSmart says why),
-#       AVI is refused. PCM/FLAC audio is MKK-only.
-#     - SmartAnalysis gains aCodec so the dialog can mirror the audio flag
-#       rules (bitrate-only change re-encodes with the SOURCE codec).
-#     - Generated silence (muted clips) encodes as Opus when the target is
-#       WebM.
+#     - probeMedia now also reads sample_aspect_ratio ("0:1"/unset -> 1:1)
+#       and the video time_base denominator (tbn).
+#     - A fade transition exports as its own small segments: the left
+#       clip's tail fading out + the right clip's head fading in, both
+#       re-encoded with parameters IDENTICAL to the reference clip -
+#       libx264/libx265 with the source profile + level, source pixel
+#       format (encodablePixFmt), no scale (same resolution), setsar=
+#       source SAR (DAR follows from W/H + SAR), fps= source rate,
+#       -video_track_timescale source tbn, -c:a aac -ar source -ac source.
+#       Everything else stays a stream copy and the concat demuxer
+#       assembles with -c copy: only the transition window is re-encoded.
+#     - Copied spans next to a transition are cut EXACTLY at keyframe
+#       packet boundaries: the planner probes the packet list with
+#       FFprobeKit.execute (-show_packets), seeks with -ss at the keyframe
+#       timestamp and limits video with -frames:v N counted from the list,
+#       so no frame is duplicated or lost at the seams (a plain -t alone
+#       overshoots the tail by the B-frame reorder delay - measured 2
+#       frames in the lab).
+#     - -video_track_timescale <source tbn> is written on every MP4/MOV
+#       segment and the finalize command, so mixed-timescale sources
+#       normalize losslessly and the concat output carries the source tbn.
+#     - Normal-cut and per-segment-encode plans carry the fades inside
+#       their own commands (local timestamps) + matching afade windows on
+#       the audio; the two-step plan bakes the fades into the lossless cut
+#       (step 1) so the finalize re-encode keeps them.
+#     - Transition types: fade / dissolve / fadeblack / fadewhite render
+#       (fade and dissolve as a dip through black - disclosed in the
+#       dialog note; fadewhite dips through white). Every other type
+#       (wipes, slides, circles, ...) needs to blend frames from two
+#       clips at once = a filter graph -> the export blocks with the real
+#       reason instead of silently degrading.
+#     - Durations clamp to each side's span (>=250 ms untouched material
+#       per side, effect >= 200 ms) via ONE shared helper so the dialog
+#       and the planner always agree.
+#     - New per-clip uniformity gate: sample aspect ratio must match.
+#     - A non-encodable pixel format + a transition takes the uniform
+#       per-segment encode (the fade pieces could not match their copied
+#       neighbours otherwise).
 #   ExportSettingsDialog.kt:
-#     - "Same as input" bitrate now forwards "" (no -b:v) instead of the
-#       measured source bitrate.
-#     - smartReencodeMode -> smartEncodeMode: any changed setting (res /
-#       fps / custom size / codec / bitrate / audio codec / audio bitrate)
-#       switches the plan; the preview shows the exact two-step or
-#       per-segment commands with the real flag list.
-#   VideoEditingViewModel.kt:
-#     - exportBitrate default "8M" -> "" (same as input, no flag).
+#     - The transition note now says what really happens: "N transition(s)
+#       as matched fade segments (only the transition window is
+#       re-encoded)"; separate-files mode says transitions need the merged
+#       single-file export.
+#     - Copy/re-encode seconds + size estimate account for the transition
+#       windows (keyframe cut: the D window re-encodes; normal cut: the
+#       whole adjacent clips do).
+#     - smartEncodeMode mirrors the new non-encodable + transitions
+#       trigger; the two-step preview shows the transition piece command.
 #   VideoEditingActivity.kt:
-#     - Stale "consolidated render" comments/log wording fixed.
-#   ExportService.kt:
-#     - Gallery save derives the extension + mime type from the ACTUAL
-#       output file (MP4/MKV/MOV/WebM/AVI + audio formats) instead of
-#       hardcoding video/mp4.
-#   FFmpegRenderEngine.kt:
-#     - hevc_mediacodec failure falls back to libx265 -tag:v hvc1 (same
-#       safety net the h264 encoder already had).
+#     - The live transition preview window follows the transition's own
+#       duration instead of a hardcoded 1000 ms.
 #
-# Every new command template was validated in the local ffmpeg 7.1 lab
-# (scripts/lab-phase13): two-step cut+finalize, scale+audio-copy, bitrate
-# only, audio-only re-encode (-c:v copy), x265/vp9/av1 codec changes,
-# mkv/mov/webm containers, webm concat, libopus auto-resample, rotation
-# baking, -r with -c copy being a silent no-op (fps always forces encode).
+# Every template was validated against ffmpeg in the lab (sources with
+# GOP 1s / 0.7s, tbn 15360 / 30000, h264 / hevc, yuv420p / yuvj420p, with
+# and without audio, mixed timescales): exact frame counts at the seams
+# (240/240, 360 for three clips), uniform stream parameters after concat,
+# clean decodes, fades landing where they should, and honest blocking for
+# non-fade types.
 #
-# Precondition: phase 12 must be in the tree (22c628f or later).
-# Invariants: pure ASCII, idempotent (2nd run = [skip], zero diff),
-# touches exactly six source files, hard verification gate exits 1
-# BEFORE anything can be committed.
+# Apply + build: upload as scripts/apply-changes.sh; the apply-and-build
+# workflow runs it, commits the result and produces the APK.
 ###############################################################################
 set -euo pipefail
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-cd "$ROOT"
-
-log()  { echo "[phase13] $*"; }
-fail() { echo "[phase13][ERROR] $*" >&2; exit 1; }
-
 PLANNER="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
 ESD="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
-VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
 VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-SVC="app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
-ENGINE="app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
 
-###############################################################################
-# Step 0 -- preconditions
-###############################################################################
-log "step0: checking preconditions"
-[ -f "$PLANNER" ] || fail "SmartExportPlanner.kt not found"
-[ -f "$ESD" ] || fail "ExportSettingsDialog.kt not found"
-[ -f "$VM" ] || fail "VideoEditingViewModel.kt not found"
-[ -f "$VEA" ] || fail "VideoEditingActivity.kt not found"
-[ -f "$SVC" ] || fail "ExportService.kt not found"
-[ -f "$ENGINE" ] || fail "FFmpegRenderEngine.kt not found"
-grep -q "filter_complex" -r app/src/main/java && fail "filter_complex found in sources (phase 12 regression)"
-# Phase 12 must be in the tree (its header note survives phase 13); a tree
-# that ALREADY has phase 13 is fine too - every edit below is [skip]-safe.
-grep -q "there is NO legacy filter-graph fallback" "$PLANNER" || fail "phase 12 not found in planner header (wrong base commit)"
-log "step0: preconditions ok"
+for f in "$PLANNER" "$ESD" "$VEA"; do
+  if [ ! -f "$f" ]; then
+    echo "FATAL: $f not found - run from the repository root at the expected commit"
+    exit 1
+  fi
+done
 
-###############################################################################
-# Step 1 -- SmartExportPlanner.kt
-###############################################################################
-step1() {
-    log "step1: SmartExportPlanner.kt -- the flag contract"
-    python3 - <<'PYEOF'
+echo "== phase 14: applying the transition contract =="
+
+python3 - <<'PYEOF'
 import sys
 
 PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+ESD = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
+edits_applied = 0
+edits_skipped = 0
 
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
 
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
+def apply_edit(path, old, new, name):
+    global edits_applied, edits_skipped
+    with open(path, "r") as f:
+        s = f.read()
+    if new in s:
+        edits_skipped += 1
         return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# ---------------------------------------------------------------- 1a header
-must_replace(PLANNER,
-r''' * Resolution / fps / custom-size changes (phase 11) also stay here: the
- * simple re-encode template - one flag per changed option (-vf scale=W:H,
- * -r F) - followed by the lossless concat.
- * When the project or settings are not compatible the planner returns null
- * and the caller surfaces the real reason instead of re-encoding.''',
-r''' * Resolution / fps / custom-size changes (phase 11) also stay here: the
- * simple re-encode template - one flag per changed option (-vf scale=W:H,
- * -r F) - followed by the lossless concat.
- * Phase 13 (the flag contract): every export setting maps to exactly one
- * ffmpeg flag, and a setting left on "same as input" writes NO flag at
- * all - all-same-as-input exports are a pure -c copy. Keyframe-cut exports
- * with changed settings run TWO steps: the lossless cut first (per-segment
- * -c copy + concat), then ONE finalize command on the assembled file with
- * a flag per changed option (-vf scale, -r, -c:v, -b:v, -c:a, -b:a,
- * -preset). Normal-cut exports with changed settings encode each segment
- * directly (frame-accurate). Containers: MP4/MKV/MOV remux losslessly,
- * WebM needs VP9/AV1 video + Opus audio, AVI is refused.
- * When the project or settings are not compatible the planner returns null
- * and the caller surfaces the real reason instead of re-encoding.''',
-"1a header doc")
-
-# ------------------------------------------------- 1b SmartAnalysis + aCodec
-must_replace(PLANNER,
-r'''        val fpsRounded: Int,
-        val vCodec: String,
-        val pixFmt: String,
-        val reason: String?
-    )''',
-r'''        val fpsRounded: Int,
-        val vCodec: String,
-        val aCodec: String,
-        val pixFmt: String,
-        val reason: String?
-    )''',
-"1b SmartAnalysis field")
-
-must_replace(PLANNER,
-r'''            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", reason)''',
-r'''            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", "", reason)''',
-"1b fail() constructor")
-
-must_replace(PLANNER,
-r'''            fpsRounded = Math.round(refParams.fpsValue).toInt(),
-            vCodec = refParams.vCodec,
-            pixFmt = refParams.pixFmt,
-            reason = null
-        )''',
-r'''            fpsRounded = Math.round(refParams.fpsValue).toInt(),
-            vCodec = refParams.vCodec,
-            aCodec = audioRef?.aCodec ?: "",
-            pixFmt = refParams.pixFmt,
-            reason = null
-        )''',
-"1b analysis return")
-
-# ------------------------------------------------------ 1c settingsBlockSmart
-must_replace(PLANNER,
-r'''        if (audioOnly) return "audio-only export"
-        if (videoFormat != "mp4") return "non-MP4 container"
-        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return "custom codec requested"
-        // Phase 11: resolution / fps / custom-size changes no longer disable
-        // the smart path -- they switch it to the simple re-encode template
-        // (a scale / -r flag per changed option), like the classic ffmpeg
-        // one-command workflow.
-        return null''',
-r'''        if (audioOnly) return "audio-only export"
-        // Phase 13 container rules: MP4/MKV/MOV remux losslessly, WebM
-        // needs VP9/AV1 video and Opus audio, AVI cannot hold the streams.
-        if (videoFormat == "avi") {
-            return "AVI cannot hold the streams - use MP4, MKV, MOV or Same as input"
-        }
-        if (videoFormat == "webm") {
-            if (advancedVideoCodec != "libvpx-vp9" && advancedVideoCodec != "libaom-av1") {
-                return "WebM needs VP9 or AV1 video - set the Video codec chip or use MKV"
-            }
-            if (analysis.hasAudio && advancedAudioCodec != "libopus") {
-                return "WebM audio must be Opus - set the Audio codec to Opus or use MKV"
-            }
-        }
-        if ((advancedAudioCodec == "pcm_s16le" || advancedAudioCodec == "flac") &&
-            (videoFormat == "mp4" || videoFormat == "mov")
-        ) {
-            return "PCM/FLAC audio does not fit MP4/MOV - pick MKV or Same as input"
-        }
-        // Phase 11/13: resolution / fps / custom-size / codec / bitrate
-        // changes never disable the smart path -- they switch it to the
-        // simple commands with ONE flag per changed option.
-        return null''',
-"1c settingsBlockSmart gates")
-
-# --------------------------------------------------- 1d planInternal early gates
-must_replace(PLANNER,
-r'''        if (audioOnly) return null
-        if (videoFormat != "mp4") return null
-        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return null
-        if (isImagePath(sourceFilePath)) return null''',
-r'''        if (audioOnly) return null
-        if (videoFormat == "avi") return null
-        if (videoFormat == "webm" &&
-            advancedVideoCodec != "libvpx-vp9" && advancedVideoCodec != "libaom-av1") return null
-        if (isImagePath(sourceFilePath)) return null''',
-"1d planInternal container gates")
-
-# --------------------------------------------------- 1e flag contract + modes
-must_replace(PLANNER,
-r'''        // ---- phase 12: pixel-format uniformity ----
-        // Keyframe cuts copy ANY pixel format untouched (pure -c copy).
-        // Encodable 8-bit 4:2:0 formats (yuv420p/yuvj420p/nv12/nv21) also
-        // keep the hybrid plan: trimmed spans re-encode with the source
-        // format, so the concat never mixes formats. Only a genuinely
-        // non-encodable source (10-bit etc.) with a non-keyframe trim
-        // forces the uniform re-encode of every segment.
-        val anyTrimmedSpan = clips.any {
-            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
-        }
-        val encodableSource = refParams.pixFmt == "yuv420p" || refParams.pixFmt == "yuvj420p" ||
-            refParams.pixFmt == "nv12" || refParams.pixFmt == "nv21"
-        val reencodeAll = customScale || resChange || fpsChange ||
-            (!encodableSource && !keyframeCut && anyTrimmedSpan)''',
-r'''        // ---- phase 12: pixel-format uniformity ----
-        // Keyframe cuts copy ANY pixel format untouched (pure -c copy).
-        // Encodable 8-bit 4:2:0 formats (yuv420p/yuvj420p/nv12/nv21) also
-        // keep the hybrid plan: trimmed spans re-encode with the source
-        // format, so the concat never mixes formats. Only a genuinely
-        // non-encodable source (10-bit etc.) with a non-keyframe trim
-        // forces the uniform re-encode of every segment.
-        val anyTrimmedSpan = clips.any {
-            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
-        }
-        val encodableSource = refParams.pixFmt == "yuv420p" || refParams.pixFmt == "yuvj420p" ||
-            refParams.pixFmt == "nv12" || refParams.pixFmt == "nv21"
-        // ---- phase 13: the flag contract ----
-        // A setting left on "same as input" never writes a flag. All
-        // same-as-input = pure -c copy. Keyframe cut + changed settings =
-        // TWO steps: the lossless cut first, then ONE finalize command with
-        // a flag per changed option. Normal cut + changed settings = direct
-        // per-segment encode (frame-accurate). A non-encodable pixel format
-        // with a normal-cut trim still forces the uniform encode.
-        val vBitrateSet = exportBitrate.isNotEmpty()
-        val vCodecSet = advancedVideoCodec.isNotEmpty()
-        val aBitrateSet = advancedAudioBitrate.isNotEmpty()
-        val aCodecSet = advancedAudioCodec.isNotEmpty()
-        val needsVideoEncode = customScale || resChange || fpsChange || vBitrateSet || vCodecSet
-        val needsAudioEncode = aBitrateSet || aCodecSet
-        val anyEncode = needsVideoEncode || needsAudioEncode
-        val twoStep = anyEncode && keyframeCut
-        val perSegmentEncode = !keyframeCut &&
-            (anyEncode || (!encodableSource && anyTrimmedSpan))
-        val outExt = when (videoFormat) {
-            "mkv" -> ".mkv"
-            "mov" -> ".mov"
-            "webm" -> ".webm"
-            else -> ".mp4"
-        }
-        // Stage-one segments hold the COPIED source streams, so they cannot
-        // be WebM (H.264/HEVC do not fit that container); encoded
-        // per-segment outputs can.
-        val segExt = if (videoFormat == "webm") ".mp4" else outExt''',
-"1e flag contract + plan modes")
-
-# ------------------------------------------------------- 1f webm/pcm audio gate
-must_replace(PLANNER,
-r'''        if (audioRef != null) {
-            for (c in clips) {
-                if (c.params.hasAudio) {
-                    if (c.params.aCodec != audioRef.aCodec) return null
-                    if (c.params.aSampleRate != audioRef.aSampleRate) return null
-                    if (c.params.aChannels != audioRef.aChannels) return null
-                }
-            }
-        }
-        val planHasAudio = audioRef != null''',
-r'''        if (audioRef != null) {
-            for (c in clips) {
-                if (c.params.hasAudio) {
-                    if (c.params.aCodec != audioRef.aCodec) return null
-                    if (c.params.aSampleRate != audioRef.aSampleRate) return null
-                    if (c.params.aChannels != audioRef.aChannels) return null
-                }
-            }
-        }
-        // Phase 13 container gates (mirror settingsBlockSmart).
-        if (videoFormat == "webm" && audioRef != null && advancedAudioCodec != "libopus") return null
-        if ((advancedAudioCodec == "pcm_s16le" || advancedAudioCodec == "flac") &&
-            (videoFormat == "mp4" || videoFormat == "mov")) return null
-        val planHasAudio = audioRef != null''',
-"1f webm/pcm audio gates")
-
-# ------------------------------------------------------------- 1g total span
-must_replace(PLANNER,
-r'''        val merged = !exportSeparateFiles
-        for (i in clips.indices) {
-            if (clips[i].trimEndMs <= clips[i].trimStartMs) return null
-        }''',
-r'''        val merged = !exportSeparateFiles   // single file vs one per clip
-        for (i in clips.indices) {
-            if (clips[i].trimEndMs <= clips[i].trimStartMs) return null
-        }
-        var totalSpanSec = 0.0
-        for (c in clips) {
-            totalSpanSec += Math.max(0.0, (c.trimEndMs - c.trimStartMs) / 1000.0)
-        }''',
-"1g total span seconds")
-PYEOF
-}
-
-step1
-log "step1: done"
-
-###############################################################################
-# Step 1b -- SmartExportPlanner.kt (command building)
-###############################################################################
-step1b() {
-    log "step1b: SmartExportPlanner.kt -- simple encoders + command building"
-    python3 - <<'PYEOF'
-import sys
-
-PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
+    if old not in s:
+        print("  [FAIL] " + name + ": anchor not found")
+        sys.exit(1)
+    if s.count(old) != 1:
+        print("  [FAIL] " + name + ": anchor not unique")
+        sys.exit(1)
+    s = s.replace(old, new, 1)
+    with open(path, "w") as f:
         f.write(s)
+    edits_applied += 1
 
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
 
-# ------------------------------------------- 1h simple encoders + segment files
-must_replace(PLANNER,
-r'''        // ---- build per-segment commands ----
-        val commands = mutableListOf<Pair<String, Double>>()
-        val segmentFiles = mutableListOf<File>()
-        val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
-        val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
-        val fpsFilter = "fps=" + refParams.fpsString
-        // Simple-command encoder for the re-encode mode (phase 11): no
-        // profile / level matching (the source profile may not fit the
-        // target size) - just the classic "-c:v libx264 -b:v X" form.
-        val encPixFmt = encodablePixFmt(refParams)
-        val encSimple: String = if (refParams.vCodec == "hevc") {
-            val sb = StringBuilder("-c:v libx265 -tag:v hvc1 -pix_fmt ").append(encPixFmt)
-            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 20")
-            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
-            sb.toString()
+apply_edit(PLANNER, """ * Phase 12: there is NO legacy filter-graph fallback anymore - this
+ * planner is the ONLY export pipeline, and it never emits complex filter
+ * graphs. Transitions export as straight cuts (frames are never blended). Any
+ * pixel format is fine: keyframe cuts copy bytes untouched, encodable""",
+""" * Phase 12: there is NO legacy filter-graph fallback anymore - this
+ * planner is the ONLY export pipeline, and it never emits complex filter
+ * graphs. Fade transitions render as matched per-clip fade segments
+ * (phase 14); other transition types block the export. Any
+ * pixel format is fine: keyframe cuts copy bytes untouched, encodable""",
+"planner: stale phase-12 header sentence")
+
+# ---- 1) header doc: phase 14 paragraph ----
+apply_edit(PLANNER, """ * WebM needs VP9/AV1 video + Opus audio, AVI is refused.
+ * When the project or settings are not compatible the planner returns null""",
+""" * WebM needs VP9/AV1 video + Opus audio, AVI is refused.
+ * Phase 14 (matched fade segments): a transition between two clips is
+ * exported as its own small segments - the tail of the left clip fading
+ * out and the head of the right clip fading in - encoded with parameters
+ * IDENTICAL to the reference clip (codec, profile, level, resolution,
+ * pixel format, SAR - DAR follows from W/H + SAR -, fps, TBN via
+ * -video_track_timescale, audio sample rate and channel layout). The rest
+ * of the timeline stays a stream copy and the final assembly is still the
+ * concat demuxer with -c copy, so only the transition window is ever
+ * re-encoded. Fade-type transitions (fade / dissolve / fade black / fade
+ * white) render as a dip through the fade color; every other transition
+ * type blocks the export honestly because blending frames from two clips
+ * at once needs a filter graph. Copied spans next to a transition are cut
+ * EXACTLY at keyframe packet boundaries (-ss at the keyframe plus
+ * -frames:v N counted from the probed packet list), so no frame is
+ * duplicated or lost at the seams.
+ * When the project or settings are not compatible the planner returns null""",
+"planner: header doc phase 14")
+
+# ---- 2) MediaParams: sar + tbn fields ----
+apply_edit(PLANNER, """        val rotation: Int,
+        val durationMs: Long
+    )
+""",
+"""        val rotation: Int,
+        val durationMs: Long,
+        val sarNum: Int = 1,
+        val sarDen: Int = 1,
+        val tbn: Int = 0
+    )
+""",
+"planner: MediaParams sar/tbn fields")
+
+# ---- 3) probeMedia: parse sar + tbn ----
+apply_edit(PLANNER, """        val fpsString = v.optString("avg_frame_rate", "0/0")
+        val fpsValue = parseFraction(fpsString) ?: return null
+        if (fpsValue <= 0.0) return null
+
+        return MediaParams(""",
+"""        val fpsString = v.optString("avg_frame_rate", "0/0")
+        val fpsValue = parseFraction(fpsString) ?: return null
+        if (fpsValue <= 0.0) return null
+        // Phase 14: sample aspect ratio and the video track timescale, so
+        // re-encoded transition segments can match the source exactly (an
+        // unset or "0:1" SAR is treated as square pixels like players do).
+        val sarParts = v.optString("sample_aspect_ratio", "1:1").split(":")
+        var sarNum = 1
+        var sarDen = 1
+        if (sarParts.size == 2) {
+            val sn = sarParts[0].trim().toIntOrNull() ?: 0
+            val sd = sarParts[1].trim().toIntOrNull() ?: 0
+            if (sn > 0 && sd > 0) {
+                sarNum = sn
+                sarDen = sd
+            }
+        }
+        val tbn = parseTimeBaseDen(v.optString("time_base", ""))
+
+        return MediaParams(""",
+"planner: probeMedia sar/tbn parse")
+
+apply_edit(PLANNER, """            rotation = rotation,
+            durationMs = durationMs
+        )
+    }
+""",
+"""            rotation = rotation,
+            durationMs = durationMs,
+            sarNum = sarNum,
+            sarDen = sarDen,
+            tbn = tbn
+        )
+    }
+""",
+"planner: MediaParams ctor args")
+
+# ---- 4) new helpers after parseFraction ----
+apply_edit(PLANNER, """    // ------------------------------------------------------------------
+    // Freeze frame command builder
+    // ------------------------------------------------------------------
+""",
+"""    private fun parseTimeBaseDen(s: String): Int {
+        if (!s.contains("/")) return 0
+        return try {
+            val den = s.split("/")[1].trim().toIntOrNull() ?: 0
+            if (den > 0) den else 0
+        } catch (e: Exception) {
+            0
+        }
+    }
+
+    /**
+     * Phase 14: transition types the lossless pipeline can render. A fade
+     * is a per-frame opacity ramp on a single stream, so the tail of the
+     * left clip and the head of the right clip carry it as two small
+     * re-encoded segments. Every other transition type has to blend frames
+     * from two clips at once, which needs a filter graph - those block the
+     * export honestly instead of silently degrading.
+     */
+    private fun renderableTransitionType(type: String): Boolean =
+        type.equals("fade", ignoreCase = true) || type.equals("dissolve", ignoreCase = true) ||
+            type.equals("fadeblack", ignoreCase = true) || type.equals("fadewhite", ignoreCase = true)
+
+    /**
+     * Phase 14: effective transition durations after clamping. A
+     * transition of duration D shows as D/2 of fade-out at the end of the
+     * left clip and D/2 of fade-in at the head of the right clip, so each
+     * side keeps at least 250 ms of untouched material and the effect
+     * itself stays at least 200 ms. One shared implementation keeps the
+     * export dialog and the planner in agreement.
+     */
+    private fun effectiveTransitionDurations(
+        transitions: Map<Int, Pair<String, Long>>,
+        spans: List<Pair<Long, Long>>
+    ): Map<Int, Long> {
+        val out = mutableMapOf<Int, Long>()
+        for ((gap, td) in transitions) {
+            if (gap < 0 || gap >= spans.size - 1) continue
+            val leftDur = spans[gap].second - spans[gap].first
+            val rightDur = spans[gap + 1].second - spans[gap + 1].first
+            val maxD = Math.min(leftDur - 250L, rightDur - 250L)
+            if (maxD < 200L) continue
+            val d = Math.min(td.second, maxD)
+            if (d >= 200L) out[gap] = d
+        }
+        return out
+    }
+
+    /**
+     * Phase 14: video packet list (pts in ms, is-keyframe) straight from
+     * ffprobe's packet dump. Stream copy can only start on a keyframe and
+     * a plain -t overshoots the tail by the reorder delay, so the exact
+     * copied spans next to a transition are cut with -ss at a keyframe
+     * timestamp plus -frames:v N counted from this list. Packets without a
+     * readable pts keep their index slot (pts -1) so the count stays true.
+     */
+    private fun probeVideoPackets(path: String): List<Pair<Long, Boolean>>? {
+        val session = try {
+            com.antonkarpenko.ffmpegkit.FFprobeKit.execute(
+                "-v error -select_streams v:0 -show_packets -show_entries " +
+                    "packet=pts_time,flags -of csv=p=0 \\"" + path + "\\""
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "packet probe failed: " + e.message)
+            null
+        } ?: return null
+        val out = try {
+            session.output
+        } catch (e: Exception) {
+            null
+        } ?: return null
+        if (out.isBlank()) return null
+        val pkts = mutableListOf<Pair<Long, Boolean>>()
+        for (line in out.split("\\n")) {
+            val parts = line.split(",")
+            if (parts.size < 2) continue
+            val ptsSec = parts[0].trim().toDoubleOrNull()
+            pkts.add(Pair(ptsSec?.let { Math.round(it * 1000.0) } ?: -1L, parts[1].contains("K")))
+        }
+        return if (pkts.isEmpty()) null else pkts
+    }
+
+    /**
+     * Exact boundaries for the copied span of a clip next to a transition
+     * (phase 14). startKf is the keyframe the -ss seek lands on (the
+     * aligned keyframe after a left transition's fade-in, or the snap
+     * keyframe at or before trimStart otherwise); endKf is the keyframe at
+     * or before a right transition's fade-out start, or trimEnd when no
+     * transition follows. framesV is the exact video packet count between
+     * the two keyframes (0 = plain -t tail). Returns null when no clean
+     * boundary exists - the whole span then re-encodes with the fades
+     * riding on it.
+     */
+    private fun planTransitionSpan(
+        pkts: List<Pair<Long, Boolean>>,
+        trimStartMs: Long,
+        trimEndMs: Long,
+        leftD: Long,
+        rightD: Long
+    ): TransitionSpan? {
+        val startKf: Long = if (leftD > 0L) {
+            val target = trimStartMs + leftD
+            pkts.firstOrNull { it.second && it.first >= 0L && it.first >= target }?.first ?: return null
         } else {
-            val sb = StringBuilder("-c:v libx264 -pix_fmt ").append(encPixFmt)
-            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 18")
-            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
-            sb.toString()
+            pkts.lastOrNull { it.second && it.first >= 0L && it.first <= trimStartMs }?.first ?: return null
         }
-        var segCounter = 0
-        fun nextSegmentFile(): File {
-            val f = File(workDir, "seg_" + segCounter + ".mp4")
-            segCounter++
-            segmentFiles.add(f)
-            return f
-        }''',
-r'''        // ---- build per-segment commands ----
-        val commands = mutableListOf<Pair<String, Double>>()
-        val segmentFiles = mutableListOf<File>()
-        val encodedOutFiles = mutableListOf<File>()
-        // Matched-parameter encoders for the hybrid span re-encode (phase 9):
-        // a trimmed span must be bitstream-compatible with its copied
-        // neighbours, so it matches the source profile / level / format.
-        val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
-        val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
-        // Generated silence cannot stream-copy, and WebM needs Opus.
-        val aEncSilence = when {
-            videoFormat != "webm" -> aEnc
-            advancedAudioBitrate.isNotEmpty() -> "-c:a libopus -ar 48000 -b:a " + advancedAudioBitrate
-            else -> "-c:a libopus -ar 48000 -b:a 128k"
+        val endKf: Long = if (rightD > 0L) {
+            val target = trimEndMs - rightD
+            pkts.lastOrNull { it.second && it.first >= 0L && it.first <= target }?.first ?: return null
+        } else {
+            trimEndMs
         }
-        val fpsFilter = "fps=" + refParams.fpsString
-        // ---- phase 13: one-flag-per-changed-option encoders ----
-        // Same-as-input options write NO flag: codec -> -c:v (source
-        // encoder family when unchanged), bitrate -> -b:v only when the
-        // user set one (CRF-quality default otherwise), preset -> x264/x265
-        // only, audio -> -c:a copy unless codec or bitrate changed.
-        val vEncSimple = simpleVideoEncoderArgs(refParams, advancedVideoCodec, exportBitrate, advancedPreset)
-        val aEncSimple = simpleAudioEncoderArgs(audioRef, advancedAudioCodec, advancedAudioBitrate)
-        var segCounter = 0
-        fun nextSegmentFile(ext: String): File {
-            val f = File(workDir, "seg_" + segCounter + ext)
-            segCounter++
-            segmentFiles.add(f)
-            return f
-        }''',
-"1h encoder section")
+        if (endKf - startKf < 100L) return null
+        if (rightD > 0L) {
+            var idxStart = -1
+            var idxEnd = -1
+            for (i in pkts.indices) {
+                if (idxStart < 0 && pkts[i].second && pkts[i].first == startKf) idxStart = i
+                if (pkts[i].second && pkts[i].first == endKf) idxEnd = i
+            }
+            if (idxStart < 0 || idxEnd <= idxStart) return null
+            return TransitionSpan(startKf, endKf, idxEnd - idxStart)
+        }
+        return TransitionSpan(startKf, endKf, 0)
+    }
 
-# ------------------------------------------------- 1i per-segment loop head
-must_replace(PLANNER,
-r'''            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
-            val seg = nextSegmentFile()
+    private data class TransitionSpan(
+        val startKfMs: Long,
+        val endKfMs: Long,
+        val framesV: Int
+    )
 
-            if (reencodeAll) {
-                // Simple re-encode (phase 11): one flag per changed export
-                // option. -ss before -i decodes forward, so cuts are
-                // frame-accurate; autorotate runs before scale, so rotated
-                // phone clips land on their display dimensions.
-                val sb = StringBuilder("-y")
-                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
-                if (!fullRange) sb.append(" -t ").append(ms(spanMs))
-                sb.append(" -i \"").append(clip.path).append("\"")
-                if (silenceAudio) {
-                    sb.append(" -f lavfi -t ").append(ms(spanMs))
-                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+    // ------------------------------------------------------------------
+    // Freeze frame command builder
+    // ------------------------------------------------------------------
+""",
+"planner: new phase-14 helpers")
+
+# ---- 5) analyzeInternal: transition type gate + shared clamp ----
+apply_edit(PLANNER, """        val transitions = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            transitions[t.index] = Pair(t.type, t.durationMs)
+        }
+        val clampedTransitions = mutableMapOf<Int, Long>()
+        for ((gap, td) in transitions) {
+            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
+            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
+            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
+            if (d >= 50L) clampedTransitions[gap] = d
+        }
+""",
+"""        val transitions = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            if (!renderableTransitionType(t.type)) {
+                return fail("transition '" + t.type +
+                    "' needs frame blending - use Fade, Fade Black or Fade White")
+            }
+            transitions[t.index] = Pair(t.type, t.durationMs)
+        }
+        val clampedTransitions = effectiveTransitionDurations(
+            transitions,
+            clips.map { Pair(it.trimStartMs, it.trimEndMs) }
+        )
+""",
+"planner: analyzeInternal type gate + clamp")
+
+# ---- 6) analyzeInternal: sar uniformity ----
+apply_edit(PLANNER, """                if (p.pixFmt != refParams.pixFmt) return fail("clips use different pixel formats")""",
+"""                if (p.pixFmt != refParams.pixFmt) return fail("clips use different pixel formats")
+                if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) {
+                    return fail("clips use different sample aspect ratios")
+                }""",
+"planner: analyzeInternal sar gate")
+
+# ---- 7) planInternal: sar uniformity ----
+apply_edit(PLANNER, """                if (p.pixFmt != refParams.pixFmt) return null
+                if (p.durationMs <= 0L) return null""",
+"""                if (p.pixFmt != refParams.pixFmt) return null
+                if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) return null
+                if (p.durationMs <= 0L) return null""",
+"planner: planInternal sar gate")
+
+# ---- 8) planInternal: phase-14 transition block before phase-13 block ----
+apply_edit(PLANNER, """        // ---- phase 13: the flag contract ----
+        // A setting left on "same as input" never writes a flag. All""",
+"""        // ---- phase 14: transitions as matched fade segments ----
+        // A fade transition is per-stream, so it exports as small segments
+        // that then join the rest through the concat: the left clip's tail
+        // fades out, the right clip's head fades in, and both pieces are
+        // re-encoded with parameters IDENTICAL to the reference clip -
+        // codec, profile, level, resolution, pixel format, SAR (DAR
+        // follows from W/H + SAR), fps, TBN, audio sample rate and channel
+        // layout - so the final assembly stays a pure -c copy. Copied
+        // spans around a seam are cut exactly at keyframe packet
+        // boundaries. Non-fade transitions need a frame blend, so they
+        // block the export instead of silently degrading.
+        val merged = !exportSeparateFiles   // single file vs one per clip
+        val transitionsRaw = mutableMapOf<Int, Pair<String, Long>>()
+        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
+            if (t.type.equals("none", ignoreCase = true)) continue
+            if (t.index < 0 || t.index >= clips.size - 1) continue
+            if (!renderableTransitionType(t.type)) return null
+            transitionsRaw[t.index] = Pair(t.type, t.durationMs)
+        }
+        val transitionDurations = if (merged) {
+            effectiveTransitionDurations(
+                transitionsRaw,
+                clips.map { Pair(it.trimStartMs, it.trimEndMs) }
+            )
+        } else {
+            emptyMap()
+        }
+        val hasTransitions = transitionDurations.isNotEmpty()
+
+        // ---- phase 13: the flag contract ----
+        // A setting left on "same as input" never writes a flag. All""",
+"planner: phase-14 transition block")
+
+# ---- 9) planInternal: perSegmentEncode trigger extension ----
+apply_edit(PLANNER, """        val twoStep = anyEncode && keyframeCut
+        val perSegmentEncode = !keyframeCut &&
+            (anyEncode || (!encodableSource && anyTrimmedSpan))""",
+"""        val twoStep = anyEncode && keyframeCut
+        // A source pixel format the encoders cannot reproduce would make
+        // the fade pieces differ from their copied neighbours, so a
+        // transition on a non-encodable source takes the uniform encode
+        // (the fades then ride the per-segment commands).
+        val perSegmentEncode = (!keyframeCut &&
+            (anyEncode || (!encodableSource && anyTrimmedSpan))) ||
+            (!encodableSource && merged && hasTransitions)""",
+"planner: perSegmentEncode trigger")
+
+# ---- 10) planInternal: replace phase-12 straight-cut block with span probes ----
+apply_edit(PLANNER, """        // ---- phase 12: transitions export as straight cuts ----
+        // The lossless pipeline never blends frames, so no transition
+        // segments are rendered and no span is shortened: every clip is
+        // simply its trim, and clips join end to start in the concat.
+        val merged = !exportSeparateFiles   // single file vs one per clip
+        for (i in clips.indices) {""",
+"""        // Transition-adjacent copied spans need exact keyframe boundaries
+        // (phase 14); encoded plans carry the fades inside their commands.
+        val spanPlans = mutableMapOf<Int, TransitionSpan?>()
+        if (hasTransitions && !perSegmentEncode) {
+            for (i in clips.indices) {
+                val ld = if (i > 0) transitionDurations[i - 1] ?: 0L else 0L
+                val rd = if (i < clips.size - 1) transitionDurations[i] ?: 0L else 0L
+                if (ld <= 0L && rd <= 0L) continue
+                val pkts = probeVideoPackets(clips[i].path)
+                spanPlans[i] = pkts?.let {
+                    planTransitionSpan(it, clips[i].trimStartMs, clips[i].trimEndMs, ld / 2L, rd / 2L)
                 }
-                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0")
-                }
-                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
-                if (fpsArg != null) sb.append(" ").append(fpsArg)
-                sb.append(" ").append(encSimple)
-                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
-                sb.append(" \"").append(seg.absolutePath).append("\"")
-                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            } else if (fullRange) {''',
-r'''            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
+            }
+        }
+        for (i in clips.indices) {""",
+"planner: span probe block")
+
+# ---- 11) planInternal: sar/tbn helper vals after fpsFilter ----
+apply_edit(PLANNER, """        val fpsFilter = "fps=" + refParams.fpsString
+""",
+"""        val fpsFilter = "fps=" + refParams.fpsString
+        // Phase 14 match values: the source SAR (DAR follows from
+        // resolution + SAR) and the video track timescale, so every
+        // segment the planner writes is concat-uniform with the source
+        // whatever the source clips' own timescales are.
+        val sarSpec = if (refParams.sarNum > 0 && refParams.sarDen > 0) {
+            refParams.sarNum.toString() + ":" + refParams.sarDen
+        } else {
+            "1:1"
+        }
+        val segTbn = if (refParams.tbn > 0 && (segExt == ".mp4" || segExt == ".mov")) {
+            " -video_track_timescale " + refParams.tbn
+        } else {
+            ""
+        }
+        val outTbn = if (refParams.tbn > 0 && (outExt == ".mp4" || outExt == ".mov")) {
+            " -video_track_timescale " + refParams.tbn
+        } else {
+            ""
+        }
+        fun fadeColorFor(gap: Int): String =
+            if (gap >= 0 && transitionsRaw[gap]?.first.equals("fadewhite", ignoreCase = true)) {
+                ":color=white"
+            } else {
+                ""
+            }
+""",
+"planner: sar/tbn/fadeColor helpers")
+
+# ---- 12) planInternal: loop header with transition halves ----
+apply_edit(PLANNER, """        for (i in clips.indices) {
+            val clip = clips[i]
+            val spanStart = clip.trimStartMs
+            val spanEnd = clip.trimEndMs
+            val spanMs = spanEnd - spanStart
+            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
+            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
             val seg = if (perSegmentEncode) nextSegmentFile(outExt) else nextSegmentFile(segExt)
 
+            if (perSegmentEncode) {""",
+"""        for (i in clips.indices) {
+            val clip = clips[i]
+            val spanStart = clip.trimStartMs
+            val spanEnd = clip.trimEndMs
+            val spanMs = spanEnd - spanStart
+            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
+            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
+            val leftD = if (i > 0) (transitionDurations[i - 1] ?: 0L) / 2L else 0L
+            val rightD = if (i < clips.size - 1) (transitionDurations[i] ?: 0L) / 2L else 0L
+            val adjacent = leftD > 0L || rightD > 0L
+
             if (perSegmentEncode) {
-                // Frame-accurate direct encode (phase 11/13): one command
-                // per segment with ONE flag per changed option. -ss before
-                // -i decodes forward, so cuts land on the exact frame;
-                // autorotate runs before scale, so rotated phone clips land
-                // on their display dimensions. Audio left on same-as-input
-                // stream-copies next to the re-encoded video.
-                val sb = StringBuilder("-y")
-                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
-                if (!fullRange) sb.append(" -t ").append(ms(spanMs))
-                sb.append(" -i \"").append(clip.path).append("\"")
-                if (silenceAudio) {
-                    sb.append(" -f lavfi -t ").append(ms(spanMs))
-                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                }
-                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0")
-                }
-                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+                val seg = nextSegmentFile(outExt)""",
+"planner: loop header transition halves")
+
+apply_edit(PLANNER, """                if (scaleFilter != null) sb.append(" -vf \\"").append(scaleFilter).append("\\"")
                 if (fpsArg != null) sb.append(" ").append(fpsArg)
                 sb.append(" ").append(vEncSimple)
                 if (silenceAudio) {
@@ -496,1038 +541,565 @@ r'''            val silenceAudio = planHasAudio && (!clip.params.hasAudio || cli
                 }
                 if (preserveMetadata) sb.append(" -map_metadata 0")
                 if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
-                sb.append(" \"").append(seg.absolutePath).append("\"")
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            } else if (fullRange) {''',
-"1i per-segment encode branch")
-
-# ------------------------------------- 1j concat + two-step finalize + separate
-must_replace(PLANNER,
-r'''        // ---- final assembly: concat with stream copy (merged mode only) ----
-        // seg_0 is attached as a second input purely so the output can
-        // inherit the source's global metadata (-map_metadata 1); faststart
-        // relocates the MP4 moov atom to the front of the file.
-        if (merged) {
-            val listFile = File(workDir, "concat_list.txt")
-            val listSb = StringBuilder()
-            for (f in segmentFiles) {
-                listSb.append("file '").append(f.absolutePath).append("'\n")
-            }
-            listFile.writeText(listSb.toString())
-
-            val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
-            val metaArg = if (preserveMetadata) " -map_metadata 1" else ""
-            val fastArg = if (movFastStart) " -movflags +faststart" else ""
-            val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
-                "\" -i \"" + segmentFiles[0].absolutePath + "\"" +
-                " -map 0:v:0" + audioMap + metaArg + " -c copy -bsf:v dump_extra" + fastArg +
-                " \"" + outputFilePath + "\""
-            commands.add(Pair(concatCmd, 1.0))
-        }''',
-r'''        // ---- final assembly: concat with stream copy (merged mode only) ----
-        // seg_0 is attached as a second input purely so the output can
-        // inherit the source's global metadata (-map_metadata 1); faststart
-        // relocates the MP4 moov atom to the front of the file. In the
-        // two-step plan (phase 13) the concat assembles the intermediate
-        // lossless cut and the finalize command below re-encodes it once.
-        if (merged) {
-            val listFile = File(workDir, "concat_list.txt")
-            val listSb = StringBuilder()
-            for (f in segmentFiles) {
-                listSb.append("file '").append(f.absolutePath).append("'\n")
-            }
-            listFile.writeText(listSb.toString())
-
-            val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
-            val metaArg = if (preserveMetadata) " -map_metadata 1" else ""
-            val concatTarget = if (twoStep) File(workDir, "cut" + segExt).absolutePath else outputFilePath
-            val fastArg = if (movFastStart && !twoStep && (segExt == ".mp4" || segExt == ".mov"))
-                " -movflags +faststart" else ""
-            val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
-                "\" -i \"" + segmentFiles[0].absolutePath + "\"" +
-                " -map 0:v:0" + audioMap + metaArg + " -c copy -bsf:v dump_extra" + fastArg +
-                " \"" + concatTarget + "\""
-            commands.add(Pair(concatCmd, 1.0))
-
-            if (twoStep) {
-                // ---- phase 13 step two: the ONE finalize command ----
-                // The lossless cut is assembled; re-encode it once with a
-                // flag per changed option. Audio untouched -> -c:a copy;
-                // video untouched (audio-only change) -> -c:v copy.
-                val sb = StringBuilder("-y -i \"").append(concatTarget).append("\"")
-                sb.append(" -map 0:v:0")
-                if (planHasAudio && !audioMuted) sb.append(" -map 0:a:0")
-                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+            } else if (fullRange) {""",
+"""                if (scaleFilter != null || adjacent) {
+                    val vParts = mutableListOf<String>()
+                    if (scaleFilter != null) vParts.add(scaleFilter)
+                    if (leftD > 0L) {
+                        vParts.add("fade=t=in:st=0:d=" + ms(leftD) + fadeColorFor(i - 1))
+                    }
+                    if (rightD > 0L) {
+                        vParts.add("fade=t=out:st=" + ms(spanMs - rightD) +
+                            ":d=" + ms(rightD) + fadeColorFor(i))
+                    }
+                    sb.append(" -vf \\"").append(vParts.joinToString(",")).append("\\"")
+                }
                 if (fpsArg != null) sb.append(" ").append(fpsArg)
-                sb.append(" ").append(if (needsVideoEncode) vEncSimple else "-c:v copy")
-                if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
+                sb.append(" ").append(vEncSimple)
+                if (silenceAudio) {
+                    sb.append(" ").append(aEncSilence)
+                } else if (adjacent && planHasAudio) {
+                    sb.append(" ").append(aEnc)
+                    val aFades = mutableListOf<String>()
+                    if (leftD > 0L) aFades.add("afade=t=in:st=0:d=" + ms(leftD))
+                    if (rightD > 0L) {
+                        aFades.add("afade=t=out:st=" + ms(spanMs - rightD) + ":d=" + ms(rightD))
+                    }
+                    sb.append(" -af \\"").append(aFades.joinToString(",")).append("\\"")
+                } else if (planHasAudio) {
+                    sb.append(" ").append(aEncSimple)
+                }
                 if (preserveMetadata) sb.append(" -map_metadata 0")
                 if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
-                sb.append(" \"").append(outputFilePath).append("\"")
-                commands.add(Pair(sb.toString(), Math.max(1.0, totalSpanSec)))
-            }
-        } else if (twoStep) {
-            // ---- separate files + changed settings: encode each cut ----
-            for (i in segmentFiles.indices) {
-                val spanMs = clips[i].trimEndMs - clips[i].trimStartMs
-                val out = File(workDir, "out_" + i + outExt)
-                val sb = StringBuilder("-y -i \"").append(segmentFiles[i].absolutePath).append("\"")
-                sb.append(" -map 0:v:0")
-                if (planHasAudio && !audioMuted) sb.append(" -map 0:a:0")
-                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
-                if (fpsArg != null) sb.append(" ").append(fpsArg)
-                sb.append(" ").append(if (needsVideoEncode) vEncSimple else "-c:v copy")
-                if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
-                if (preserveMetadata) sb.append(" -map_metadata 0")
-                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
-                sb.append(" \"").append(out.absolutePath).append("\"")
+                sb.append(outTbn)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-                encodedOutFiles.add(out)
-            }
-        }''',
-"1j concat + finalize")
+            } else if (adjacent && (!keyframeCut || spanPlans[i] == null)) {
+                // Phase 14: no clean keyframe boundary (or a normal cut), so
+                // the whole span re-encodes once with the fade windows riding
+                // on it - still matched to the source parameters.
+                val seg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")
+                if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                sb.append(" -t ").append(ms(spanMs)).append(" -i \\"").append(clip.path).append("\\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(spanMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                val vParts = mutableListOf<String>()
+                vParts.add(fpsFilter)
+                vParts.add("setsar=" + sarSpec)
+                if (leftD > 0L) {
+                    vParts.add("fade=t=in:st=0:d=" + ms(leftD) + fadeColorFor(i - 1))
+                }
+                if (rightD > 0L) {
+                    vParts.add("fade=t=out:st=" + ms(spanMs - rightD) +
+                        ":d=" + ms(rightD) + fadeColorFor(i))
+                }
+                sb.append(" -vf \\"").append(vParts.joinToString(",")).append("\\"")
+                if (!silenceAudio && planHasAudio) {
+                    val aFades = mutableListOf<String>()
+                    if (leftD > 0L) aFades.add("afade=t=in:st=0:d=" + ms(leftD))
+                    if (rightD > 0L) {
+                        aFades.add("afade=t=out:st=" + ms(spanMs - rightD) + ":d=" + ms(rightD))
+                    }
+                    sb.append(" -af \\"").append(aFades.joinToString(",")).append("\\"")
+                }
+                sb.append(" ").append(enc)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(segTbn)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (adjacent) {
+                // Phase 14 keyframe mode: the fade pieces re-encode with
+                // parameters identical to the source, and the copied span
+                // between them is cut exactly at keyframe packet boundaries
+                // (-ss at the keyframe plus -frames:v N), so the concat
+                // joins everything with -c copy and no frame repeats.
+                val plan = spanPlans[i]!!
+                if (leftD > 0L) {
+                    // fade-in piece: [spanStart, startKf] - fade over the
+                    // first leftD, plain bridge up to the keyframe
+                    val pieceMs = plan.startKfMs - spanStart
+                    val pSeg = nextSegmentFile(segExt)
+                    val sb = StringBuilder("-y -noautorotate")
+                    if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
+                    sb.append(" -t ").append(ms(pieceMs)).append(" -i \\"").append(clip.path).append("\\"")
+                    if (silenceAudio) {
+                        sb.append(" -f lavfi -t ").append(ms(pieceMs))
+                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                    }
+                    sb.append(" -map 0:v:0")
+                    if (silenceAudio) {
+                        sb.append(" -map 1:a:0")
+                    } else if (planHasAudio) {
+                        sb.append(" -map 0:a:0")
+                    }
+                    sb.append(" -vf \\"").append(fpsFilter).append(",setsar=").append(sarSpec)
+                        .append(",fade=t=in:st=0:d=").append(ms(leftD))
+                        .append(fadeColorFor(i - 1)).append("\\"")
+                    if (!silenceAudio && planHasAudio) {
+                        sb.append(" -af \\"afade=t=in:st=0:d=").append(ms(leftD)).append("\\"")
+                    }
+                    sb.append(" ").append(enc)
+                    if (silenceAudio) {
+                        sb.append(" ").append(aEncSilence)
+                    } else if (planHasAudio) {
+                        sb.append(" ").append(aEnc)
+                    }
+                    sb.append(segTbn)
+                    sb.append(" \\"").append(pSeg.absolutePath).append("\\"")
+                    commands.add(Pair(sb.toString(), Math.max(0.5, pieceMs / 1000.0)))
+                }
+                // copied span: [startKf, endKf) - exact keyframe cut
+                val copyMs = plan.endKfMs - plan.startKfMs
+                val cSeg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")
+                if (plan.startKfMs > 0L) sb.append(" -ss ").append(ms(plan.startKfMs))
+                sb.append(" -t ").append(ms(copyMs)).append(" -i \\"").append(clip.path).append("\\"")
+                if (silenceAudio) {
+                    sb.append(" -f lavfi -t ").append(ms(copyMs))
+                    sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                }
+                sb.append(" -map 0:v:0")
+                if (silenceAudio) {
+                    sb.append(" -map 1:a:0")
+                } else if (planHasAudio) {
+                    sb.append(" -map 0:a:0")
+                }
+                if (plan.framesV > 0) sb.append(" -frames:v ").append(plan.framesV)
+                if (silenceAudio) {
+                    sb.append(" -c:v copy -avoid_negative_ts make_zero").append(" ").append(aEnc)
+                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
+                }
+                sb.append(segTbn)
+                sb.append(" \\"").append(cSeg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, copyMs / 1000.0)))
+                if (rightD > 0L) {
+                    // fade-out piece: [endKf, spanEnd] - bridge then fade
+                    // over the last rightD of the clip
+                    val pieceMs = spanEnd - plan.endKfMs
+                    val fadeStMs = spanEnd - rightD - plan.endKfMs
+                    val pSeg = nextSegmentFile(segExt)
+                    val sb2 = StringBuilder("-y -noautorotate")
+                    sb2.append(" -ss ").append(ms(plan.endKfMs))
+                    sb2.append(" -t ").append(ms(pieceMs)).append(" -i \\"").append(clip.path).append("\\"")
+                    if (silenceAudio) {
+                        sb2.append(" -f lavfi -t ").append(ms(pieceMs))
+                        sb2.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
+                    }
+                    sb2.append(" -map 0:v:0")
+                    if (silenceAudio) {
+                        sb2.append(" -map 1:a:0")
+                    } else if (planHasAudio) {
+                        sb2.append(" -map 0:a:0")
+                    }
+                    sb2.append(" -vf \\"").append(fpsFilter).append(",setsar=").append(sarSpec)
+                        .append(",fade=t=out:st=").append(ms(fadeStMs))
+                        .append(":d=").append(ms(rightD)).append(fadeColorFor(i)).append("\\"")
+                    if (!silenceAudio && planHasAudio) {
+                        sb2.append(" -af \\"afade=t=out:st=").append(ms(fadeStMs))
+                            .append(":d=").append(ms(rightD)).append("\\"")
+                    }
+                    sb2.append(" ").append(enc)
+                    if (silenceAudio) {
+                        sb2.append(" ").append(aEncSilence)
+                    } else if (planHasAudio) {
+                        sb2.append(" ").append(aEnc)
+                    }
+                    sb2.append(segTbn)
+                    sb2.append(" \\"").append(pSeg.absolutePath).append("\\"")
+                    commands.add(Pair(sb2.toString(), Math.max(0.5, pieceMs / 1000.0)))
+                }
+            } else if (fullRange) {""",
+"planner: perSegmentEncode fades + new adjacent branches")
 
-# --------------------------------------------------------------- 1k outputs
-must_replace(PLANNER,
-r'''        val outputs = if (merged) listOf(outputFilePath) else segmentFiles.map { it.absolutePath }''',
-r'''        val outputs = when {
-            exportSeparateFiles && twoStep -> encodedOutFiles.map { it.absolutePath }
-            exportSeparateFiles -> segmentFiles.map { it.absolutePath }
-            else -> listOf(outputFilePath)
-        }''',
-"1k outputs list")
+# ---- 14) fullRange branch: seg allocation + tbn flag ----
+apply_edit(PLANNER, """            } else if (fullRange) {
+                // Whole clip unchanged -> pure stream copy remux
+                val sb = StringBuilder("-y -noautorotate -i \\"").append(clip.path).append("\\"")""",
+"""            } else if (fullRange) {
+                // Whole clip unchanged -> pure stream copy remux
+                val seg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate -i \\"").append(clip.path).append("\\"")""",
+"planner: fullRange seg alloc")
 
-# ------------------------------------------------------------------- 1l log
-must_replace(PLANNER,
-r'''        Log.d(
-            TAG,
-            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
-                (if (merged) "" else ", separate mode") +
-                (if (reencodeAll) ", simple re-encode mode (scale=" + (scaleFilter ?: "none") +
-                    ", " + (fpsArg ?: "fps unchanged") + ")" else "")
-        )''',
-r'''        Log.d(
-            TAG,
-            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
+apply_edit(PLANNER, """                } else {
+                    sb.append(" -map 0:v:0 -c copy")
+                }
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (keyframeCut) {""",
+"""                } else {
+                    sb.append(" -map 0:v:0 -c copy")
+                }
+                sb.append(segTbn)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else if (keyframeCut) {""",
+"planner: fullRange tbn flag")
+
+# ---- 15) keyframeCut branch: seg allocation + tbn flag ----
+apply_edit(PLANNER, """            } else if (keyframeCut) {
+                // Keyframe cut (LosslessCut-style): -ss BEFORE -i snaps to the
+                // preceding keyframe automatically, so the trimmed span is
+                // stream-copied - fully lossless, with up to one GOP of extra
+                // head material (same semantics as LosslessCut's keyframe cut).
+                val sb = StringBuilder("-y -noautorotate")""",
+"""            } else if (keyframeCut) {
+                // Keyframe cut (LosslessCut-style): -ss BEFORE -i snaps to the
+                // preceding keyframe automatically, so the trimmed span is
+                // stream-copied - fully lossless, with up to one GOP of extra
+                // head material (same semantics as LosslessCut's keyframe cut).
+                val seg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")""",
+"planner: keyframeCut seg alloc")
+
+apply_edit(PLANNER, """                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
+                }
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters""",
+"""                } else {
+                    sb.append(" -c copy -avoid_negative_ts make_zero")
+                }
+                sb.append(segTbn)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters""",
+"planner: keyframeCut tbn flag")
+
+# ---- 16) trimmed branch: seg allocation + setsar spec + tbn flag ----
+apply_edit(PLANNER, """            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters
+                val sb = StringBuilder("-y -noautorotate")""",
+"""            } else {
+                // Trimmed span -> re-encode ONLY this span with matching parameters
+                val seg = nextSegmentFile(segExt)
+                val sb = StringBuilder("-y -noautorotate")""",
+"planner: trimmed seg alloc")
+
+apply_edit(PLANNER, """                sb.append(" -vf \\"").append(fpsFilter).append(",setsar=1\\" ")
+                sb.append(enc)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")""",
+"""                sb.append(" -vf \\"").append(fpsFilter).append(",setsar=").append(sarSpec).append("\\" ")
+                sb.append(enc)
+                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(segTbn)
+                sb.append(" \\"").append(seg.absolutePath).append("\\"")""",
+"planner: trimmed setsar/tbn")
+
+# ---- 17) twoStep finalize: tbn flag ----
+apply_edit(PLANNER, """                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(" \\"").append(outputFilePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(1.0, totalSpanSec)))""",
+"""                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(outTbn)
+                sb.append(" \\"").append(outputFilePath).append("\\"")
+                commands.add(Pair(sb.toString(), Math.max(1.0, totalSpanSec)))""",
+"planner: finalize tbn flag")
+
+# ---- 18) separate twoStep: tbn flag ----
+apply_edit(PLANNER, """                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(" \\"").append(out.absolutePath).append("\\"")""",
+"""                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(outTbn)
+                sb.append(" \\"").append(out.absolutePath).append("\\"")""",
+"planner: separate twoStep tbn flag")
+
+# ---- 19) log line ----
+apply_edit(PLANNER, """            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
                 (if (merged) "" else ", separate mode") +
                 (if (twoStep) ", two-step (lossless cut + one finalize encode)" else "") +
-                (if (perSegmentEncode) ", direct per-segment encode" else "")
-        )''',
-"1l plan log")
-PYEOF
-}
+                (if (perSegmentEncode) ", direct per-segment encode" else "")""",
+"""            "smart export planned: " + commands.size + " commands, clips=" + clips.size +
+                (if (merged) "" else ", separate mode") +
+                (if (twoStep) ", two-step (lossless cut + one finalize encode)" else "") +
+                (if (perSegmentEncode) ", direct per-segment encode" else "") +
+                (if (hasTransitions) ", " + transitionDurations.size + " fade transition(s)" else "")""",
+"planner: log line")
 
-step1b
-log "step1b: done"
-
-###############################################################################
-# Step 1c -- SmartExportPlanner.kt (new helpers)
-###############################################################################
-step1c() {
-    log "step1c: SmartExportPlanner.kt -- simple encoder helpers"
-    python3 - <<'PYEOF'
-import sys
-
-PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# ---------------------------------------- 1m simpleVideoEncoderArgs + audio args
-must_replace(PLANNER,
-r'''    /**
-     * Pixel format for re-encode templates (phase 12): keep the common''',
-r'''    /**
-     * Phase 13 "one flag per changed option" video encoder string for the
-     * simple commands (the two-step finalize command and the per-segment
-     * direct encode). A same-as-input option writes NO flag: codec ->
-     * -c:v with the source encoder family when unchanged; bitrate ->
-     * -b:v only when the user set one (CRF-quality default otherwise, and
-     * VP9/AV1 get constant-quality mode because their default 2-pass
-     * bitrate is unusable); preset -> x264/x265 only (hardware / VP9 / AV1
-     * encoders do not take -preset). -pix_fmt appears only when the source
-     * format must be converted for the 8-bit encoders. -tag:v hvc1 keeps
-     * HEVC files playable on Apple players (ignored by MKV).
-     */
-    private fun simpleVideoEncoderArgs(
-        p: MediaParams,
-        chosenCodec: String,
-        bitrate: String,
-        preset: String
-    ): String {
-        val enc = when {
-            chosenCodec.isNotEmpty() -> chosenCodec
-            p.vCodec == "hevc" -> "libx265"
-            else -> "libx264"
-        }
-        val sb = StringBuilder("-c:v ").append(enc)
-        if (enc == "libx265") sb.append(" -tag:v hvc1")
-        if ((enc == "libx264" || enc == "libx265") &&
-            p.pixFmt != "yuv420p" && p.pixFmt != "yuvj420p" &&
-            p.pixFmt != "nv12" && p.pixFmt != "nv21"
-        ) {
-            sb.append(" -pix_fmt yuv420p")
-        }
-        when {
-            bitrate.isNotEmpty() -> sb.append(" -b:v ").append(bitrate)
-            enc == "libx264" -> sb.append(" -crf 18")
-            enc == "libx265" -> sb.append(" -crf 20")
-            enc == "libvpx-vp9" -> sb.append(" -crf 32 -b:v 0")
-            enc == "libaom-av1" -> sb.append(" -crf 30 -b:v 0")
-            else -> { /* hevc_mediacodec: encoder default bitrate */ }
-        }
-        if (preset.isNotEmpty() && (enc == "libx264" || enc == "libx265")) {
-            sb.append(" -preset ").append(preset)
-        }
-        return sb.toString()
-    }
-
-    /**
-     * Phase 13 audio encoder string: "-c:a copy" when both the codec and
-     * the bitrate are same-as-input; otherwise the chosen encoder (the
-     * source codec family when only the bitrate changed) with -b:a only
-     * when the user set one. libopus re-encodes fine from any input rate
-     * (ffmpeg auto-resamples to 48 kHz - lab validated).
-     */
-    private fun simpleAudioEncoderArgs(
-        audioRef: MediaParams?,
-        chosenCodec: String,
-        audioBitrate: String
-    ): String {
-        if (chosenCodec.isEmpty() && audioBitrate.isEmpty()) return "-c:a copy"
-        val enc = when {
-            chosenCodec.isNotEmpty() -> chosenCodec
-            audioRef?.aCodec == "mp3" -> "libmp3lame"
-            else -> "aac"
-        }
-        val sb = StringBuilder("-c:a ").append(enc)
-        if (audioBitrate.isNotEmpty()) sb.append(" -b:a ").append(audioBitrate)
-        return sb.toString()
-    }
-
-    /**
-     * Pixel format for the hybrid span re-encode (phase 12): keep the common''',
-"1m simple encoder helpers")
-PYEOF
-}
-
-step1c
-log "step1c: done"
-
-###############################################################################
-# Step 2 -- ExportSettingsDialog.kt
-###############################################################################
-step2() {
-    log "step2: ExportSettingsDialog.kt -- flag-contract preview + bitrate"
-    python3 - <<'PYEOF'
-import sys
-
-ESD = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# ------------------------------------------------------------- 2a header doc
-must_replace(ESD,
-r''' *  - Phase 11: resolution / FPS changes keep the smart path - the plan
- *    switches to the simple re-encode command (a scale / -r flag per
- *    changed option) with a lossless concat assembly.''',
-r''' *  - Phase 11: resolution / FPS changes keep the smart path - the plan
- *    switches to the simple re-encode command (a scale / -r flag per
- *    changed option) with a lossless concat assembly; phase 13 extends
- *    it to the full flag contract:
- *  - Phase 13 (flag contract): a setting left on "Same as input" writes
- *    NO ffmpeg flag; keyframe cut + changed settings runs the lossless
- *    cut FIRST, then ONE finalize encode of the assembled cut; codec /
- *    bitrate / audio options map to -c:v / -b:v / -c:a / -b:a exactly;
- *    the video bitrate chip forwards "" (no -b:v) while it stays on
- *    "Same as input".''',
-"2a header doc")
-
-# --------------------------------------------------- 2b chosenBitrateString
-must_replace(ESD,
-r'''    private fun currentBitrateString(): String = "${effectiveVideoKbps()}k"''',
-r'''    /** Phase 13: "" while the bitrate chip is on Same as input (no -b:v). */
-    private fun chosenBitrateString(): String {
-        if (bitrateSameAsInput) return ""
-        val typed = etBitrate.text.toString().toIntOrNull()
-        return if (typed != null && typed in 100..500000) typed.toString() + "k" else ""
-    }''',
-"2b chosenBitrateString helper")
-
-must_replace(ESD,
-r'''        viewModel.setExportSettings(selRes, selFps, snapAudioOnly, currentBitrateString())''',
-r'''        viewModel.setExportSettings(selRes, selFps, snapAudioOnly, chosenBitrateString())''',
-"2b refresh forwards empty bitrate")
-
-# --------------------------------------------------------- 2c smartEncodeMode
-must_replace(ESD,
-r'''    /**
-     * True when a resolution / fps / custom-size change switches the smart
-     * plan to the simple re-encode template (phase 11): one command per
-     * timeline segment with a scale / -r flag per changed option, followed
-     * by the lossless concat assembly. Mirrors the planner's own logic.
-     */
-    private fun smartReencodeMode(a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis): Boolean {
-        val customScale = customW >= 16 && customH >= 16
-        val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
-        val fpsChange = selFps != 0 && selFps != a.fpsRounded
-        // Phase 12 mirror of the planner rule: a source pixel format the
-        // re-encode templates cannot reproduce (10-bit and friends) forces
-        // the uniform re-encode plan whenever a trim needs encoding.
-        val anyTrimmed = a.clips.any {
-            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
-        }
-        return customScale || resChange || fpsChange ||
-            (a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
-                a.pixFmt != "nv12" && a.pixFmt != "nv21" && !selKeyframeCut && anyTrimmed)
-    }''',
-r'''    /**
-     * True when ANY export setting differs from the source (phase 13 flag
-     * contract): resolution / custom size / fps / video codec / video
-     * bitrate / audio codec / audio bitrate. The plan then runs the simple
-     * encode commands - one flag per changed option - instead of the pure
-     * -c copy. Mirrors the planner's own logic (chosenBitrateString is ""
-     * while the bitrate chip is on Same as input).
-     */
-    private fun smartEncodeMode(a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis): Boolean {
-        val customScale = customW >= 16 && customH >= 16
-        val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
-        val fpsChange = selFps != 0 && selFps != a.fpsRounded
-        // Phase 12 mirror of the planner rule: a source pixel format the
-        // re-encode templates cannot reproduce (10-bit and friends) forces
-        // the uniform re-encode plan whenever a trim needs encoding.
-        val anyTrimmed = a.clips.any {
-            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
-        }
-        return customScale || resChange || fpsChange ||
+apply_edit(ESD, """        return customScale || resChange || fpsChange ||
             chosenBitrateString().isNotEmpty() || selCodec.isNotEmpty() ||
             selAudioBitrate.isNotEmpty() || selAudioCodec.isNotEmpty() ||
             (a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
                 a.pixFmt != "nv12" && a.pixFmt != "nv21" && !selKeyframeCut && anyTrimmed)
-    }''',
-"2c smartEncodeMode")
+    }""",
+"""        val nonEncodable = a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
+            a.pixFmt != "nv12" && a.pixFmt != "nv21"
+        return customScale || resChange || fpsChange ||
+            chosenBitrateString().isNotEmpty() || selCodec.isNotEmpty() ||
+            selAudioBitrate.isNotEmpty() || selAudioCodec.isNotEmpty() ||
+            (nonEncodable && !selKeyframeCut && anyTrimmed) ||
+            // phase 14 mirror: a fade segment on a non-encodable source
+            // cannot match its copied neighbours, so the uniform encode
+            // takes over and the fades ride the per-segment commands.
+            (nonEncodable && a.transitions.isNotEmpty() && !selSeparateFiles)
+    }""",
+"ESD: smartEncodeMode phase-14 trigger")
 
-# ------------------------------------------------ 2d buildSmartSummary call site
-must_replace(ESD,
-r'''        if (smartReencodeMode(a)) return buildSmartReencodeSummary(a)''',
-r'''        if (smartEncodeMode(a)) return buildSmartEncodeSummary(a)''',
-"2d encode summary call site")
-
-# ------------------------------------------- 2e buildSmartSummary output format
-must_replace(ESD,
-r'''        val sb = StringBuilder()
-        sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-        if (a.hasAudio) sb.append(" -map 0:a:0")
-        if (selPreserveMetadata) sb.append(" -map_metadata 1")
-        sb.append(" -c copy -bsf:v dump_extra")
-        if (selFastStart) sb.append(" -movflags +faststart")
-        sb.append(" output.mp4")''',
-r'''        val outFmt = effectiveVideoFormat()
-        val sb = StringBuilder()
-        sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-        if (a.hasAudio) sb.append(" -map 0:a:0")
-        if (selPreserveMetadata) sb.append(" -map_metadata 1")
-        sb.append(" -c copy -bsf:v dump_extra")
-        if (selFastStart && (outFmt == "mp4" || outFmt == "mov")) sb.append(" -movflags +faststart")
-        sb.append(" output.").append(outFmt)''',
-"2e pure-copy preview honors the container")
-PYEOF
-}
-
-step2
-log "step2: done"
-
-###############################################################################
-# Step 2b -- ExportSettingsDialog.kt (encode summary builder)
-###############################################################################
-step2b() {
-    log "step2b: ExportSettingsDialog.kt -- the encode summary builder"
-    python3 - <<'PYEOF'
-import sys
-
-ESD = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# ------------------------------------------- 2f buildSmartEncodeSummary replaces
-must_replace(ESD,
-r'''    /**
-     * Preview of the simple re-encode plan (phase 11): the per-segment
-     * command shape - the classic ffmpeg template with one flag per changed
-     * export option - plus the final concat command when a single merged
-     * file is exported.
-     */
-    private fun buildSmartReencodeSummary(
-        a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis
-    ): String {
-        val customScale = customW >= 16 && customH >= 16
-        val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
-        val fpsChange = selFps != 0 && selFps != a.fpsRounded
-        val scaleSpec: String = when {
-            customScale -> "scale=" + (customW - customW % 2) + ":" + (customH - customH % 2)
-            resChange -> if (a.displayHeight >= a.displayWidth) "scale=" + selRes + ":-2" else "scale=-2:" + selRes
-            else -> ""
-        }
-        val vCodecLabel = if (a.vCodec == "hevc") "libx265" else "libx264"
-        val aBitrate = if (selAudioBitrate.isNotEmpty()) selAudioBitrate else "192k"
-        val sb = StringBuilder()
-        sb.append("ffmpeg [-ss S] [-t D] -i input -map 0:v:0")
-        if (a.hasAudio) sb.append(" -map 0:a:0")
-        if (scaleSpec.isNotEmpty()) sb.append(" -vf ").append(scaleSpec)
-        if (fpsChange) sb.append(" -r ").append(selFps)
-        sb.append(" -c:v ").append(vCodecLabel).append(" -b:v ").append(currentBitrateString())
-        if (a.hasAudio) sb.append(" -c:a aac -b:a ").append(aBitrate)
-        sb.append(" seg_N.mp4   (one command per timeline segment)")
-        if (!selSeparateFiles) {
-            sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
-            if (selPreserveMetadata) sb.append(" -map_metadata 1")
-            sb.append(" -c copy -bsf:v dump_extra")
-            if (selFastStart) sb.append(" -movflags +faststart")
-            sb.append(" output.mp4")
-        }
-        sb.append("\n\n(smart export: ").append(a.clips.size)
-        sb.append(if (selSeparateFiles) " separate output files, all re-encoded" else " segments, all re-encoded")
-        if (scaleSpec.isNotEmpty()) {
-            if (customScale) {
-                sb.append(" to ").append(customW - customW % 2).append("x").append(customH - customH % 2)
-            } else {
-                sb.append(" to ").append(selRes).append("p short side")
+# ---- ESD 2) separate-mode note ----
+apply_edit(ESD, """            if (selKeyframeCut) {
+                sb.append("\\nkeyframe cut ON: trim points snap to keyframes (all copy, +/- one GOP accuracy)")
+            } else if (enc > 0) {
+                sb.append("\\n(faststart applies to the merged single-file mode only)")
             }
-        }
-        if (fpsChange) sb.append(" @ ").append(selFps).append("fps")
-        sb.append("; cuts are frame-accurate; ")
-        sb.append(if (selSeparateFiles) "no assembly step" else "assembly is a stream-copy concat")
-        sb.append(")")
-        return sb.toString()
-    }''',
-r'''    /**
-     * Phase 13 preview of the commands the smart pipeline will run when a
-     * setting changed: the exact flag list with one flag per CHANGED
-     * option (same-as-input options write no flag). Keyframe cut (the
-     * default) shows the two-step plan - the lossless cut commands plus
-     * the ONE finalize encode of the assembled cut; Normal cut shows the
-     * frame-accurate per-segment encode. Mirrors simpleVideoEncoderArgs /
-     * simpleAudioEncoderArgs in the planner.
-     */
-    private fun buildSmartEncodeSummary(
-        a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis
-    ): String {
-        val customScale = customW >= 16 && customH >= 16
-        val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
-        val fpsChange = selFps != 0 && selFps != a.fpsRounded
-        val vBitrate = chosenBitrateString()
-        val scaleSpec: String = when {
-            customScale -> "scale=" + (customW - customW % 2) + ":" + (customH - customH % 2) + ",setsar=1"
-            resChange -> if (a.displayHeight >= a.displayWidth) "scale=" + selRes + ":-2,setsar=1" else "scale=-2:" + selRes + ",setsar=1"
-            else -> ""
-        }
-        // ---- video flags (mirrors simpleVideoEncoderArgs) ----
-        val vEnc = when {
-            selCodec.isNotEmpty() -> selCodec
-            a.vCodec == "hevc" -> "libx265"
-            else -> "libx264"
-        }
-        val vFlags = StringBuilder("-c:v ").append(vEnc)
-        if (vEnc == "libx265") vFlags.append(" -tag:v hvc1")
-        when {
-            vBitrate.isNotEmpty() -> vFlags.append(" -b:v ").append(vBitrate)
-            vEnc == "libx264" -> vFlags.append(" -crf 18")
-            vEnc == "libx265" -> vFlags.append(" -crf 20")
-            vEnc == "libvpx-vp9" -> vFlags.append(" -crf 32 -b:v 0")
-            vEnc == "libaom-av1" -> vFlags.append(" -crf 30 -b:v 0")
-            else -> { }
-        }
-        if (selPreset.isNotEmpty() && (vEnc == "libx264" || vEnc == "libx265")) {
-            vFlags.append(" -preset ").append(selPreset)
-        }
-        // ---- audio flags (mirrors simpleAudioEncoderArgs) ----
-        val aFlags = if (selAudioCodec.isEmpty() && selAudioBitrate.isEmpty()) {
-            "-c:a copy"
-        } else {
-            val enc = when {
-                selAudioCodec.isNotEmpty() -> selAudioCodec
-                a.aCodec == "mp3" -> "libmp3lame"
-                else -> "aac"
+            return sb.toString()""",
+"""            if (selKeyframeCut) {
+                sb.append("\\nkeyframe cut ON: trim points snap to keyframes (all copy, +/- one GOP accuracy)")
+            } else if (enc > 0) {
+                sb.append("\\n(faststart applies to the merged single-file mode only)")
             }
-            if (selAudioBitrate.isNotEmpty()) "-c:a " + enc + " -b:a " + selAudioBitrate else "-c:a " + enc
-        }
-        val needsVideo = scaleSpec.isNotEmpty() || fpsChange ||
-            vBitrate.isNotEmpty() || selCodec.isNotEmpty()
-        val outFmt = effectiveVideoFormat()
-        val outExt = "." + outFmt
-        val fastOk = selFastStart && (outFmt == "mp4" || outFmt == "mov")
+            if (a.transitions.isNotEmpty()) {
+                sb.append("\\ntransitions apply only to the merged single-file export")
+            }
+            return sb.toString()""",
+"ESD: separate-mode transition note")
 
-        val modeNote = if (selKeyframeCut) {
-            if (selSeparateFiles) " separate files, each cut losslessly then encoded"
-            else " segments - lossless cut first, then ONE encode of the assembled cut"
-        } else {
-            if (selSeparateFiles) " separate output files, all re-encoded"
-            else " segments, all re-encoded (frame-accurate cuts)"
+# ---- ESD 3) buildSmartSummary copy/enc adjustment ----
+apply_edit(ESD, """        var copySec = 0.0
+        var encSec = 0.0
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val spanMs = c.trimEndMs - c.trimStartMs
+            if (spanMs <= 0L) continue
+            val full = c.fullRange
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        val sb = StringBuilder()
+        val outFmt = effectiveVideoFormat()""",
+"""        var copySec = 0.0
+        var encSec = 0.0
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val spanMs = c.trimEndMs - c.trimStartMs
+            if (spanMs <= 0L) continue
+            val full = c.fullRange
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        // phase 14: the fade windows around each transition re-encode (the
+        // pieces); with a normal cut the whole adjacent clips do, because
+        // the fades ride their re-encode.
         if (selKeyframeCut) {
-            // two-step: the lossless cut first, ONE finalize command after
-            sb.append("ffmpeg -ss S -t D -i input -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
-            sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
-            if (!selSeparateFiles) {
-                sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+            for (dMs in a.transitions.values) {
+                val dSec = dMs / 1000.0
+                copySec = Math.max(0.0, copySec - dSec)
+                encSec += dSec
+            }
+        } else {
+            val adjacentIdx = mutableSetOf<Int>()
+            for (gap in a.transitions.keys) {
+                adjacentIdx.add(gap)
+                adjacentIdx.add(gap + 1)
+            }
+            for (idx in adjacentIdx) {
+                val c = a.clips.getOrNull(idx) ?: continue
+                if (!c.fullRange) continue
+                val spanMs = c.trimEndMs - c.trimStartMs
+                if (spanMs <= 0L) continue
+                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
+                encSec += spanMs / 1000.0
+            }
+        }
+        val outFmt = effectiveVideoFormat()""",
+"ESD: buildSmartSummary transition seconds")
+
+# ---- ESD 4) buildSmartSummary note ----
+apply_edit(ESD, """        if (a.transitions.isNotEmpty()) {
+            sb.append("; ").append(a.transitions.size)
+                .append(" transition(s) exported as straight cuts (no frame blending)")
+        }
+        sb.append("; final assembly is a lossless concat)")""",
+"""        if (a.transitions.isNotEmpty()) {
+            sb.append("; ").append(a.transitions.size)
+                .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
+        }
+        sb.append("; final assembly is a lossless concat)")""",
+"ESD: buildSmartSummary transition note")
+
+# ---- ESD 5) buildSmartEncodeSummary twoStep piece line ----
+apply_edit(ESD, """            if (!selSeparateFiles) {
+                sb.append("\\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
                 if (a.hasAudio) sb.append(" -map 0:a:0")
                 if (selPreserveMetadata) sb.append(" -map_metadata 1")
                 sb.append(" -c copy -bsf:v dump_extra cut.mp4")
-            }
-            sb.append("\nffmpeg -i ").append(if (selSeparateFiles) "seg_N" else "cut.mp4")
-            sb.append(" -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
-            if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
-            if (fpsChange) sb.append(" -r ").append(selFps)
-            if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
-            if (a.hasAudio) sb.append(" ").append(aFlags)
-            if (fastOk) sb.append(" -movflags +faststart")
-            sb.append(" output").append(if (selSeparateFiles) "_N" else "").append(outExt)
-        } else {
-            sb.append("ffmpeg [-ss S] [-t D] -i input -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
-            if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
-            if (fpsChange) sb.append(" -r ").append(selFps)
-            if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
-            if (a.hasAudio) sb.append(" ").append(aFlags)
-            if (fastOk) sb.append(" -movflags +faststart")
-            sb.append(" seg_N").append(outExt).append("   (frame-accurate, one per segment)")
-            if (!selSeparateFiles) {
-                sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+            }""",
+"""            if (!selSeparateFiles) {
+                if (a.transitions.isNotEmpty()) {
+                    sb.append("\\nffmpeg -ss S -t D -i input -vf \\"fps,setsar,fade\\" -af afade <matched enc> seg_T.mp4   (transition piece)")
+                }
+                sb.append("\\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
                 if (a.hasAudio) sb.append(" -map 0:a:0")
                 if (selPreserveMetadata) sb.append(" -map_metadata 1")
-                sb.append(" -c copy -bsf:v dump_extra")
-                if (fastOk) sb.append(" -movflags +faststart")
-                sb.append(" output").append(outExt)
-            }
-        }
-        sb.append("\n\n(smart export: ").append(a.clips.size).append(modeNote)
-        if (scaleSpec.isNotEmpty()) {
-            if (customScale) {
-                sb.append(" to ").append(customW - customW % 2).append("x").append(customH - customH % 2)
-            } else {
-                sb.append(" to ").append(selRes).append("p short side")
-            }
-        }
-        if (fpsChange) sb.append(" @ ").append(selFps).append("fps")
-        if (a.transitions.isNotEmpty()) {
+                sb.append(" -c copy -bsf:v dump_extra cut.mp4")
+            }""",
+"ESD: encode summary transition piece line")
+
+# ---- ESD 6) buildSmartEncodeSummary note ----
+apply_edit(ESD, """        if (a.transitions.isNotEmpty()) {
             sb.append("; ").append(a.transitions.size)
                 .append(" transition(s) exported as straight cuts (no frame blending)")
         }
         sb.append(")")
-        return sb.toString()
-    }''',
-"2f buildSmartEncodeSummary")
-
-# ---------------------------------------------------- 2g smartEstimateBytes
-must_replace(ESD,
-r'''        if (smartReencodeMode(a)) {
-            // Simple re-encode plan (phase 11): every second is re-encoded
-            // at the chosen bitrate (no stream-copied parts).''',
-r'''        if (smartEncodeMode(a)) {
-            // Encode plan (phase 13): every second is re-encoded at the
-            // chosen bitrate, or at the source-equivalent rate when the
-            // bitrate chip stays on Same as input (CRF quality).''',
-"2g smartEstimateBytes mode")
-PYEOF
-}
-
-step2b
-log "step2b: done"
-
-###############################################################################
-# Step 3 -- VideoEditingViewModel.kt + VideoEditingActivity.kt
-###############################################################################
-step3() {
-    log "step3: ViewModel default bitrate + Activity comment fixes"
-    python3 - <<'PYEOF'
-import sys
-
-VM = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
-VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# --------------------------------------------------- 3a VM default bitrate
-must_replace(VM,
-r'''    private val _exportAudioOnly = MutableStateFlow(false)
-    private val _exportBitrate = MutableStateFlow("8M")''',
-r'''    private val _exportAudioOnly = MutableStateFlow(false)
-    private val _exportBitrate = MutableStateFlow("")   // "" = same as input (no -b:v flag)''',
-"3a VM default bitrate = same as input")
-
-# ------------------------------------------------------ 3b VEA stale comments
-must_replace(VEA,
-r'''                // SMART EXPORT (phase 9): when the project is copy-compatible (only
-                // trims / merges / freezes / transitions / mutes, all clips sharing the
-                // same codec parameters), build a segment plan that stream-copies the
-                // unchanged parts and only re-encodes the changed parts. Falls back to
-                // the consolidated render below whenever the planner says null.''',
-r'''                // SMART EXPORT (phase 9+): when the project is copy-compatible (only
-                // trims / merges / freezes / transitions / mutes, all clips sharing the
-                // same codec parameters), build a segment plan that stream-copies the
-                // unchanged parts and only re-encodes the changed parts. When the
-                // planner refuses, the real reason is surfaced below (phase 12);
-                // changed export settings run the phase 13 flag contract
-                // (lossless cut first, then ONE finalize encode).''',
-"3b saveAction comment")
-
-must_replace(VEA,
-r'''                    Log.w(TAG, "Smart export planning failed, using consolidated render: ${e.message}", e)''',
-r'''                    Log.w(TAG, "Smart export planning failed: ${e.message}", e)''',
-"3b planning-failed log wording")
-PYEOF
-}
-
-step3
-log "step3: done"
-
-###############################################################################
-# Step 4 -- ExportService.kt (gallery save honors the real container)
-###############################################################################
-step4() {
-    log "step4: ExportService.kt -- container-aware gallery save"
-    python3 - <<'PYEOF'
-import sys
-
-SVC = "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt"
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# ------------------------------------------ 4a drop the isAudioOnly intent read
-must_replace(SVC,
-r'''        val durationSecs = intent.getDoubleExtra(EXTRA_TOTAL_DURATION_SECS, 0.0)
-        val isAudioOnly = intent.getBooleanExtra(EXTRA_IS_AUDIO_ONLY, false)''',
-r'''        val durationSecs = intent.getDoubleExtra(EXTRA_TOTAL_DURATION_SECS, 0.0)''',
-"4a drop isAudioOnly extra read")
-
-# ------------------------------------------------- 4b call sites (single file)
-must_replace(SVC,
-r'''                            val savedUri = saveVideoToGallery(filesToSave[0], isAudioOnly)''',
-r'''                            val savedUri = saveVideoToGallery(filesToSave[0])''',
-"4b single-file call site")
-
-# --------------------------------------------- 4c call sites (separate files)
-must_replace(SVC,
-r'''                                val uri = saveVideoToGallery(f, false)''',
-r'''                                val uri = saveVideoToGallery(f)''',
-"4c separate-files call site")
-
-# ------------------------------------------------------- 4d function rewrite
-must_replace(SVC,
-'''    private fun saveVideoToGallery(videoFile: File, isAudioOnly: Boolean): Uri? {
-        val mimeType = if (isAudioOnly) "audio/mpeg" else "video/mp4"
-        val ext = if (isAudioOnly) ".mp3" else ".mp4"
-        val prefix = if (isAudioOnly) "Cutloss_Audio_" else "Cutloss_"
-        
-        val sharedPreferences = getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
-        val prefKey = if (isAudioOnly) "export_audio_directory_uri" else "export_directory_uri"''',
-'''    private fun saveVideoToGallery(videoFile: File): Uri? {
-        // Phase 13: the smart plan can export MP4/MKV/MOV/WebM (and the
-        // audio-only formats) - derive the gallery mime type, extension and
-        // name prefix from the ACTUAL output file instead of assuming MP4.
-        val ext = "." + videoFile.extension.lowercase()
-        val isAudio: Boolean
-        val mimeType: String
-        val prefix: String
-        when (ext) {
-            ".mp3" -> { isAudio = true; mimeType = "audio/mpeg"; prefix = "Cutloss_Audio_" }
-            ".m4a" -> { isAudio = true; mimeType = "audio/mp4"; prefix = "Cutloss_Audio_" }
-            ".opus" -> { isAudio = true; mimeType = "audio/opus"; prefix = "Cutloss_Audio_" }
-            ".flac" -> { isAudio = true; mimeType = "audio/flac"; prefix = "Cutloss_Audio_" }
-            ".wav" -> { isAudio = true; mimeType = "audio/x-wav"; prefix = "Cutloss_Audio_" }
-            ".mkv" -> { isAudio = false; mimeType = "video/x-matroska"; prefix = "Cutloss_" }
-            ".mov" -> { isAudio = false; mimeType = "video/quicktime"; prefix = "Cutloss_" }
-            ".webm" -> { isAudio = false; mimeType = "video/webm"; prefix = "Cutloss_" }
-            ".avi" -> { isAudio = false; mimeType = "video/x-msvideo"; prefix = "Cutloss_" }
-            else -> { isAudio = false; mimeType = "video/mp4"; prefix = "Cutloss_" }
+        return sb.toString()""",
+"""        if (a.transitions.isNotEmpty()) {
+            if (selSeparateFiles) {
+                sb.append("; transitions apply only to the merged single-file export")
+            } else {
+                sb.append("; ").append(a.transitions.size)
+                    .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
+            }
         }
+        sb.append(")")
+        return sb.toString()""",
+"ESD: encode summary transition note")
 
-        val sharedPreferences = getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
-        val prefKey = if (isAudio) "export_audio_directory_uri" else "export_directory_uri"''',
-"4d saveVideoToGallery rewrite")
+# ---- ESD 7) smartEstimateBytes adjustment ----
+apply_edit(ESD, """        var copySec = 0.0
+        var encSec = 0.0
+        val srcKbpsTotal = if (srcKbps > 0) srcKbps else 8000
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val spanMs = c.trimEndMs - c.trimStartMs
+            if (spanMs <= 0L) continue
+            val full = c.fullRange
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }""",
+"""        var copySec = 0.0
+        var encSec = 0.0
+        val srcKbpsTotal = if (srcKbps > 0) srcKbps else 8000
+        for (i in a.clips.indices) {
+            val c = a.clips[i]
+            val spanMs = c.trimEndMs - c.trimStartMs
+            if (spanMs <= 0L) continue
+            val full = c.fullRange
+            if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
+        }
+        // phase 14 mirror of the summary math: fade windows re-encode with
+        // a keyframe cut, whole adjacent clips with a normal cut.
+        if (selKeyframeCut) {
+            for (dMs in a.transitions.values) {
+                val dSec = dMs / 1000.0
+                copySec = Math.max(0.0, copySec - dSec)
+                encSec += dSec
+            }
+        } else {
+            val adjacentIdx = mutableSetOf<Int>()
+            for (gap in a.transitions.keys) {
+                adjacentIdx.add(gap)
+                adjacentIdx.add(gap + 1)
+            }
+            for (idx in adjacentIdx) {
+                val c = a.clips.getOrNull(idx) ?: continue
+                if (!c.fullRange) continue
+                val spanMs = c.trimEndMs - c.trimStartMs
+                if (spanMs <= 0L) continue
+                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
+                encSec += spanMs / 1000.0
+            }
+        }""",
+"ESD: estimate transition seconds")
 
-# ------------------------------------------- 4e isAudioOnly -> isAudio in body
-must_replace(SVC,
-r'''                if (isAudioOnly) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Cutloss")
-                } else {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Cutloss")
-                }''',
-r'''                if (isAudio) {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Cutloss")
-                } else {
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Cutloss")
-                }''',
-"4e relative path")
+# ---- VEA: preview window follows the op duration ----
+apply_edit(VEA, """                        val windowMs = 1000L""",
+"""                        val windowMs = transOp.durationMs.coerceAtLeast(200L)""",
+"VEA: preview window uses op duration")
 
-must_replace(SVC,
-r'''            val collectionUri = if (isAudioOnly) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI''',
-r'''            val collectionUri = if (isAudio) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI''',
-"4e collection uri")
+
+print("edits: %d applied, %d skipped (already present)" % (edits_applied, edits_skipped))
 PYEOF
-}
 
-step4
-log "step4: done"
+echo "== phase 14: gates =="
 
-###############################################################################
-# Step 5 -- FFmpegRenderEngine.kt (hevc hardware fallback)
-###############################################################################
-step5() {
-    log "step5: FFmpegRenderEngine.kt -- hevc_mediacodec fallback"
-    python3 - <<'PYEOF'
+python3 - <<'PYEOF'
 import sys
 
-ENGINE = "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt"
+fail = []
 
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def wr(p, s):
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(s)
-
-def must_replace(path, old, new, label):
-    s = rd(path)
-    n = s.count(old)
-    if n == 0:
-        print("  [skip] " + label + " (already applied)")
-        return
-    if n > 1:
-        sys.exit("  [ERROR] " + label + ": anchor not unique (" + str(n) + " matches)")
-    wr(path, s.replace(old, new))
-    print("  [ok] " + label)
-
-# --------------------------------------------- 5a executeCommand fallback chain
-must_replace(ENGINE,
-r'''                        val fallbackCommand = command.replace("h264_mediacodec", "libx264")
-                        return@withContext executeCommand(fallbackCommand, isRetry = true)
-                    } else if (!isRetry && command.contains("libx264")) {''',
-r'''                        val fallbackCommand = command.replace("h264_mediacodec", "libx264")
-                        return@withContext executeCommand(fallbackCommand, isRetry = true)
-                    } else if (!isRetry && command.contains("hevc_mediacodec")) {
-                        Log.w(TAG, "Hardware encoder hevc_mediacodec failed. Falling back to software encoder libx265. Error:\n$diagnosticLog")
-                        val fallbackCommand = command.replace("hevc_mediacodec", "libx265 -tag:v hvc1")
-                        return@withContext executeCommand(fallbackCommand, isRetry = true)
-                    } else if (!isRetry && command.contains("libx264")) {''',
-"5a executeCommand hevc fallback")
-
-# ----------------------------------------------- 5b exportFinal fallback chain
-must_replace(ENGINE,
-r'''                        val fallbackCommand = ffmpegCommand.replace("h264_mediacodec", "libx264")
-                        return@withContext exportFinal(fallbackCommand, totalDurationSecs, onProgress, isRetry = true)
-                    } else if (!isRetry && ffmpegCommand.contains("libx264")) {''',
-r'''                        val fallbackCommand = ffmpegCommand.replace("h264_mediacodec", "libx264")
-                        return@withContext exportFinal(fallbackCommand, totalDurationSecs, onProgress, isRetry = true)
-                    } else if (!isRetry && ffmpegCommand.contains("hevc_mediacodec")) {
-                        Log.w(TAG, "Hardware encoder hevc_mediacodec failed. Falling back to software encoder libx265. Error:\n$diagnosticLog")
-                        val fallbackCommand = ffmpegCommand.replace("hevc_mediacodec", "libx265 -tag:v hvc1")
-                        return@withContext exportFinal(fallbackCommand, totalDurationSecs, onProgress, isRetry = true)
-                    } else if (!isRetry && ffmpegCommand.contains("libx264")) {''',
-"5b exportFinal hevc fallback")
-PYEOF
-}
-
-step5
-log "step5: done"
-
-###############################################################################
-# Step 6 -- verification gate (runs BEFORE anything could be committed)
-###############################################################################
-step6() {
-    log "step6: verification gate"
-    python3 - <<'PYEOF'
-import glob, subprocess, sys
-
-FILES = {
-    "PLANNER": "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt",
-    "ESD":     "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt",
-    "VM":      "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt",
-    "VEA":     "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt",
-    "SVC":     "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt",
-    "ENGINE":  "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt",
-}
-
-def rd(p):
-    with open(p, "r", encoding="utf-8") as f:
-        return f.read()
-
-def head(p):
-    try:
-        out = subprocess.run(["git", "show", "HEAD:" + p],
-                             capture_output=True, text=True, check=True)
-        return out.stdout
-    except subprocess.CalledProcessError:
-        return None
-
-errors = []
 
 def check(cond, msg):
-    if cond:
-        print("  [pass] " + msg)
-    else:
-        errors.append(msg)
-        print("  [FAIL] " + msg)
+    print(("  [ok] " if cond else "  [FAIL] ") + msg)
+    if not cond:
+        fail.append(msg)
 
-# ---- THE permanent gate: no filter_complex anywhere in the app sources ----
-hits = []
-for path in glob.glob("app/src/main/java/**/*.kt", recursive=True) + \
-          glob.glob("app/src/main/java/**/*.java", recursive=True):
-    try:
-        if "filter_complex" in rd(path):
-            hits.append(path)
-    except Exception:
-        pass
-check(not hits, "filter_complex absent from every app source file (%s)" %
-      ("found in: " + ", ".join(hits) if hits else "zero occurrences"))
 
-# ---- deleted symbols must be gone ----
-gone = {
-    "PLANNER": ["encSimple", "reencodeAll", 'videoFormat != "mp4"',
-                "custom codec requested", "non-MP4 container"],
-    "ESD":     ["currentBitrateString", "smartReencodeMode", "buildSmartReencodeSummary"],
-    "VM":      ['MutableStateFlow("8M")'],
-    "SVC":     ["isAudioOnly", "saveVideoToGallery(videoFile: File, isAudioOnly"],
-    "VEA":     ["using consolidated render"],
-}
-for key, toks in gone.items():
-    s = rd(FILES[key])
-    bad = [t for t in toks if t in s]
-    check(not bad, key + ": stale symbols gone (%s)" % (", ".join(bad) if bad else "clean"))
+# 1) the phase-12 invariant survives: no complex filter graphs anywhere
+import subprocess
+n = subprocess.run(["grep", "-r", "-o", "filter_complex", "app/src/main/java"],
+                   capture_output=True, text=True).stdout.count("filter_complex")
+check(n == 0, "filter_complex count in app/src/main/java == 0 (got %d)" % n)
 
-# ---- new symbols with pinned counts ----
-pinned = {
-    "PLANNER": [
-        ("simpleVideoEncoderArgs", 2),      # def + one call
-        ("simpleAudioEncoderArgs", 2),      # def + one call
-        ("aEncSilence", 2),                 # def + silence branch use
-        ("encodedOutFiles", 3),             # def + add + map
-        ("twoStep", 7),                     # mode + concat + finalize + separate + outputs + log
-        ("perSegmentEncode", 4),            # mode + seg ext + branch + log
-        ("nextSegmentFile(", 3),            # def + two call sites
-        ('"-c:a copy"', 2),                 # simpleAudioEncoderArgs code + doc comment
-        ("-crf 32 -b:v 0", 1),              # vp9 constant-quality default
-        ("-crf 30 -b:v 0", 1),              # av1 constant-quality default
-        ("-tag:v hvc1", 3),                 # hybrid + simple encoder + comment
-        ("val aCodec: String,", 2),         # SmartAnalysis field + MediaParams field
-        ('aCodec = audioRef?.aCodec ?: "",', 1),
-        ("cut\" + segExt", 1),              # intermediate cut file
-        ("out_\" + i + outExt", 1),         # separate-mode encoded output
-    ],
-    "ESD": [
-        ("chosenBitrateString", 5),         # def + refresh + mode + summary + doc
-        ("smartEncodeMode", 3),             # def + two call sites
-        ("buildSmartEncodeSummary", 2),     # def + call site
-        ('"-c:a copy"', 1),                 # audio flags mirror
-        ("same-as-input options write no flag", 1),  # doc (lowercase variant)
-        ("Same as input\" writes", 1),      # header doc fragment
-    ],
-    "VM": [
-        ('_exportBitrate = MutableStateFlow("")', 1),
-    ],
-    "SVC": [
-        ("saveVideoToGallery(videoFile: File): Uri?", 1),
-        ("video/x-matroska", 1),
-        ("video/quicktime", 1),
-        ("video/webm", 1),
-        ("video/x-msvideo", 1),
-        ("audio/opus", 1),
-    ],
-    "ENGINE": [
-        ("hevc_mediacodec failed. Falling back to software encoder libx265", 2),
-        ("libx265 -tag:v hvc1", 2),
-    ],
-}
-for key, toks in pinned.items():
-    s = rd(FILES[key])
-    for tok, want in toks:
-        got = s.count(tok)
-        check(got == want, key + ": '%s' count %d == %d" % (tok, got, want))
+P = open("app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt").read()
+E = open("app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt").read()
+V = open("app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt").read()
 
-# ---- brace / paren balance deltas vs HEAD (all replacements are
-#      complete blocks, so the net delta must be zero per file) ----
-for key, p in FILES.items():
-    h = head(p)
-    if h is None:
-        print("  [skip] " + key + ": no HEAD version (new file?)")
-        continue
-    if h == rd(p):
-        print("  [skip] " + key + ": identical to HEAD")
-        continue
-    db = (rd(p).count("{") - rd(p).count("}")) - (h.count("{") - h.count("}"))
-    dp = (rd(p).count("(") - rd(p).count(")")) - (h.count("(") - h.count(")"))
-    check(db == 0 and dp == 0,
-          key + ": brace/paren net delta vs HEAD is 0/0 (got %d/%d)" % (db, dp))
+# 2) pinned new-symbol inventory (planner)
+for tok, want in [
+    ("renderableTransitionType", 3), ("effectiveTransitionDurations", 3),
+    ("probeVideoPackets", 2), ("planTransitionSpan", 2), ("TransitionSpan", 7),
+    ("parseTimeBaseDen", 2), ("fadeColorFor", 7), ("FFprobeKit.execute", 1),
+    ("-video_track_timescale", 3), ("-frames:v ", 4), ("setsar=", 8),
+    ("sarNum", 11), ("val segTbn = ", 1), ("val outTbn = ", 1),
+    ("fade=t=in", 6), ("fade=t=out", 6), ("afade=t=in", 3), ("afade=t=out", 3),
+    ("fade=t=out:st=", 6), ("needs frame blending", 1),
+    ("coerceAtLeast(200L)", 0), ("clampedTransitions", 2),
+]:
+    got = P.count(tok)
+    check(got == want, "planner '%s' x%d (got %d)" % (tok, want, got))
 
-# ---- ASCII purity: the patch only ever inserts ASCII text, so the
-#      non-ASCII char count must never INCREASE vs HEAD (VM/VEA/ENGINE
-#      carry pre-existing non-ASCII from earlier phases) ----
-for key, p in FILES.items():
-    s = rd(p)
-    h = head(p)
-    now = sum(1 for c in s if ord(c) > 127)
-    before = sum(1 for c in h if ord(c) > 127) if h is not None else now
-    check(now <= before, key + ": non-ASCII count did not grow (%d -> %d)" % (before, now))
+# 3) ESD inventory
+for tok, want in [
+    ("matched fade segments", 2), ("transition(s) exported as straight cuts", 0),
+    ("nonEncodable", 3), ("adjacentIdx", 8), ("transitions apply only to the merged single-file export", 2),
+    ("transition piece", 1),
+]:
+    got = E.count(tok)
+    check(got == want, "ESD '%s' x%d (got %d)" % (tok, want, got))
 
-# ---- survival tokens: the phase 9-12 pipeline must still be intact ----
-survive = {
-    "PLANNER": ["fun planSmartExport(", "fun analyzeSmartExport(",
-                "fun settingsBlockSmart(", "fun probeMedia(",
-                "videoEncoderArgs(refParams", "audioEncoderArgs(audioRef",
-                "encodablePixFmt(", "buildFreezeFrameCommands(",
-                "-avoid_negative_ts make_zero", "-bsf:v dump_extra",
-                "-map_metadata 1", "-movflags +faststart",
-                "anullsrc=r=", "sweepStaleWorkDirs("],
-    "ESD":     ["smartUnavailableNote()", "smartEstimateBytes()",
-                "buildSmartSummary()", "wireChipRow("],
-    "VEA":     ["planSmartExport(", "settingsBlockSmart(",
-                "EXTRA_SMART_PLAN_PATH", "EXTRA_TEMP_OUTPUT_PATH",
-                "getOutputExtension("],
-    "SVC":     ["runSmartExport(", "parseSmartPlan(", "EXTRA_SMART_PLAN_PATH",
-                "saveVideoToGallery("],
-    "VM":      ["fun getOutputExtension(", "data class AdvancedExport("],
-    "ENGINE":  ["suspend fun exportFinal(", "h264_mediacodec failed"],
-}
-for key, toks in survive.items():
-    s = rd(FILES[key])
-    bad = [t for t in toks if t not in s]
-    check(not bad, key + ": survival tokens intact (%s)" %
-          (", ".join(bad) if bad else "all present"))
+# 4) VEA inventory
+check(V.count("val windowMs = transOp.durationMs.coerceAtLeast(200L)") == 1,
+      "VEA preview window follows the op duration")
+check(V.count("val windowMs = 1000L") == 0, "VEA hardcoded 1000L window gone")
 
-if errors:
-    sys.exit("[phase13][ERROR] gate failed with %d error(s)" % len(errors))
-print("  [pass] all gates green")
+# 5) structural balance (raw counts; string literals explain the -1 planner paren,
+#    identical skew as before the change)
+for name, s, brace in [("PLANNER", P, (211, 211)), ("ESD", E, (131, 131)), ("VEA", V, (1529, 1529))]:
+    check(s.count("{") == brace[0] and s.count("}") == brace[1],
+          "%s braces %d/%d" % (name, brace[0], brace[1]))
+    d = s.count("(") - s.count(")")
+    want = -1 if name == "PLANNER" else 0
+    check(d == want, "%s paren delta %d" % (name, want))
+
+# 6) ASCII purity unchanged
+check(sum(1 for ch in P if ord(ch) > 127) == 0, "planner ASCII")
+check(sum(1 for ch in E if ord(ch) > 127) == 0, "ESD ASCII")
+check(sum(1 for ch in V if ord(ch) > 127) == 71, "VEA non-ASCII unchanged (71)")
+
+# 7) survival tokens: the phase-13 contract machinery is untouched
+for tok in ["simpleVideoEncoderArgs", "simpleAudioEncoderArgs", "encodablePixFmt",
+            "twoStep", "perSegmentEncode", "-tag:v hvc1", "-avoid_negative_ts make_zero"]:
+    check(P.count(tok) > 0, "planner keeps '%s'" % tok)
+
+if fail:
+    print("GATES FAILED: %d" % len(fail))
+    sys.exit(1)
+print("ALL GATES GREEN")
 PYEOF
-}
 
-###############################################################################
-# Step 7 -- scope policy
-###############################################################################
-step7() {
-    log "step7: scope policy"
-    python3 - <<'PYEOF'
-import subprocess, sys
-
-ALLOWED = {
-    "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/services/ExportService.kt",
-    "app/src/main/java/com/tharunbirla/librecuts/services/FFmpegRenderEngine.kt",
-}
-out = subprocess.run(["git", "status", "--porcelain"],
-                     capture_output=True, text=True, check=True).stdout
-dirty = []
-for line in out.splitlines():
-    if not line.strip():
-        continue
-    path = line[3:].strip().strip('"')
-    dirty.append(path)
-unexpected = [p for p in dirty if p not in ALLOWED]
-if unexpected:
-    sys.exit("[phase13][ERROR] unexpected dirty files outside the scope: " +
-             ", ".join(unexpected))
-print("  [pass] scope clean: %d file(s), all within the phase 13 allowlist" % len(dirty))
-
-# .github policy: never touch CI/FUNDING/issue templates
-out2 = subprocess.run(["git", "status", "--porcelain", ".github"],
-                      capture_output=True, text=True, check=True).stdout
-if out2.strip():
-    sys.exit("[phase13][ERROR] .github files must never be modified")
-print("  [pass] .github untouched")
-PYEOF
-}
-
-step6
-step7
-log "phase 13 applied and verified"
+echo "== phase 14: done =="
