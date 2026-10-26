@@ -240,7 +240,13 @@ object SmartExportPlanner {
                 if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return fail("clips use different profiles")
                 if (p.width != refParams.width || p.height != refParams.height) return fail("clips have different dimensions")
                 if (p.rotation != refParams.rotation) return fail("clips have different rotation")
-                if (p.fpsString != refParams.fpsString) return fail("clips have different frame rates")
+                // Phase 15: compare the NUMERIC rates, not the exact fraction
+                // strings - camera VFR footage reports a slightly different
+                // avg_frame_rate fraction for every recording of the same
+                // camera (29.9813 vs 29.9960 fps in the reported pair), so
+                // the old string compare falsely blocked clips that concat
+                // losslessly.
+                if (!fpsCloseEnough(p.fpsValue, refParams.fpsValue)) return fail("clips have different frame rates")
                 if (p.pixFmt != refParams.pixFmt) return fail("clips use different pixel formats")
                 if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) {
                     return fail("clips use different sample aspect ratios")
@@ -578,6 +584,24 @@ object SmartExportPlanner {
         val framesV: Int
     )
 
+    /**
+     * Phase 15: numeric frame-rate comparison with VFR tolerance. Camera
+     * footage is variable-frame-rate, so two recordings from the SAME
+     * camera report slightly different avg_frame_rate fractions
+     * (29.9813 vs 29.9960 fps, say) even though they are the same rate
+     * class - an exact string compare of those fractions falsely blocked
+     * clips that concat losslessly (lab-verified with the reported pair:
+     * concat demuxer + -c copy joins them with exact durations and a
+     * clean decode). The tolerance is the larger of 0.5 fps and 2% of the
+     * reference rate: jitter between recordings of one camera is far
+     * below it, while the real fps classes (24 vs 25 vs 30 vs 60) stay
+     * far above it.
+     */
+    private fun fpsCloseEnough(a: Double, b: Double): Boolean {
+        val tol = Math.max(0.5, Math.abs(b) * 0.02)
+        return Math.abs(a - b) <= tol
+    }
+
     // ------------------------------------------------------------------
     // Freeze frame command builder
     // ------------------------------------------------------------------
@@ -801,7 +825,10 @@ object SmartExportPlanner {
                 if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return null
                 if (p.width != refParams.width || p.height != refParams.height) return null
                 if (p.rotation != refParams.rotation) return null
-                if (p.fpsString != refParams.fpsString) return null
+                // Phase 15: numeric fps comparison (see fpsCloseEnough) -
+                // exact fraction strings differ between VFR recordings of
+                // the same camera.
+                if (!fpsCloseEnough(p.fpsValue, refParams.fpsValue)) return null
                 if (p.pixFmt != refParams.pixFmt) return null
                 if (p.sarNum != refParams.sarNum || p.sarDen != refParams.sarDen) return null
                 if (p.durationMs <= 0L) return null
