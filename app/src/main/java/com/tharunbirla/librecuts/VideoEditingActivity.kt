@@ -246,7 +246,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     // ── FONT: cached absolute path to Roboto-Regular.ttf in cacheDir ──────────
     // Populated in onCreate via ffmpegEngine.copyFontToCache().
-    // Passed to buildConsolidatedFFmpegCommand() so drawtext can find the font.
+    // Passed to buildPreviewCommand() so drawtext can find the font.
     private var fontFilePath: String? = null
 
     private fun setupTextFontSelector(formatContainer: View?) {
@@ -524,12 +524,6 @@ class VideoEditingActivity : AppCompatActivity() {
         if (fontFilePath == null) {
             Log.e(TAG, "Font copy failed — text overlays will not render. " +
                     "Make sure assets/fonts/Roboto-Regular.ttf exists in the project.")
-        }
-
-        // WYSIWYG text rendering: AddText ops are rasterized with the same
-        // Canvas pipeline used by the preview, then composited via overlay.
-        viewModel.textPngRenderer = { op ->
-            com.tharunbirla.librecuts.utils.TextRenderUtils.renderAddTextToPng(this@VideoEditingActivity, op)?.absolutePath
         }
 
         // Initialize UI components
@@ -2434,7 +2428,9 @@ class VideoEditingActivity : AppCompatActivity() {
                 )
                 var outUri: Uri? = null
                 if (srcParams != null && (srcParams.vCodec == "h264" || srcParams.vCodec == "hevc")
-                    && srcParams.pixFmt == "yuv420p" && srcParams.width > 0 && srcParams.height > 0) {
+                    && (srcParams.pixFmt == "yuv420p" || srcParams.pixFmt == "yuvj420p"
+                        || srcParams.pixFmt == "nv12" || srcParams.pixFmt == "nv21")
+                    && srcParams.width > 0 && srcParams.height > 0) {
                     val freezeCmds = com.tharunbirla.librecuts.services.SmartExportPlanner.buildFreezeFrameCommands(
                         srcParams, pngFile.absolutePath, mp4File.absolutePath, 3000L
                     )
@@ -3236,10 +3232,11 @@ class VideoEditingActivity : AppCompatActivity() {
     }
 
     /**
-     * SAVE/EXPORT: Consolidates all pending operations into a single FFmpeg command and runs it.
+     * SAVE/EXPORT: plans the smart export (per-segment simple commands +
+     * lossless concat) and runs it in the background via ExportService.
      *
-     * KEY FIX: fontFilePath (populated in onCreate from assets/fonts/Roboto-Regular.ttf)
-     * is now passed to buildConsolidatedFFmpegCommand so drawtext gets a valid fontfile= path.
+     * fontFilePath (populated in onCreate from assets/fonts/Roboto-Regular.ttf)
+     * is passed to buildPreviewCommand so drawtext gets a valid fontfile= path.
      */
     private fun saveAction() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -3270,7 +3267,6 @@ class VideoEditingActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.Main) {
             var tempOutputFile: File? = null
-            var concatFile: File? = null
             try {
                 viewModel.startExport()
 
@@ -3330,78 +3326,44 @@ class VideoEditingActivity : AppCompatActivity() {
                     return@launch
                 }
 
-                // Separate-files mode only works on the smart pipeline; when the
-                // planner bailed out (speed / overlays / mixed codecs / ...) we
-                // tell the user instead of silently exporting one merged file.
-                if (viewModel.advancedExport.value.exportSeparateFiles) {
-                    Toast.makeText(
-                        this@VideoEditingActivity,
-                        "Separate-files export needs smart-compatible edits - exporting one merged file instead",
-                        Toast.LENGTH_LONG
-                    ).show()
+                // Phase 12: the legacy consolidated filter-graph render is
+                // gone. Every export runs the smart pipeline (simple
+                // per-segment commands + lossless concat). When the planner
+                // refuses, surface the REAL reason instead of silently
+                // falling back to a full re-encode.
+                val analysis = try {
+                    withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        com.tharunbirla.librecuts.services.SmartExportPlanner.analyzeSmartExport(
+                            this@VideoEditingActivity, project, sourceFilePath
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Smart export analysis failed: " + e.message, e)
+                    null
                 }
-
-                var ffmpegCommand = viewModel.buildConsolidatedFFmpegCommand(
-                    sourceFilePath = sourceFilePath,
-                    outputFilePath = tempOutputPath,
-                    fontFilePath = fontFilePath,
-                    context = this@VideoEditingActivity
+                val settingsReason = analysis?.let {
+                    com.tharunbirla.librecuts.services.SmartExportPlanner.settingsBlockSmart(
+                        it,
+                        viewModel.exportResolution.value,
+                        viewModel.exportFps.value,
+                        isAudioOnly,
+                        viewModel.advancedExport.value.videoCodec,
+                        viewModel.advancedExport.value.audioCodec,
+                        viewModel.advancedExport.value.customWidth,
+                        viewModel.advancedExport.value.customHeight,
+                        viewModel.advancedExport.value.videoFormat
+                    )
+                }
+                val reason = analysis?.reason ?: settingsReason
+                    ?: "the project is not compatible with the simple export pipeline"
+                viewModel.exportError(
+                    "Export cancelled - " + reason + ". The export pipeline only runs simple " +
+                        "per-segment commands (stream copy whenever possible); remove the " +
+                        "unsupported edits or switch the settings back to Same as input."
                 )
-
-                if (ffmpegCommand == null) {
-                    viewModel.exportError("Failed to build FFmpeg command")
-                    return@launch
-                }
-
-                Log.d(TAG, "Raw FFmpeg command: $ffmpegCommand")
-
-                val currentProject = viewModel.project.value
-                if (currentProject != null && ffmpegCommand.contains("(CONCAT_LIST:")) {
-                    val cmdSnapshot = ffmpegCommand
-                    concatFile = withContext(Dispatchers.IO) {
-                        val concatListStart = cmdSnapshot.indexOf("(CONCAT_LIST:") + "(CONCAT_LIST:".length
-                        val concatListEnd = cmdSnapshot.lastIndexOf(")")
-                        if (concatListStart > 13 && concatListEnd > concatListStart) {
-                            val concatList = cmdSnapshot.substring(concatListStart, concatListEnd)
-                            val processedConcatList = processConcatList(concatList)
-
-                            val file = File(cacheDir, "concat_${System.currentTimeMillis()}.txt")
-                            file.writeText(processedConcatList)
-                            file
-                        } else null
-                    }
-
-                    if (concatFile != null) {
-                        ffmpegCommand = ffmpegCommand
-                            .replace("{CONCAT_FILE_PATH}", concatFile.absolutePath)
-                            .substring(0, ffmpegCommand.indexOf("(CONCAT_LIST:"))
-                            .trim()
-                    }
-                }
-
-                Log.d(TAG, "Final FFmpeg command: $ffmpegCommand")
-                val totalDurationSecs = getTotalSequenceDuration() / 1000.0
-
-                // Start ExportService
-                val intent = Intent(this@VideoEditingActivity, com.tharunbirla.librecuts.services.ExportService::class.java).apply {
-                    putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_COMMAND, ffmpegCommand)
-                    putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TEMP_OUTPUT_PATH, tempOutputPath)
-                    putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_CONCAT_FILE_PATH, concatFile?.absolutePath)
-                    putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_TOTAL_DURATION_SECS, totalDurationSecs)
-                    putExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_IS_AUDIO_ONLY, isAudioOnly)
-                }
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(intent)
-                } else {
-                    startService(intent)
-                }
-                
-                Toast.makeText(this@VideoEditingActivity, "Export started in background...", Toast.LENGTH_SHORT).show()
-
+                Toast.makeText(this@VideoEditingActivity, "Export blocked: " + reason, Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
                 tempOutputFile?.let { if (it.exists()) it.delete() }
-                concatFile?.let { if (it.exists()) it.delete() }
                 viewModel.exportError(e.message ?: "Unknown error")
                 Log.e(TAG, "Export start exception: ${e.message}", e)
             }
@@ -5795,31 +5757,6 @@ class VideoEditingActivity : AppCompatActivity() {
             Log.e(TAG, "Error saving to default gallery: ${e.message}", e)
             null
         }
-    }
-
-    private fun processConcatList(concatList: String): String {
-        val lines = concatList.trim().split("\n")
-        val processedLines = mutableListOf<String>()
-
-        for (line in lines) {
-            if (line.startsWith("file")) {
-                val pathStart = line.indexOf("'") + 1
-                val pathEnd = line.lastIndexOf("'")
-                if (pathStart > 0 && pathEnd > pathStart) {
-                    val filePath = line.substring(pathStart, pathEnd)
-                    val processedPath = if (filePath.startsWith("content://")) {
-                        copyContentUriToTempFile(Uri.parse(filePath))?.absolutePath ?: filePath
-                    } else {
-                        filePath
-                    }
-                    processedLines.add("file '$processedPath'")
-                }
-            } else if (line.isNotEmpty()) {
-                processedLines.add(line)
-            }
-        }
-
-        return processedLines.joinToString("\n").trim() + "\n"
     }
 
     private fun getAudioExtension(uri: Uri): String {

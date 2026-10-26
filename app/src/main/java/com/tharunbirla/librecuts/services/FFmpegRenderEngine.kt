@@ -530,22 +530,6 @@ class FFmpegRenderEngine(private val context: Context) {
         return executeCommand(command)
     }
 
-    suspend fun addBackgroundAudio(
-        sourceFilePath: String,
-        audioFilePath: String,
-        outputFilePath: String,
-        replaceAudio: Boolean = false
-    ): RenderResult {
-        val command = if (replaceAudio) {
-            "-i \"$sourceFilePath\" -i \"$audioFilePath\" -c:v copy -map 0:v:0 -map 1:a:0 \"$outputFilePath\""
-        } else {
-            "-i \"$sourceFilePath\" -i \"$audioFilePath\" " +
-                    "-filter_complex \"[0:a][1:a]amix=inputs=2:duration=first[a]\" " +
-                    "-map 0:v -map \"[a]\" -c:v copy \"$outputFilePath\""
-        }
-        return executeCommand(command)
-    }
-
     suspend fun muteAudio(sourceFilePath: String, outputFilePath: String): RenderResult {
         val command = "-i \"$sourceFilePath\" -an -c:v copy \"$outputFilePath\""
         return executeCommand(command)

@@ -16,28 +16,30 @@ import java.io.FileOutputStream
  * SmartExportPlanner builds a "smart render" export plan.
  *
  * Goal: when the timeline only contains operations that do not change the
- * stream parameters (trim, merge, freeze, transitions, mute), the unchanged
- * parts of the source clips are STREAM-COPIED (-c copy) into the output and
- * only the changed parts (freeze segments, transition overlaps, trim cuts)
- * are re-encoded with parameters that match the source clips. The final
- * assembly uses the concat demuxer with -c copy, so most of the output is
- * bit-exact with the original footage.
+ * stream parameters (trim, merge, freeze, mute), the unchanged parts of the
+ * source clips are STREAM-COPIED (-c copy) into the output and only the
+ * changed parts (freeze segments, trim cuts) are re-encoded with parameters
+ * that match the source clips. The final assembly uses the concat demuxer
+ * with -c copy, so most of the output is bit-exact with the original
+ * footage.
  *
- * If anything is not copy-compatible (mixed codecs, image clips, text or
- * image overlays, speed changes, background audio, ...) the planner
- * returns null and the caller falls back to the legacy consolidated
- * filter-graph render. Resolution / fps / custom-size changes do NOT
- * fall back (phase 11): they switch the plan to the simple re-encode
- * template - one flag per changed option (-vf scale=W:H, -r F) - and the
- * final assembly is still the lossless concat.
+ * Phase 12: there is NO legacy filter-graph fallback anymore - this
+ * planner is the ONLY export pipeline, and it never emits complex filter
+ * graphs. Transitions export as straight cuts (frames are never blended). Any
+ * pixel format is fine: keyframe cuts copy bytes untouched, encodable
+ * 8-bit 4:2:0 sources keep the hybrid copy+match plan, and only exotic
+ * formats with a non-keyframe trim re-encode everything uniformly.
+ * Resolution / fps / custom-size changes (phase 11) also stay here: the
+ * simple re-encode template - one flag per changed option (-vf scale=W:H,
+ * -r F) - followed by the lossless concat.
+ * When the project or settings are not compatible the planner returns null
+ * and the caller surfaces the real reason instead of re-encoding.
  *
  * Command templates validated against the bundled ffmpeg (Lavf 62 / ffmpeg
  * 6.1, ffmpeg-kit-full-gpl 2.1.0):
  *   full clip copy   : -y -noautorotate -i SRC -map 0:v:0 -map 0:a:0 -c copy SEG
  *   trim re-encode   : -y -noautorotate -ss S -t D -i SRC ... libx264 -profile -level
  *   freeze (2 steps) : PNG -> sensor-space encode, then -display_rotation remux
- *   transition       : -ss tail / -ss head + xfade offset=0 (fps= filter needed
- *                      for CFR) + acrossfade
  *   concat           : -f concat -safe 0 -i list.txt -i seg0 [-map_metadata 1]
  *                      -c copy -bsf:v dump_extra [-movflags +faststart]
  *
@@ -46,8 +48,8 @@ import java.io.FileOutputStream
  *                      snaps to the preceding keyframe, so they are stream-
  *                      copied - 100% lossless, LosslessCut keyframe-cut
  *                      semantics (up to one GOP of extra head material)
- *   separate files   : one output file per timeline clip; transitions and
- *                      the concat step are skipped entirely
+ *   separate files   : one output file per timeline clip; the concat step
+ *                      is skipped entirely
  *   metadata/faststart flags are applied to the final merged output
  */
 object SmartExportPlanner {
@@ -99,6 +101,7 @@ object SmartExportPlanner {
         val shortSide: Int,
         val fpsRounded: Int,
         val vCodec: String,
+        val pixFmt: String,
         val reason: String?
     )
 
@@ -113,10 +116,10 @@ object SmartExportPlanner {
 
     /**
      * Settings-level gates (cheap, no probing): returns a human readable
-     * reason when the current export settings force the legacy render, or
-     * null when the smart path can run with these settings. Resolution /
-     * fps / custom-size changes are handled by the simple re-encode plan
-     * (phase 11), so they never gate here.
+     * reason when the current export settings cannot run in the simple
+     * pipeline (there is no fallback render anymore), or null when they
+     * can. Resolution / fps / custom-size changes are handled by the
+     * simple re-encode plan (phase 11), so they never gate here.
      */
     fun settingsBlockSmart(
         analysis: SmartAnalysis,
@@ -141,7 +144,7 @@ object SmartExportPlanner {
 
     private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
         fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", reason)
+            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", reason)
 
         if (isImagePath(sourceFilePath)) return fail("image source")
         val ops = project.operations
@@ -158,7 +161,11 @@ object SmartExportPlanner {
         val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath)
             ?: return fail("source could not be probed")
         if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return fail("source codec is not H.264/HEVC")
-        if (refParams.pixFmt != "yuv420p") return fail("source pixel format is not yuv420p")
+        // Phase 12: stream copy does not care about the pixel format, so a
+        // non-yuv420p source no longer blocks the smart path. Keyframe cuts
+        // copy ANY format byte-exactly; trimmed-span re-encodes match the
+        // source format (encodablePixFmt); only truly exotic formats (10-bit
+        // and friends) switch the whole plan to the uniform re-encode.
         if (refParams.width <= 0 || refParams.height <= 0) return fail("bad source dimensions")
         if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return fail("odd source dimensions")
         if (refParams.durationMs <= 0L) return fail("bad source duration")
@@ -190,7 +197,7 @@ object SmartExportPlanner {
                 if (p.width != refParams.width || p.height != refParams.height) return fail("clips have different dimensions")
                 if (p.rotation != refParams.rotation) return fail("clips have different rotation")
                 if (p.fpsString != refParams.fpsString) return fail("clips have different frame rates")
-                if (p.pixFmt != "yuv420p") return fail("a clip is not yuv420p")
+                if (p.pixFmt != refParams.pixFmt) return fail("clips use different pixel formats")
                 if (p.durationMs <= 0L) return fail("bad clip duration")
                 clips.add(
                     AClip(
@@ -252,6 +259,7 @@ object SmartExportPlanner {
             shortSide = Math.min(displayWidth, displayHeight),
             fpsRounded = Math.round(refParams.fpsValue).toInt(),
             vCodec = refParams.vCodec,
+            pixFmt = refParams.pixFmt,
             reason = null
         )
     }
@@ -411,7 +419,7 @@ object SmartExportPlanner {
         sb.append(" -vf \"").append(transpose)
         sb.append("scale=").append(params.width).append(":").append(params.height)
         sb.append(",setsar=1,fps=").append(params.fpsString)
-        sb.append(",format=yuv420p\"")
+        sb.append(",format=").append(encodablePixFmt(params)).append("\"")
         sb.append(" -map 0:v:0")
         if (audioOk) sb.append(" -map 1:a:0")
         sb.append(" ").append(enc)
@@ -516,7 +524,6 @@ object SmartExportPlanner {
         // ---- probe the main clip (reference parameters) ----
         val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
         if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return null
-        if (refParams.pixFmt != "yuv420p") return null
         if (refParams.width <= 0 || refParams.height <= 0) return null
         if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return null
         if (refParams.durationMs <= 0L) return null
@@ -546,7 +553,6 @@ object SmartExportPlanner {
         val resChange = !customScale && exportResolution != 0 &&
             exportResolution != displayHeight && exportResolution != shortSide
         val fpsChange = exportFps != 0 && exportFps != Math.round(refParams.fpsValue).toInt()
-        val reencodeAll = customScale || resChange || fpsChange
         val scaleFilter: String? = when {
             customScale -> "scale=" + (customWidth - customWidth % 2) + ":" +
                 (customHeight - customHeight % 2) + ",setsar=1"
@@ -597,7 +603,7 @@ object SmartExportPlanner {
                 if (p.width != refParams.width || p.height != refParams.height) return null
                 if (p.rotation != refParams.rotation) return null
                 if (p.fpsString != refParams.fpsString) return null
-                if (p.pixFmt != "yuv420p") return null
+                if (p.pixFmt != refParams.pixFmt) return null
                 if (p.durationMs <= 0L) return null
                 clips.add(
                     ClipInfo(
@@ -611,6 +617,21 @@ object SmartExportPlanner {
                 )
             }
         }
+
+        // ---- phase 12: pixel-format uniformity ----
+        // Keyframe cuts copy ANY pixel format untouched (pure -c copy).
+        // Encodable 8-bit 4:2:0 formats (yuv420p/yuvj420p/nv12/nv21) also
+        // keep the hybrid plan: trimmed spans re-encode with the source
+        // format, so the concat never mixes formats. Only a genuinely
+        // non-encodable source (10-bit etc.) with a non-keyframe trim
+        // forces the uniform re-encode of every segment.
+        val anyTrimmedSpan = clips.any {
+            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
+        }
+        val encodableSource = refParams.pixFmt == "yuv420p" || refParams.pixFmt == "yuvj420p" ||
+            refParams.pixFmt == "nv12" || refParams.pixFmt == "nv21"
+        val reencodeAll = customScale || resChange || fpsChange ||
+            (!encodableSource && !keyframeCut && anyTrimmedSpan)
 
         // ---- audio reference ----
         val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
@@ -632,33 +653,13 @@ object SmartExportPlanner {
         val aRate = audioRef?.aSampleRate ?: 44100
         val aChanLabel = if ((audioRef?.aChannels ?: 2) == 1) "mono" else "stereo"
 
-        // ---- transitions with clamped durations ----
-        val transitions = mutableMapOf<Int, Pair<String, Long>>()
-        for (t in ops.filterIsInstance<EditOperation.Transition>()) {
-            if (t.type.equals("none", ignoreCase = true)) continue
-            if (t.index < 0 || t.index >= clips.size - 1) continue
-            transitions[t.index] = Pair(t.type, t.durationMs)
-        }
-        val clampedTransitions = mutableMapOf<Int, Pair<String, Long>>()
-        for ((gap, td) in transitions) {
-            val leftDur = clips[gap].trimEndMs - clips[gap].trimStartMs
-            val rightDur = clips[gap + 1].trimEndMs - clips[gap + 1].trimStartMs
-            val d = td.second.coerceAtMost(leftDur).coerceAtMost(rightDur)
-            if (d >= 50L) {
-                clampedTransitions[gap] = Pair(td.first, d)
-            }
-        }
-
-        // ---- effective spans + degenerate check ----
-        // Separate-files mode skips transitions entirely: each clip is its own
-        // output, so spans are NOT shrunk by transition overlaps.
+        // ---- phase 12: transitions export as straight cuts ----
+        // The lossless pipeline never blends frames, so no transition
+        // segments are rendered and no span is shortened: every clip is
+        // simply its trim, and clips join end to start in the concat.
         val merged = !exportSeparateFiles
         for (i in clips.indices) {
-            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
-            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
-            val start = clips[i].trimStartMs + dLeft
-            val end = clips[i].trimEndMs - dRight
-            if (end <= start) return null
+            if (clips[i].trimEndMs <= clips[i].trimStartMs) return null
         }
 
         // ---- build per-segment commands ----
@@ -670,23 +671,18 @@ object SmartExportPlanner {
         // Simple-command encoder for the re-encode mode (phase 11): no
         // profile / level matching (the source profile may not fit the
         // target size) - just the classic "-c:v libx264 -b:v X" form.
+        val encPixFmt = encodablePixFmt(refParams)
         val encSimple: String = if (refParams.vCodec == "hevc") {
-            val sb = StringBuilder("-c:v libx265 -tag:v hvc1 -pix_fmt yuv420p")
+            val sb = StringBuilder("-c:v libx265 -tag:v hvc1 -pix_fmt ").append(encPixFmt)
             if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 20")
             if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
             sb.toString()
         } else {
-            val sb = StringBuilder("-c:v libx264 -pix_fmt yuv420p")
+            val sb = StringBuilder("-c:v libx264 -pix_fmt ").append(encPixFmt)
             if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 18")
             if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
             sb.toString()
         }
-        // Transition chains follow the plan mode: the same scale filter and
-        // the target frame rate when the whole plan is re-encoded.
-        val transScalePrefix = if (reencodeAll && scaleFilter != null) scaleFilter + "," else ""
-        val transFpsFilter = if (reencodeAll && fpsChange) "fps=" + exportFps else fpsFilter
-        val transEnc = if (reencodeAll) encSimple else enc
-
         var segCounter = 0
         fun nextSegmentFile(): File {
             val f = File(workDir, "seg_" + segCounter + ".mp4")
@@ -697,10 +693,8 @@ object SmartExportPlanner {
 
         for (i in clips.indices) {
             val clip = clips[i]
-            val dLeft = if (merged && i > 0) clampedTransitions[i - 1]?.second ?: 0L else 0L
-            val dRight = if (merged && i < clips.size - 1) clampedTransitions[i]?.second ?: 0L else 0L
-            val spanStart = clip.trimStartMs + dLeft
-            val spanEnd = clip.trimEndMs - dRight
+            val spanStart = clip.trimStartMs
+            val spanEnd = clip.trimEndMs
             val spanMs = spanEnd - spanStart
             val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
             val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
@@ -790,89 +784,6 @@ object SmartExportPlanner {
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             }
 
-            // Transition segment that starts right after this clip (merged only)
-            val trans = if (merged) clampedTransitions[i] else null
-            if (trans != null && i < clips.size - 1) {
-                val type = trans.first
-                val dMs = trans.second
-                val right = clips[i + 1]
-                val dSec = ms(dMs)
-                val leftTailStart = ms(clip.trimEndMs - dMs)
-                val rightHeadStart = ms(right.trimStartMs)
-                val leftAudioReal = planHasAudio && clip.params.hasAudio && !clip.muted
-                val rightAudioReal = planHasAudio && right.params.hasAudio && !right.muted
-                val tSeg = nextSegmentFile()
-
-                val arFlag = if (reencodeAll) "" else " -noautorotate"
-                val sb = StringBuilder("-y").append(arFlag).append(" -ss ").append(leftTailStart)
-                sb.append(" -t ").append(dSec).append(" -i \"").append(clip.path).append("\"")
-                sb.append(arFlag).append(" -ss ").append(rightHeadStart)
-                sb.append(" -t ").append(dSec).append(" -i \"").append(right.path).append("\"")
-
-                var anullCounter = 2
-                val leftALabel: String
-                val rightALabel: String
-                if (planHasAudio) {
-                    if (leftAudioReal) {
-                        leftALabel = "[0:a:0]"
-                    } else {
-                        sb.append(" -f lavfi -t ").append(dSec)
-                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                        leftALabel = "[" + anullCounter + ":a:0]"
-                        anullCounter++
-                    }
-                    if (rightAudioReal) {
-                        rightALabel = "[1:a:0]"
-                    } else {
-                        sb.append(" -f lavfi -t ").append(dSec)
-                        sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-                        rightALabel = "[" + anullCounter + ":a:0]"
-                        anullCounter++
-                    }
-                } else {
-                    leftALabel = ""
-                    rightALabel = ""
-                }
-
-                val filterParts = mutableListOf<String>()
-                filterParts.add("[0:v:0]setpts=PTS-STARTPTS," + transScalePrefix + transFpsFilter + "[lv]")
-                filterParts.add("[1:v:0]setpts=PTS-STARTPTS," + transScalePrefix + transFpsFilter + "[rv]")
-                filterParts.add(
-                    "[lv][rv]xfade=transition=" + sanitizeTransitionType(type) +
-                        ":duration=" + dSec + ":offset=0[tv]"
-                )
-
-                if (planHasAudio) {
-                    if (leftAudioReal && rightAudioReal) {
-                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
-                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
-                        filterParts.add("[la][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    } else if (leftAudioReal) {
-                        filterParts.add("[0:a:0]asetpts=PTS-STARTPTS[la]")
-                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
-                        filterParts.add("[la][sa]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    } else if (rightAudioReal) {
-                        filterParts.add(leftALabel + "asetpts=PTS-STARTPTS[sa]")
-                        filterParts.add("[1:a:0]asetpts=PTS-STARTPTS[ra]")
-                        filterParts.add("[sa][ra]acrossfade=d=" + dSec + ":c1=tri:c2=tri[ta]")
-                    }
-                }
-
-                sb.append(" -filter_complex \"").append(filterParts.joinToString(";")).append("\"")
-                sb.append(" -map \"[tv]\"")
-                if (planHasAudio) {
-                    if (leftAudioReal || rightAudioReal) {
-                        sb.append(" -map \"[ta]\"")
-                    } else {
-                        // Both sides silent: map the silence input directly
-                        sb.append(" -map ").append(leftALabel)
-                    }
-                }
-                sb.append(" ").append(transEnc)
-                if (planHasAudio) sb.append(" ").append(aEnc)
-                sb.append(" \"").append(tSeg.absolutePath).append("\"")
-                commands.add(Pair(sb.toString(), Math.max(0.5, dMs / 1000.0)))
-            }
         }
 
         // ---- final assembly: concat with stream copy (merged mode only) ----
@@ -916,7 +827,6 @@ object SmartExportPlanner {
         Log.d(
             TAG,
             "smart export planned: " + commands.size + " commands, clips=" + clips.size +
-                ", transitions=" + (if (merged) clampedTransitions.size else 0) +
                 (if (merged) "" else ", separate mode") +
                 (if (reencodeAll) ", simple re-encode mode (scale=" + (scaleFilter ?: "none") +
                     ", " + (fpsArg ?: "fps unchanged") + ")" else "")
@@ -990,7 +900,7 @@ object SmartExportPlanner {
             }
             val sb = StringBuilder("-c:v libx264 -profile:v ").append(profile)
             if (p.vLevel > 0) sb.append(" -level:v ").append(p.vLevel)
-            sb.append(" -pix_fmt yuv420p")
+            sb.append(" -pix_fmt ").append(encodablePixFmt(p))
             if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 18")
             if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
             return sb.toString()
@@ -998,7 +908,7 @@ object SmartExportPlanner {
         if (p.vCodec == "hevc") {
             val profile = if (p.vProfile.lowercase() == "main 10") "main10" else "main"
             val sb = StringBuilder("-c:v libx265 -profile:v ").append(profile)
-            sb.append(" -tag:v hvc1 -pix_fmt yuv420p")
+            sb.append(" -tag:v hvc1 -pix_fmt ").append(encodablePixFmt(p))
             if (bitrate.isNotEmpty()) sb.append(" -b:v ").append(bitrate) else sb.append(" -crf 20")
             if (preset.isNotEmpty()) sb.append(" -preset ").append(preset)
             return sb.toString()
@@ -1021,22 +931,16 @@ object SmartExportPlanner {
         return sb.toString()
     }
 
-    private val validXfadeTransitions = setOf(
-        "fade", "fadeblack", "fadewhite", "rectcrop", "circlecrop", "circleclose", "circleopen",
-        "horzclose", "horzopen", "vertclose", "vertopen", "diagbl", "diagbr", "diagtl", "diagtr",
-        "hlslice", "hrslice", "vuslice", "vdslice", "dissolve", "pixelize", "slidedown", "slideleft",
-        "slideright", "slideup", "wipedown", "wipeleft", "wiperight", "wipeup", "zoomin", "squeezeh",
-        "squeezev", "coverleft", "coverright", "coverup", "coverdown", "revealleft", "revealright",
-        "revealup", "revealdown"
-    )
+    /**
+     * Pixel format for re-encode templates (phase 12): keep the common
+     * 8-bit 4:2:0 formats as-is so re-encoded segments stay concat-uniform
+     * with stream-copied ones (yuvj420p keeps its full-range flag; nv12 and
+     * nv21 are the same 4:2:0 bitstream once encoded). Anything more exotic
+     * falls back to plain yuv420p and the encoder converts. Validated in the
+     * ffmpeg lab: libx264/libx265 accept all four formats, and re-encoded
+     * yuvj420p output keeps its pc range flag.
+     */
+    private fun encodablePixFmt(p: MediaParams): String =
+        if (p.pixFmt == "yuvj420p" || p.pixFmt == "nv12" || p.pixFmt == "nv21") p.pixFmt else "yuv420p"
 
-    fun sanitizeTransitionType(rawType: String): String {
-        val raw = rawType.lowercase()
-        return when (raw) {
-            "smoothleft" -> "coverleft"
-            "smoothright" -> "coverright"
-            "distance" -> "zoomin"
-            else -> if (validXfadeTransitions.contains(raw)) raw else "fade"
-        }
-    }
 }

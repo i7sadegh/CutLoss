@@ -28,17 +28,15 @@ import java.util.Locale
  *    switches to the simple re-encode command (a scale / -r flag per
  *    changed option) with a lossless concat assembly.
  *
- * Every control change is pushed live into the ViewModel, then the REAL export
- * command is rebuilt through VideoEditingViewModel.buildConsolidatedFFmpegCommand()
- * (the exact same code path the final export uses) and displayed in the preview
- * box, together with an estimated output file size.
+ * Every control change is pushed live into the ViewModel; the preview box
+ * shows the exact simple commands the smart pipeline will run (per-segment
+ * cuts + lossless concat) or, when the project/settings are not compatible,
+ * the honest reason the export is blocked - there is no fallback re-encode
+ * anymore (phase 12), together with an estimated output file size.
  *
- * "Same as input" semantics (v3):
- *  - Video Codec "Same as input"  -> "-c:v copy" (lossless remux) whenever the
- *    edit graph allows it; if video processing is present the command falls
- *    back to libx264 (so the selected preset is honored) and the preview says so.
- *  - Audio Codec "Same as input"  -> "-c:a copy" whenever no audio filtering
- *    is needed; otherwise the chosen encoder is used.
+ * "Same as input" semantics (v3): the smart plan stream-copies every segment
+ * (-c copy) and assembles them with the concat demuxer; anything that needs
+ * re-encoding runs the classic one-flag-per-option command.
  *
  * Save   -> keeps the current state and triggers the export flow.
  * Cancel -> restores the snapshot taken when the dialog was opened.
@@ -258,33 +256,16 @@ class ExportSettingsDialog(
         else -> String.format(Locale.US, "%.2f GB", bytes / (1024.0 * 1024 * 1024))
     }
 
-    /** Size estimate that follows what the REAL command will do (copy vs re-encode). */
-    private fun estimateSizeText(cmd: String?): String {
+    /** Size estimate that follows the smart plan (copied vs re-encoded parts). */
+    private fun estimateSizeText(): String {
         val durSec = durationMs / 1000.0
         if (durSec <= 0.0) return "..."
         val smart = smartEstimateBytes()
         if (smart != null) return "~" + formatBytes(smart) + " (smart export)"
-        val vCopy = cmd != null && cmd.contains("-c:v copy")
-        val aCopy = cmd != null && cmd.contains("-c:a copy")
-        val muted = cmd != null && cmd.contains(" -an")
-        if (vCopy && aCopy && !muted && sourceFile != null && sourceFile.exists()) {
-            // Pure remux: the output is essentially the input, container overhead aside.
-            return "~" + formatBytes(sourceFile.length().toDouble())
-        }
-        val videoKbps = if (vCopy) sourceVideoKbps() else effectiveVideoKbps()
-        val audioKbps = when {
-            muted -> 0
-            aCopy -> 128                                   // passthrough ≈ typical AAC track
-            selAudioCodec == "pcm_s16le" -> 1411
-            selAudioCodec == "flac" -> 900
-            selAudioBitrate.isNotEmpty() -> selAudioBitrate.dropLast(1).toIntOrNull() ?: 128
-            else -> 128
-        }
-        if (viewModel.exportAudioOnly.value) {
-            return "~" + formatBytes(audioKbps * 1000.0 / 8.0 * durSec)
-        }
-        val bytes = (videoKbps + audioKbps) * 1000.0 / 8.0 * durSec
-        return "~" + formatBytes(bytes)
+        // No fallback render exists anymore (phase 12): when the smart plan
+        // cannot run the export refuses to start, so there is nothing to
+        // estimate.
+        return "(export blocked - see the command box)"
     }
 
     // ------------------------------------------------------------ live refresh
@@ -308,41 +289,20 @@ class ExportSettingsDialog(
                 preserveMetadata = selPreserveMetadata
             )
         )
-        val ext = viewModel.getOutputExtension(false)
-        val previewPath = File(activity.cacheDir, "temp_video_preview$ext").absolutePath
-        val srcPath = sourceFile?.absolutePath
-        val cmd = if (srcPath != null)
-            viewModel.buildConsolidatedFFmpegCommand(srcPath, previewPath, fontPath, activity)
-        else null
-        tvCommand.text = commandPreviewText(cmd)
-        tvEstimatedSize.text = estimateSizeText(cmd)
+        tvCommand.text = commandPreviewText()
+        tvEstimatedSize.text = estimateSizeText()
     }
 
-    /** Real command + notes. Shows the SMART plan when it will actually run. */
-    private fun commandPreviewText(cmd: String?): String {
+    /** The exact commands the smart pipeline will run, or the honest blocker. */
+    private fun commandPreviewText(): String {
         val smart = buildSmartSummary()
         if (smart != null) return smart
-        val base = when {
-            cmd == null -> "(preview unavailable)"
-            cmd.contains("(CONCAT_LIST:") ->
-                cmd.substring(0, cmd.indexOf("(CONCAT_LIST:")).trim() +
-                    "  ...(+concat list appended at export time)"
-            else -> cmd
-        }
-        if (cmd == null) return base
-        val notes = mutableListOf<String>()
-        val unavailable = smartUnavailableNote()
-        if (unavailable != null) {
-            notes.add(unavailable)
-        } else {
-            if (selCodec.isEmpty() && cmd.contains("-c:v") && !cmd.contains("-c:v copy")) {
-                notes.add("video edits present -> stream copy not possible, H.264 re-encode used")
-            }
-            if (selAudioCodec.isEmpty() && cmd.contains("-c:a") && !cmd.contains("-c:a copy")) {
-                notes.add("audio processing present -> audio re-encoded as shown")
-            }
-        }
-        return if (notes.isEmpty()) base else base + "\n\n(" + notes.joinToString("; ") + ")"
+        val why = smartUnavailableNote() ?: "smart export analysis failed"
+        return "(export blocked - " + why + ")\n\n" +
+            "The export pipeline only runs simple per-segment ffmpeg commands\n" +
+            "(stream copy whenever possible, concat demuxer assembly) - there is\n" +
+            "no filter-graph fallback. Remove the unsupported edits above or switch\n" +
+            "the settings back to Same as input, then export again."
     }
 
     // ------------------------------------------------------ smart export preview
@@ -353,7 +313,7 @@ class ExportSettingsDialog(
      */
     private fun smartUnavailableNote(): String? {
         val a = smartAnalysis ?: return if (smartAnalysisDone) "smart export analysis failed" else null
-        a.reason?.let { return "smart export unavailable: $it - full re-encode used" }
+        a.reason?.let { return "smart export unavailable: $it" }
         val gate = com.tharunbirla.librecuts.services.SmartExportPlanner.settingsBlockSmart(
             a,
             selRes, selFps,
@@ -362,7 +322,7 @@ class ExportSettingsDialog(
             customW, customH,
             effectiveVideoFormat()
         )
-        return gate?.let { "smart export disabled by these settings: $it - full re-encode used" }
+        return gate?.let { "export blocked by these settings: $it" }
     }
 
     /**
@@ -375,7 +335,15 @@ class ExportSettingsDialog(
         val customScale = customW >= 16 && customH >= 16
         val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
         val fpsChange = selFps != 0 && selFps != a.fpsRounded
-        return customScale || resChange || fpsChange
+        // Phase 12 mirror of the planner rule: a source pixel format the
+        // re-encode templates cannot reproduce (10-bit and friends) forces
+        // the uniform re-encode plan whenever a trim needs encoding.
+        val anyTrimmed = a.clips.any {
+            !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
+        }
+        return customScale || resChange || fpsChange ||
+            (a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
+                a.pixFmt != "nv12" && a.pixFmt != "nv21" && !selKeyframeCut && anyTrimmed)
     }
 
     /**
@@ -400,7 +368,7 @@ class ExportSettingsDialog(
             if (selKeyframeCut) {
                 sb.append("\nkeyframe cut ON: trim points snap to keyframes (all copy, +/- one GOP accuracy)")
             } else if (enc > 0) {
-                sb.append("\n(transitions and faststart apply to the merged single-file mode only)")
+                sb.append("\n(faststart applies to the merged single-file mode only)")
             }
             return sb.toString()
         }
@@ -408,14 +376,11 @@ class ExportSettingsDialog(
         var encSec = 0.0
         for (i in a.clips.indices) {
             val c = a.clips[i]
-            val dLeft = if (i > 0) a.transitions[i - 1] ?: 0L else 0L
-            val dRight = if (i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
-            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            val spanMs = c.trimEndMs - c.trimStartMs
             if (spanMs <= 0L) continue
-            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        encSec += a.transitions.values.sum() / 1000.0
         val sb = StringBuilder()
         sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
         if (a.hasAudio) sb.append(" -map 0:a:0")
@@ -429,6 +394,10 @@ class ExportSettingsDialog(
             sb.append(", ").append(String.format(Locale.US, "%.1fs", encSec)).append(" re-encoded")
         }
         if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
+        if (a.transitions.isNotEmpty()) {
+            sb.append("; ").append(a.transitions.size)
+                .append(" transition(s) exported as straight cuts (no frame blending)")
+        }
         sb.append("; final assembly is a lossless concat)")
         return sb.toString()
     }
@@ -494,12 +463,9 @@ class ExportSettingsDialog(
             // at the chosen bitrate (no stream-copied parts).
             var totalSec = 0.0
             for (i in a.clips.indices) {
-                val dLeft = if (!selSeparateFiles && i > 0) a.transitions[i - 1] ?: 0L else 0L
-                val dRight = if (!selSeparateFiles && i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
-                val spanMs = (a.clips[i].trimEndMs - dRight) - (a.clips[i].trimStartMs + dLeft)
+                val spanMs = a.clips[i].trimEndMs - a.clips[i].trimStartMs
                 if (spanMs > 0L) totalSec += spanMs / 1000.0
             }
-            if (!selSeparateFiles) totalSec += a.transitions.values.sum() / 1000.0
             val aKbps = when {
                 selAudioCodec == "pcm_s16le" -> 1411
                 selAudioCodec == "flac" -> 900
@@ -512,14 +478,11 @@ class ExportSettingsDialog(
         val srcKbpsTotal = if (srcKbps > 0) srcKbps else 8000
         for (i in a.clips.indices) {
             val c = a.clips[i]
-            val dLeft = if (!selSeparateFiles && i > 0) a.transitions[i - 1] ?: 0L else 0L
-            val dRight = if (!selSeparateFiles && i < a.clips.size - 1) a.transitions[i] ?: 0L else 0L
-            val spanMs = (c.trimEndMs - dRight) - (c.trimStartMs + dLeft)
+            val spanMs = c.trimEndMs - c.trimStartMs
             if (spanMs <= 0L) continue
-            val full = c.fullRange && dLeft == 0L && dRight == 0L
+            val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        if (!selSeparateFiles) encSec += a.transitions.values.sum() / 1000.0
         val aKbps = when {
             selAudioCodec == "pcm_s16le" -> 1411
             selAudioCodec == "flac" -> 900
