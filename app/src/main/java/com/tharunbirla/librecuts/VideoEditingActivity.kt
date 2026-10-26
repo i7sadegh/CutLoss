@@ -3276,11 +3276,13 @@ class VideoEditingActivity : AppCompatActivity() {
                 tempOutputFile = File(cacheDir, "temp_video_${System.currentTimeMillis()}$ext")
                 val tempOutputPath = tempOutputFile.absolutePath
 
-                // SMART EXPORT (phase 9): when the project is copy-compatible (only
+                // SMART EXPORT (phase 9+): when the project is copy-compatible (only
                 // trims / merges / freezes / transitions / mutes, all clips sharing the
                 // same codec parameters), build a segment plan that stream-copies the
-                // unchanged parts and only re-encodes the changed parts. Falls back to
-                // the consolidated render below whenever the planner says null.
+                // unchanged parts and only re-encodes the changed parts. When the
+                // planner refuses, the real reason is surfaced below (phase 12);
+                // changed export settings run the phase 13 flag contract
+                // (lossless cut first, then ONE finalize encode).
                 val smartPlanPath = try {
                     withContext(kotlinx.coroutines.Dispatchers.IO) {
                         com.tharunbirla.librecuts.services.SmartExportPlanner.planSmartExport(
@@ -3306,7 +3308,7 @@ class VideoEditingActivity : AppCompatActivity() {
                         )?.planFile?.absolutePath
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Smart export planning failed, using consolidated render: ${e.message}", e)
+                    Log.w(TAG, "Smart export planning failed: ${e.message}", e)
                     null
                 }
 

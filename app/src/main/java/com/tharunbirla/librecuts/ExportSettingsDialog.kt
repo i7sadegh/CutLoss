@@ -26,7 +26,14 @@ import java.util.Locale
  *  - MP4 faststart + source metadata preservation toggles.
  *  - Phase 11: resolution / FPS changes keep the smart path - the plan
  *    switches to the simple re-encode command (a scale / -r flag per
- *    changed option) with a lossless concat assembly.
+ *    changed option) with a lossless concat assembly; phase 13 extends
+ *    it to the full flag contract:
+ *  - Phase 13 (flag contract): a setting left on "Same as input" writes
+ *    NO ffmpeg flag; keyframe cut + changed settings runs the lossless
+ *    cut FIRST, then ONE finalize encode of the assembled cut; codec /
+ *    bitrate / audio options map to -c:v / -b:v / -c:a / -b:a exactly;
+ *    the video bitrate chip forwards "" (no -b:v) while it stays on
+ *    "Same as input".
  *
  * Every control change is pushed live into the ViewModel; the preview box
  * shows the exact simple commands the smart pipeline will run (per-segment
@@ -223,7 +230,12 @@ class ExportSettingsDialog(
         return sourceVideoKbps()
     }
 
-    private fun currentBitrateString(): String = "${effectiveVideoKbps()}k"
+    /** Phase 13: "" while the bitrate chip is on Same as input (no -b:v). */
+    private fun chosenBitrateString(): String {
+        if (bitrateSameAsInput) return ""
+        val typed = etBitrate.text.toString().toIntOrNull()
+        return if (typed != null && typed in 100..500000) typed.toString() + "k" else ""
+    }
 
     private fun effectiveVideoFormat(): String {
         if (selFormat != "same") return selFormat
@@ -272,7 +284,7 @@ class ExportSettingsDialog(
 
     private fun refresh() {
         if (!::tvCommand.isInitialized) return
-        viewModel.setExportSettings(selRes, selFps, snapAudioOnly, currentBitrateString())
+        viewModel.setExportSettings(selRes, selFps, snapAudioOnly, chosenBitrateString())
         viewModel.setAdvancedExport(
             VideoEditingViewModel.AdvancedExport(
                 videoFormat = effectiveVideoFormat(),
@@ -326,12 +338,14 @@ class ExportSettingsDialog(
     }
 
     /**
-     * True when a resolution / fps / custom-size change switches the smart
-     * plan to the simple re-encode template (phase 11): one command per
-     * timeline segment with a scale / -r flag per changed option, followed
-     * by the lossless concat assembly. Mirrors the planner's own logic.
+     * True when ANY export setting differs from the source (phase 13 flag
+     * contract): resolution / custom size / fps / video codec / video
+     * bitrate / audio codec / audio bitrate. The plan then runs the simple
+     * encode commands - one flag per changed option - instead of the pure
+     * -c copy. Mirrors the planner's own logic (chosenBitrateString is ""
+     * while the bitrate chip is on Same as input).
      */
-    private fun smartReencodeMode(a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis): Boolean {
+    private fun smartEncodeMode(a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis): Boolean {
         val customScale = customW >= 16 && customH >= 16
         val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
         val fpsChange = selFps != 0 && selFps != a.fpsRounded
@@ -342,6 +356,8 @@ class ExportSettingsDialog(
             !(it.trimStartMs <= 60L && it.trimEndMs >= it.durationMs - 60L)
         }
         return customScale || resChange || fpsChange ||
+            chosenBitrateString().isNotEmpty() || selCodec.isNotEmpty() ||
+            selAudioBitrate.isNotEmpty() || selAudioCodec.isNotEmpty() ||
             (a.pixFmt != "yuv420p" && a.pixFmt != "yuvj420p" &&
                 a.pixFmt != "nv12" && a.pixFmt != "nv21" && !selKeyframeCut && anyTrimmed)
     }
@@ -356,7 +372,7 @@ class ExportSettingsDialog(
         val a = smartAnalysis ?: return null
         if (a.reason != null) return null
         if (smartUnavailableNote() != null) return null
-        if (smartReencodeMode(a)) return buildSmartReencodeSummary(a)
+        if (smartEncodeMode(a)) return buildSmartEncodeSummary(a)
         if (selSeparateFiles) {
             val copy = a.clips.count { it.fullRange || selKeyframeCut }
             val enc = a.clips.size - copy
@@ -381,13 +397,14 @@ class ExportSettingsDialog(
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
+        val outFmt = effectiveVideoFormat()
         val sb = StringBuilder()
         sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
         if (a.hasAudio) sb.append(" -map 0:a:0")
         if (selPreserveMetadata) sb.append(" -map_metadata 1")
         sb.append(" -c copy -bsf:v dump_extra")
-        if (selFastStart) sb.append(" -movflags +faststart")
-        sb.append(" output.mp4")
+        if (selFastStart && (outFmt == "mp4" || outFmt == "mov")) sb.append(" -movflags +faststart")
+        sb.append(" output.").append(outFmt)
         sb.append("\n\n(smart export: ").append(a.clips.size).append(" segments - ")
         sb.append(String.format(Locale.US, "%.1fs", copySec)).append(" stream-copied losslessly")
         if (encSec > 0.01) {
@@ -403,42 +420,109 @@ class ExportSettingsDialog(
     }
 
     /**
-     * Preview of the simple re-encode plan (phase 11): the per-segment
-     * command shape - the classic ffmpeg template with one flag per changed
-     * export option - plus the final concat command when a single merged
-     * file is exported.
+     * Phase 13 preview of the commands the smart pipeline will run when a
+     * setting changed: the exact flag list with one flag per CHANGED
+     * option (same-as-input options write no flag). Keyframe cut (the
+     * default) shows the two-step plan - the lossless cut commands plus
+     * the ONE finalize encode of the assembled cut; Normal cut shows the
+     * frame-accurate per-segment encode. Mirrors simpleVideoEncoderArgs /
+     * simpleAudioEncoderArgs in the planner.
      */
-    private fun buildSmartReencodeSummary(
+    private fun buildSmartEncodeSummary(
         a: com.tharunbirla.librecuts.services.SmartExportPlanner.SmartAnalysis
     ): String {
         val customScale = customW >= 16 && customH >= 16
         val resChange = !customScale && selRes != 0 && selRes != a.displayHeight && selRes != a.shortSide
         val fpsChange = selFps != 0 && selFps != a.fpsRounded
+        val vBitrate = chosenBitrateString()
         val scaleSpec: String = when {
-            customScale -> "scale=" + (customW - customW % 2) + ":" + (customH - customH % 2)
-            resChange -> if (a.displayHeight >= a.displayWidth) "scale=" + selRes + ":-2" else "scale=-2:" + selRes
+            customScale -> "scale=" + (customW - customW % 2) + ":" + (customH - customH % 2) + ",setsar=1"
+            resChange -> if (a.displayHeight >= a.displayWidth) "scale=" + selRes + ":-2,setsar=1" else "scale=-2:" + selRes + ",setsar=1"
             else -> ""
         }
-        val vCodecLabel = if (a.vCodec == "hevc") "libx265" else "libx264"
-        val aBitrate = if (selAudioBitrate.isNotEmpty()) selAudioBitrate else "192k"
-        val sb = StringBuilder()
-        sb.append("ffmpeg [-ss S] [-t D] -i input -map 0:v:0")
-        if (a.hasAudio) sb.append(" -map 0:a:0")
-        if (scaleSpec.isNotEmpty()) sb.append(" -vf ").append(scaleSpec)
-        if (fpsChange) sb.append(" -r ").append(selFps)
-        sb.append(" -c:v ").append(vCodecLabel).append(" -b:v ").append(currentBitrateString())
-        if (a.hasAudio) sb.append(" -c:a aac -b:a ").append(aBitrate)
-        sb.append(" seg_N.mp4   (one command per timeline segment)")
-        if (!selSeparateFiles) {
-            sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
-            if (selPreserveMetadata) sb.append(" -map_metadata 1")
-            sb.append(" -c copy -bsf:v dump_extra")
-            if (selFastStart) sb.append(" -movflags +faststart")
-            sb.append(" output.mp4")
+        // ---- video flags (mirrors simpleVideoEncoderArgs) ----
+        val vEnc = when {
+            selCodec.isNotEmpty() -> selCodec
+            a.vCodec == "hevc" -> "libx265"
+            else -> "libx264"
         }
-        sb.append("\n\n(smart export: ").append(a.clips.size)
-        sb.append(if (selSeparateFiles) " separate output files, all re-encoded" else " segments, all re-encoded")
+        val vFlags = StringBuilder("-c:v ").append(vEnc)
+        if (vEnc == "libx265") vFlags.append(" -tag:v hvc1")
+        when {
+            vBitrate.isNotEmpty() -> vFlags.append(" -b:v ").append(vBitrate)
+            vEnc == "libx264" -> vFlags.append(" -crf 18")
+            vEnc == "libx265" -> vFlags.append(" -crf 20")
+            vEnc == "libvpx-vp9" -> vFlags.append(" -crf 32 -b:v 0")
+            vEnc == "libaom-av1" -> vFlags.append(" -crf 30 -b:v 0")
+            else -> { }
+        }
+        if (selPreset.isNotEmpty() && (vEnc == "libx264" || vEnc == "libx265")) {
+            vFlags.append(" -preset ").append(selPreset)
+        }
+        // ---- audio flags (mirrors simpleAudioEncoderArgs) ----
+        val aFlags = if (selAudioCodec.isEmpty() && selAudioBitrate.isEmpty()) {
+            "-c:a copy"
+        } else {
+            val enc = when {
+                selAudioCodec.isNotEmpty() -> selAudioCodec
+                a.aCodec == "mp3" -> "libmp3lame"
+                else -> "aac"
+            }
+            if (selAudioBitrate.isNotEmpty()) "-c:a " + enc + " -b:a " + selAudioBitrate else "-c:a " + enc
+        }
+        val needsVideo = scaleSpec.isNotEmpty() || fpsChange ||
+            vBitrate.isNotEmpty() || selCodec.isNotEmpty()
+        val outFmt = effectiveVideoFormat()
+        val outExt = "." + outFmt
+        val fastOk = selFastStart && (outFmt == "mp4" || outFmt == "mov")
+
+        val modeNote = if (selKeyframeCut) {
+            if (selSeparateFiles) " separate files, each cut losslessly then encoded"
+            else " segments - lossless cut first, then ONE encode of the assembled cut"
+        } else {
+            if (selSeparateFiles) " separate output files, all re-encoded"
+            else " segments, all re-encoded (frame-accurate cuts)"
+        }
+        val sb = StringBuilder()
+        if (selKeyframeCut) {
+            // two-step: the lossless cut first, ONE finalize command after
+            sb.append("ffmpeg -ss S -t D -i input -map 0:v:0")
+            if (a.hasAudio) sb.append(" -map 0:a:0")
+            sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
+            if (!selSeparateFiles) {
+                sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+                if (a.hasAudio) sb.append(" -map 0:a:0")
+                if (selPreserveMetadata) sb.append(" -map_metadata 1")
+                sb.append(" -c copy -bsf:v dump_extra cut.mp4")
+            }
+            sb.append("\nffmpeg -i ").append(if (selSeparateFiles) "seg_N" else "cut.mp4")
+            sb.append(" -map 0:v:0")
+            if (a.hasAudio) sb.append(" -map 0:a:0")
+            if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
+            if (fpsChange) sb.append(" -r ").append(selFps)
+            if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
+            if (a.hasAudio) sb.append(" ").append(aFlags)
+            if (fastOk) sb.append(" -movflags +faststart")
+            sb.append(" output").append(if (selSeparateFiles) "_N" else "").append(outExt)
+        } else {
+            sb.append("ffmpeg [-ss S] [-t D] -i input -map 0:v:0")
+            if (a.hasAudio) sb.append(" -map 0:a:0")
+            if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
+            if (fpsChange) sb.append(" -r ").append(selFps)
+            if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
+            if (a.hasAudio) sb.append(" ").append(aFlags)
+            if (fastOk) sb.append(" -movflags +faststart")
+            sb.append(" seg_N").append(outExt).append("   (frame-accurate, one per segment)")
+            if (!selSeparateFiles) {
+                sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
+                if (a.hasAudio) sb.append(" -map 0:a:0")
+                if (selPreserveMetadata) sb.append(" -map_metadata 1")
+                sb.append(" -c copy -bsf:v dump_extra")
+                if (fastOk) sb.append(" -movflags +faststart")
+                sb.append(" output").append(outExt)
+            }
+        }
+        sb.append("\n\n(smart export: ").append(a.clips.size).append(modeNote)
         if (scaleSpec.isNotEmpty()) {
             if (customScale) {
                 sb.append(" to ").append(customW - customW % 2).append("x").append(customH - customH % 2)
@@ -447,8 +531,10 @@ class ExportSettingsDialog(
             }
         }
         if (fpsChange) sb.append(" @ ").append(selFps).append("fps")
-        sb.append("; cuts are frame-accurate; ")
-        sb.append(if (selSeparateFiles) "no assembly step" else "assembly is a stream-copy concat")
+        if (a.transitions.isNotEmpty()) {
+            sb.append("; ").append(a.transitions.size)
+                .append(" transition(s) exported as straight cuts (no frame blending)")
+        }
         sb.append(")")
         return sb.toString()
     }
@@ -458,9 +544,10 @@ class ExportSettingsDialog(
         val a = smartAnalysis ?: return null
         if (a.reason != null) return null
         if (smartUnavailableNote() != null) return null
-        if (smartReencodeMode(a)) {
-            // Simple re-encode plan (phase 11): every second is re-encoded
-            // at the chosen bitrate (no stream-copied parts).
+        if (smartEncodeMode(a)) {
+            // Encode plan (phase 13): every second is re-encoded at the
+            // chosen bitrate, or at the source-equivalent rate when the
+            // bitrate chip stays on Same as input (CRF quality).
             var totalSec = 0.0
             for (i in a.clips.indices) {
                 val spanMs = a.clips[i].trimEndMs - a.clips[i].trimStartMs

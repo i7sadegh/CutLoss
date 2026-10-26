@@ -36,7 +36,7 @@ class VideoEditingViewModel : ViewModel() {
     private val _exportResolution = MutableStateFlow(0)   // 0 = same as input
     private val _exportFps = MutableStateFlow(0)          // 0 = same as input
     private val _exportAudioOnly = MutableStateFlow(false)
-    private val _exportBitrate = MutableStateFlow("8M")
+    private val _exportBitrate = MutableStateFlow("")   // "" = same as input (no -b:v flag)
     private val _selectedOperationId = MutableStateFlow<String?>(null)
 
     private val _hasUnsavedEdits = MutableStateFlow(false)

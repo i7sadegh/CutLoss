@@ -155,6 +155,10 @@ class FFmpegRenderEngine(private val context: Context) {
                         Log.w(TAG, "Hardware encoder h264_mediacodec failed or produced no video stream. Falling back to software encoder libx264. Error:\n$diagnosticLog")
                         val fallbackCommand = command.replace("h264_mediacodec", "libx264")
                         return@withContext executeCommand(fallbackCommand, isRetry = true)
+                    } else if (!isRetry && command.contains("hevc_mediacodec")) {
+                        Log.w(TAG, "Hardware encoder hevc_mediacodec failed. Falling back to software encoder libx265. Error:\n$diagnosticLog")
+                        val fallbackCommand = command.replace("hevc_mediacodec", "libx265 -tag:v hvc1")
+                        return@withContext executeCommand(fallbackCommand, isRetry = true)
                     } else if (!isRetry && command.contains("libx264")) {
                         Log.w(TAG, "Software encoder libx264 failed. Falling back to hardware encoder h264_mediacodec. Error:\n$diagnosticLog")
                         // v3: strip "-preset X" as well - h264_mediacodec does not support it
@@ -299,6 +303,10 @@ class FFmpegRenderEngine(private val context: Context) {
                     if (!isRetry && ffmpegCommand.contains("h264_mediacodec")) {
                         Log.w(TAG, "Hardware encoder h264_mediacodec failed or produced no video stream. Falling back to software encoder libx264. Error:\n$diagnosticLog")
                         val fallbackCommand = ffmpegCommand.replace("h264_mediacodec", "libx264")
+                        return@withContext exportFinal(fallbackCommand, totalDurationSecs, onProgress, isRetry = true)
+                    } else if (!isRetry && ffmpegCommand.contains("hevc_mediacodec")) {
+                        Log.w(TAG, "Hardware encoder hevc_mediacodec failed. Falling back to software encoder libx265. Error:\n$diagnosticLog")
+                        val fallbackCommand = ffmpegCommand.replace("hevc_mediacodec", "libx265 -tag:v hvc1")
                         return@withContext exportFinal(fallbackCommand, totalDurationSecs, onProgress, isRetry = true)
                     } else if (!isRetry && ffmpegCommand.contains("libx264")) {
                         Log.w(TAG, "Software encoder libx264 failed. Falling back to hardware encoder h264_mediacodec. Error:\n$diagnosticLog")

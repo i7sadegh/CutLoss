@@ -80,7 +80,6 @@ class ExportService : Service() {
         val tempOutputPath = intent.getStringExtra(EXTRA_TEMP_OUTPUT_PATH) ?: return START_NOT_STICKY
         val concatFilePath = intent.getStringExtra(EXTRA_CONCAT_FILE_PATH)
         val durationSecs = intent.getDoubleExtra(EXTRA_TOTAL_DURATION_SECS, 0.0)
-        val isAudioOnly = intent.getBooleanExtra(EXTRA_IS_AUDIO_ONLY, false)
 
         startForeground(NOTIFICATION_ID, buildNotification(0, "Exporting..."))
 
@@ -113,7 +112,7 @@ class ExportService : Service() {
                         if (filesToSave.size > 1) {
                             val saved = mutableListOf<Uri>()
                             for (f in filesToSave) {
-                                val uri = saveVideoToGallery(f, false)
+                                val uri = saveVideoToGallery(f)
                                 if (uri != null) saved.add(uri)
                             }
                             if (saved.isNotEmpty()) {
@@ -129,7 +128,7 @@ class ExportService : Service() {
                                 broadcastFailure("Failed to save videos to gallery")
                             }
                         } else {
-                            val savedUri = saveVideoToGallery(filesToSave[0], isAudioOnly)
+                            val savedUri = saveVideoToGallery(filesToSave[0])
                             if (savedUri != null) {
                                 showCompletionNotification("Export Complete", "Video saved to gallery", savedUri)
                                 broadcastSuccess(savedUri.toString())
@@ -356,13 +355,29 @@ class ExportService : Service() {
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
-    private fun saveVideoToGallery(videoFile: File, isAudioOnly: Boolean): Uri? {
-        val mimeType = if (isAudioOnly) "audio/mpeg" else "video/mp4"
-        val ext = if (isAudioOnly) ".mp3" else ".mp4"
-        val prefix = if (isAudioOnly) "Cutloss_Audio_" else "Cutloss_"
-        
+    private fun saveVideoToGallery(videoFile: File): Uri? {
+        // Phase 13: the smart plan can export MP4/MKV/MOV/WebM (and the
+        // audio-only formats) - derive the gallery mime type, extension and
+        // name prefix from the ACTUAL output file instead of assuming MP4.
+        val ext = "." + videoFile.extension.lowercase()
+        val isAudio: Boolean
+        val mimeType: String
+        val prefix: String
+        when (ext) {
+            ".mp3" -> { isAudio = true; mimeType = "audio/mpeg"; prefix = "Cutloss_Audio_" }
+            ".m4a" -> { isAudio = true; mimeType = "audio/mp4"; prefix = "Cutloss_Audio_" }
+            ".opus" -> { isAudio = true; mimeType = "audio/opus"; prefix = "Cutloss_Audio_" }
+            ".flac" -> { isAudio = true; mimeType = "audio/flac"; prefix = "Cutloss_Audio_" }
+            ".wav" -> { isAudio = true; mimeType = "audio/x-wav"; prefix = "Cutloss_Audio_" }
+            ".mkv" -> { isAudio = false; mimeType = "video/x-matroska"; prefix = "Cutloss_" }
+            ".mov" -> { isAudio = false; mimeType = "video/quicktime"; prefix = "Cutloss_" }
+            ".webm" -> { isAudio = false; mimeType = "video/webm"; prefix = "Cutloss_" }
+            ".avi" -> { isAudio = false; mimeType = "video/x-msvideo"; prefix = "Cutloss_" }
+            else -> { isAudio = false; mimeType = "video/mp4"; prefix = "Cutloss_" }
+        }
+
         val sharedPreferences = getSharedPreferences("librecuts_prefs", Context.MODE_PRIVATE)
-        val prefKey = if (isAudioOnly) "export_audio_directory_uri" else "export_directory_uri"
+        val prefKey = if (isAudio) "export_audio_directory_uri" else "export_directory_uri"
         val customUriString = sharedPreferences.getString(prefKey, null)
         
         if (customUriString != null) {
@@ -393,13 +408,13 @@ class ExportService : Service() {
             val contentValues = android.content.ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, "${prefix}${System.currentTimeMillis()}$ext")
                 put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
-                if (isAudioOnly) {
+                if (isAudio) {
                     put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/Cutloss")
                 } else {
                     put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/Cutloss")
                 }
             }
-            val collectionUri = if (isAudioOnly) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+            val collectionUri = if (isAudio) MediaStore.Audio.Media.EXTERNAL_CONTENT_URI else MediaStore.Video.Media.EXTERNAL_CONTENT_URI
             val uri = contentResolver.insert(collectionUri, contentValues)
             uri?.let {
                 contentResolver.openOutputStream(it)?.use { output ->

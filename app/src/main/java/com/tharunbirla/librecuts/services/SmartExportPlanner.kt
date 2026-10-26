@@ -32,6 +32,15 @@ import java.io.FileOutputStream
  * Resolution / fps / custom-size changes (phase 11) also stay here: the
  * simple re-encode template - one flag per changed option (-vf scale=W:H,
  * -r F) - followed by the lossless concat.
+ * Phase 13 (the flag contract): every export setting maps to exactly one
+ * ffmpeg flag, and a setting left on "same as input" writes NO flag at
+ * all - all-same-as-input exports are a pure -c copy. Keyframe-cut exports
+ * with changed settings run TWO steps: the lossless cut first (per-segment
+ * -c copy + concat), then ONE finalize command on the assembled file with
+ * a flag per changed option (-vf scale, -r, -c:v, -b:v, -c:a, -b:a,
+ * -preset). Normal-cut exports with changed settings encode each segment
+ * directly (frame-accurate). Containers: MP4/MKV/MOV remux losslessly,
+ * WebM needs VP9/AV1 video + Opus audio, AVI is refused.
  * When the project or settings are not compatible the planner returns null
  * and the caller surfaces the real reason instead of re-encoding.
  *
@@ -101,6 +110,7 @@ object SmartExportPlanner {
         val shortSide: Int,
         val fpsRounded: Int,
         val vCodec: String,
+        val aCodec: String,
         val pixFmt: String,
         val reason: String?
     )
@@ -133,18 +143,33 @@ object SmartExportPlanner {
         videoFormat: String
     ): String? {
         if (audioOnly) return "audio-only export"
-        if (videoFormat != "mp4") return "non-MP4 container"
-        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return "custom codec requested"
-        // Phase 11: resolution / fps / custom-size changes no longer disable
-        // the smart path -- they switch it to the simple re-encode template
-        // (a scale / -r flag per changed option), like the classic ffmpeg
-        // one-command workflow.
+        // Phase 13 container rules: MP4/MKV/MOV remux losslessly, WebM
+        // needs VP9/AV1 video and Opus audio, AVI cannot hold the streams.
+        if (videoFormat == "avi") {
+            return "AVI cannot hold the streams - use MP4, MKV, MOV or Same as input"
+        }
+        if (videoFormat == "webm") {
+            if (advancedVideoCodec != "libvpx-vp9" && advancedVideoCodec != "libaom-av1") {
+                return "WebM needs VP9 or AV1 video - set the Video codec chip or use MKV"
+            }
+            if (analysis.hasAudio && advancedAudioCodec != "libopus") {
+                return "WebM audio must be Opus - set the Audio codec to Opus or use MKV"
+            }
+        }
+        if ((advancedAudioCodec == "pcm_s16le" || advancedAudioCodec == "flac") &&
+            (videoFormat == "mp4" || videoFormat == "mov")
+        ) {
+            return "PCM/FLAC audio does not fit MP4/MOV - pick MKV or Same as input"
+        }
+        // Phase 11/13: resolution / fps / custom-size / codec / bitrate
+        // changes never disable the smart path -- they switch it to the
+        // simple commands with ONE flag per changed option.
         return null
     }
 
     private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
         fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", reason)
+            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", "", reason)
 
         if (isImagePath(sourceFilePath)) return fail("image source")
         val ops = project.operations
@@ -259,6 +284,7 @@ object SmartExportPlanner {
             shortSide = Math.min(displayWidth, displayHeight),
             fpsRounded = Math.round(refParams.fpsValue).toInt(),
             vCodec = refParams.vCodec,
+            aCodec = audioRef?.aCodec ?: "",
             pixFmt = refParams.pixFmt,
             reason = null
         )
@@ -502,8 +528,9 @@ object SmartExportPlanner {
         sweepStaleWorkDirs(context)
 
         if (audioOnly) return null
-        if (videoFormat != "mp4") return null
-        if (advancedVideoCodec.isNotEmpty() || advancedAudioCodec.isNotEmpty()) return null
+        if (videoFormat == "avi") return null
+        if (videoFormat == "webm" &&
+            advancedVideoCodec != "libvpx-vp9" && advancedVideoCodec != "libaom-av1") return null
         if (isImagePath(sourceFilePath)) return null
 
         val ops = project.operations
@@ -630,8 +657,33 @@ object SmartExportPlanner {
         }
         val encodableSource = refParams.pixFmt == "yuv420p" || refParams.pixFmt == "yuvj420p" ||
             refParams.pixFmt == "nv12" || refParams.pixFmt == "nv21"
-        val reencodeAll = customScale || resChange || fpsChange ||
-            (!encodableSource && !keyframeCut && anyTrimmedSpan)
+        // ---- phase 13: the flag contract ----
+        // A setting left on "same as input" never writes a flag. All
+        // same-as-input = pure -c copy. Keyframe cut + changed settings =
+        // TWO steps: the lossless cut first, then ONE finalize command with
+        // a flag per changed option. Normal cut + changed settings = direct
+        // per-segment encode (frame-accurate). A non-encodable pixel format
+        // with a normal-cut trim still forces the uniform encode.
+        val vBitrateSet = exportBitrate.isNotEmpty()
+        val vCodecSet = advancedVideoCodec.isNotEmpty()
+        val aBitrateSet = advancedAudioBitrate.isNotEmpty()
+        val aCodecSet = advancedAudioCodec.isNotEmpty()
+        val needsVideoEncode = customScale || resChange || fpsChange || vBitrateSet || vCodecSet
+        val needsAudioEncode = aBitrateSet || aCodecSet
+        val anyEncode = needsVideoEncode || needsAudioEncode
+        val twoStep = anyEncode && keyframeCut
+        val perSegmentEncode = !keyframeCut &&
+            (anyEncode || (!encodableSource && anyTrimmedSpan))
+        val outExt = when (videoFormat) {
+            "mkv" -> ".mkv"
+            "mov" -> ".mov"
+            "webm" -> ".webm"
+            else -> ".mp4"
+        }
+        // Stage-one segments hold the COPIED source streams, so they cannot
+        // be WebM (H.264/HEVC do not fit that container); encoded
+        // per-segment outputs can.
+        val segExt = if (videoFormat == "webm") ".mp4" else outExt
 
         // ---- audio reference ----
         val audioRef: MediaParams? = clips.firstOrNull { it.params.hasAudio }?.params
@@ -649,6 +701,10 @@ object SmartExportPlanner {
                 }
             }
         }
+        // Phase 13 container gates (mirror settingsBlockSmart).
+        if (videoFormat == "webm" && audioRef != null && advancedAudioCodec != "libopus") return null
+        if ((advancedAudioCodec == "pcm_s16le" || advancedAudioCodec == "flac") &&
+            (videoFormat == "mp4" || videoFormat == "mov")) return null
         val planHasAudio = audioRef != null
         val aRate = audioRef?.aSampleRate ?: 44100
         val aChanLabel = if ((audioRef?.aChannels ?: 2) == 1) "mono" else "stereo"
@@ -657,35 +713,41 @@ object SmartExportPlanner {
         // The lossless pipeline never blends frames, so no transition
         // segments are rendered and no span is shortened: every clip is
         // simply its trim, and clips join end to start in the concat.
-        val merged = !exportSeparateFiles
+        val merged = !exportSeparateFiles   // single file vs one per clip
         for (i in clips.indices) {
             if (clips[i].trimEndMs <= clips[i].trimStartMs) return null
+        }
+        var totalSpanSec = 0.0
+        for (c in clips) {
+            totalSpanSec += Math.max(0.0, (c.trimEndMs - c.trimStartMs) / 1000.0)
         }
 
         // ---- build per-segment commands ----
         val commands = mutableListOf<Pair<String, Double>>()
         val segmentFiles = mutableListOf<File>()
+        val encodedOutFiles = mutableListOf<File>()
+        // Matched-parameter encoders for the hybrid span re-encode (phase 9):
+        // a trimmed span must be bitstream-compatible with its copied
+        // neighbours, so it matches the source profile / level / format.
         val enc = videoEncoderArgs(refParams, exportBitrate, advancedPreset) ?: return null
         val aEnc = audioEncoderArgs(audioRef, advancedAudioBitrate)
-        val fpsFilter = "fps=" + refParams.fpsString
-        // Simple-command encoder for the re-encode mode (phase 11): no
-        // profile / level matching (the source profile may not fit the
-        // target size) - just the classic "-c:v libx264 -b:v X" form.
-        val encPixFmt = encodablePixFmt(refParams)
-        val encSimple: String = if (refParams.vCodec == "hevc") {
-            val sb = StringBuilder("-c:v libx265 -tag:v hvc1 -pix_fmt ").append(encPixFmt)
-            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 20")
-            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
-            sb.toString()
-        } else {
-            val sb = StringBuilder("-c:v libx264 -pix_fmt ").append(encPixFmt)
-            if (exportBitrate.isNotEmpty()) sb.append(" -b:v ").append(exportBitrate) else sb.append(" -crf 18")
-            if (advancedPreset.isNotEmpty()) sb.append(" -preset ").append(advancedPreset)
-            sb.toString()
+        // Generated silence cannot stream-copy, and WebM needs Opus.
+        val aEncSilence = when {
+            videoFormat != "webm" -> aEnc
+            advancedAudioBitrate.isNotEmpty() -> "-c:a libopus -ar 48000 -b:a " + advancedAudioBitrate
+            else -> "-c:a libopus -ar 48000 -b:a 128k"
         }
+        val fpsFilter = "fps=" + refParams.fpsString
+        // ---- phase 13: one-flag-per-changed-option encoders ----
+        // Same-as-input options write NO flag: codec -> -c:v (source
+        // encoder family when unchanged), bitrate -> -b:v only when the
+        // user set one (CRF-quality default otherwise), preset -> x264/x265
+        // only, audio -> -c:a copy unless codec or bitrate changed.
+        val vEncSimple = simpleVideoEncoderArgs(refParams, advancedVideoCodec, exportBitrate, advancedPreset)
+        val aEncSimple = simpleAudioEncoderArgs(audioRef, advancedAudioCodec, advancedAudioBitrate)
         var segCounter = 0
-        fun nextSegmentFile(): File {
-            val f = File(workDir, "seg_" + segCounter + ".mp4")
+        fun nextSegmentFile(ext: String): File {
+            val f = File(workDir, "seg_" + segCounter + ext)
             segCounter++
             segmentFiles.add(f)
             return f
@@ -698,13 +760,15 @@ object SmartExportPlanner {
             val spanMs = spanEnd - spanStart
             val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
             val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
-            val seg = nextSegmentFile()
+            val seg = if (perSegmentEncode) nextSegmentFile(outExt) else nextSegmentFile(segExt)
 
-            if (reencodeAll) {
-                // Simple re-encode (phase 11): one flag per changed export
-                // option. -ss before -i decodes forward, so cuts are
-                // frame-accurate; autorotate runs before scale, so rotated
-                // phone clips land on their display dimensions.
+            if (perSegmentEncode) {
+                // Frame-accurate direct encode (phase 11/13): one command
+                // per segment with ONE flag per changed option. -ss before
+                // -i decodes forward, so cuts land on the exact frame;
+                // autorotate runs before scale, so rotated phone clips land
+                // on their display dimensions. Audio left on same-as-input
+                // stream-copies next to the re-encoded video.
                 val sb = StringBuilder("-y")
                 if (spanStart > 0L) sb.append(" -ss ").append(ms(spanStart))
                 if (!fullRange) sb.append(" -t ").append(ms(spanMs))
@@ -721,8 +785,14 @@ object SmartExportPlanner {
                 }
                 if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
                 if (fpsArg != null) sb.append(" ").append(fpsArg)
-                sb.append(" ").append(encSimple)
-                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                sb.append(" ").append(vEncSimple)
+                if (silenceAudio) {
+                    sb.append(" ").append(aEncSilence)
+                } else if (planHasAudio) {
+                    sb.append(" ").append(aEncSimple)
+                }
+                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
             } else if (fullRange) {
@@ -789,7 +859,9 @@ object SmartExportPlanner {
         // ---- final assembly: concat with stream copy (merged mode only) ----
         // seg_0 is attached as a second input purely so the output can
         // inherit the source's global metadata (-map_metadata 1); faststart
-        // relocates the MP4 moov atom to the front of the file.
+        // relocates the MP4 moov atom to the front of the file. In the
+        // two-step plan (phase 13) the concat assembles the intermediate
+        // lossless cut and the finalize command below re-encodes it once.
         if (merged) {
             val listFile = File(workDir, "concat_list.txt")
             val listSb = StringBuilder()
@@ -800,12 +872,50 @@ object SmartExportPlanner {
 
             val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""
             val metaArg = if (preserveMetadata) " -map_metadata 1" else ""
-            val fastArg = if (movFastStart) " -movflags +faststart" else ""
+            val concatTarget = if (twoStep) File(workDir, "cut" + segExt).absolutePath else outputFilePath
+            val fastArg = if (movFastStart && !twoStep && (segExt == ".mp4" || segExt == ".mov"))
+                " -movflags +faststart" else ""
             val concatCmd = "-y -f concat -safe 0 -i \"" + listFile.absolutePath +
                 "\" -i \"" + segmentFiles[0].absolutePath + "\"" +
                 " -map 0:v:0" + audioMap + metaArg + " -c copy -bsf:v dump_extra" + fastArg +
-                " \"" + outputFilePath + "\""
+                " \"" + concatTarget + "\""
             commands.add(Pair(concatCmd, 1.0))
+
+            if (twoStep) {
+                // ---- phase 13 step two: the ONE finalize command ----
+                // The lossless cut is assembled; re-encode it once with a
+                // flag per changed option. Audio untouched -> -c:a copy;
+                // video untouched (audio-only change) -> -c:v copy.
+                val sb = StringBuilder("-y -i \"").append(concatTarget).append("\"")
+                sb.append(" -map 0:v:0")
+                if (planHasAudio && !audioMuted) sb.append(" -map 0:a:0")
+                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+                if (fpsArg != null) sb.append(" ").append(fpsArg)
+                sb.append(" ").append(if (needsVideoEncode) vEncSimple else "-c:v copy")
+                if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
+                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(" \"").append(outputFilePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(1.0, totalSpanSec)))
+            }
+        } else if (twoStep) {
+            // ---- separate files + changed settings: encode each cut ----
+            for (i in segmentFiles.indices) {
+                val spanMs = clips[i].trimEndMs - clips[i].trimStartMs
+                val out = File(workDir, "out_" + i + outExt)
+                val sb = StringBuilder("-y -i \"").append(segmentFiles[i].absolutePath).append("\"")
+                sb.append(" -map 0:v:0")
+                if (planHasAudio && !audioMuted) sb.append(" -map 0:a:0")
+                if (scaleFilter != null) sb.append(" -vf \"").append(scaleFilter).append("\"")
+                if (fpsArg != null) sb.append(" ").append(fpsArg)
+                sb.append(" ").append(if (needsVideoEncode) vEncSimple else "-c:v copy")
+                if (planHasAudio && !audioMuted) sb.append(" ").append(aEncSimple)
+                if (preserveMetadata) sb.append(" -map_metadata 0")
+                if (movFastStart && (outExt == ".mp4" || outExt == ".mov")) sb.append(" -movflags +faststart")
+                sb.append(" \"").append(out.absolutePath).append("\"")
+                commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
+                encodedOutFiles.add(out)
+            }
         }
 
         // ---- plan json (phase 10: object form; plain array = phase 9 plan) ----
@@ -816,7 +926,11 @@ object SmartExportPlanner {
             o.put("weight", pair.second)
             arr.put(o)
         }
-        val outputs = if (merged) listOf(outputFilePath) else segmentFiles.map { it.absolutePath }
+        val outputs = when {
+            exportSeparateFiles && twoStep -> encodedOutFiles.map { it.absolutePath }
+            exportSeparateFiles -> segmentFiles.map { it.absolutePath }
+            else -> listOf(outputFilePath)
+        }
         val planObj = JSONObject()
         planObj.put("separate", exportSeparateFiles)
         planObj.put("outputs", JSONArray(outputs))
@@ -828,8 +942,8 @@ object SmartExportPlanner {
             TAG,
             "smart export planned: " + commands.size + " commands, clips=" + clips.size +
                 (if (merged) "" else ", separate mode") +
-                (if (reencodeAll) ", simple re-encode mode (scale=" + (scaleFilter ?: "none") +
-                    ", " + (fpsArg ?: "fps unchanged") + ")" else "")
+                (if (twoStep) ", two-step (lossless cut + one finalize encode)" else "") +
+                (if (perSegmentEncode) ", direct per-segment encode" else "")
         )
         return SmartPlan(planFile)
     }
@@ -932,7 +1046,75 @@ object SmartExportPlanner {
     }
 
     /**
-     * Pixel format for re-encode templates (phase 12): keep the common
+     * Phase 13 "one flag per changed option" video encoder string for the
+     * simple commands (the two-step finalize command and the per-segment
+     * direct encode). A same-as-input option writes NO flag: codec ->
+     * -c:v with the source encoder family when unchanged; bitrate ->
+     * -b:v only when the user set one (CRF-quality default otherwise, and
+     * VP9/AV1 get constant-quality mode because their default 2-pass
+     * bitrate is unusable); preset -> x264/x265 only (hardware / VP9 / AV1
+     * encoders do not take -preset). -pix_fmt appears only when the source
+     * format must be converted for the 8-bit encoders. -tag:v hvc1 keeps
+     * HEVC files playable on Apple players (ignored by MKV).
+     */
+    private fun simpleVideoEncoderArgs(
+        p: MediaParams,
+        chosenCodec: String,
+        bitrate: String,
+        preset: String
+    ): String {
+        val enc = when {
+            chosenCodec.isNotEmpty() -> chosenCodec
+            p.vCodec == "hevc" -> "libx265"
+            else -> "libx264"
+        }
+        val sb = StringBuilder("-c:v ").append(enc)
+        if (enc == "libx265") sb.append(" -tag:v hvc1")
+        if ((enc == "libx264" || enc == "libx265") &&
+            p.pixFmt != "yuv420p" && p.pixFmt != "yuvj420p" &&
+            p.pixFmt != "nv12" && p.pixFmt != "nv21"
+        ) {
+            sb.append(" -pix_fmt yuv420p")
+        }
+        when {
+            bitrate.isNotEmpty() -> sb.append(" -b:v ").append(bitrate)
+            enc == "libx264" -> sb.append(" -crf 18")
+            enc == "libx265" -> sb.append(" -crf 20")
+            enc == "libvpx-vp9" -> sb.append(" -crf 32 -b:v 0")
+            enc == "libaom-av1" -> sb.append(" -crf 30 -b:v 0")
+            else -> { /* hevc_mediacodec: encoder default bitrate */ }
+        }
+        if (preset.isNotEmpty() && (enc == "libx264" || enc == "libx265")) {
+            sb.append(" -preset ").append(preset)
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Phase 13 audio encoder string: "-c:a copy" when both the codec and
+     * the bitrate are same-as-input; otherwise the chosen encoder (the
+     * source codec family when only the bitrate changed) with -b:a only
+     * when the user set one. libopus re-encodes fine from any input rate
+     * (ffmpeg auto-resamples to 48 kHz - lab validated).
+     */
+    private fun simpleAudioEncoderArgs(
+        audioRef: MediaParams?,
+        chosenCodec: String,
+        audioBitrate: String
+    ): String {
+        if (chosenCodec.isEmpty() && audioBitrate.isEmpty()) return "-c:a copy"
+        val enc = when {
+            chosenCodec.isNotEmpty() -> chosenCodec
+            audioRef?.aCodec == "mp3" -> "libmp3lame"
+            else -> "aac"
+        }
+        val sb = StringBuilder("-c:a ").append(enc)
+        if (audioBitrate.isNotEmpty()) sb.append(" -b:a ").append(audioBitrate)
+        return sb.toString()
+    }
+
+    /**
+     * Pixel format for the hybrid span re-encode (phase 12): keep the common
      * 8-bit 4:2:0 formats as-is so re-encoded segments stay concat-uniform
      * with stream-copied ones (yuvj420p keeps its full-range flag; nv12 and
      * nv21 are the same 4:2:0 bitstream once encoded). Anything more exotic
