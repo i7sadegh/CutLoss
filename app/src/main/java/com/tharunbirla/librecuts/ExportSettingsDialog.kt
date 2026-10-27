@@ -199,6 +199,7 @@ class ExportSettingsDialog(
     private fun probeSource() {
         val f = sourceFile ?: return
         if (!f.exists()) return
+        var fileDurMs = 0L
         try {
             val r = MediaMetadataRetriever()
             try {
@@ -209,9 +210,19 @@ class ExportSettingsDialog(
                 if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
                 srcW = w
                 srcH = h
+                fileDurMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
+                    ?.toLongOrNull() ?: 0L
             } finally { r.release() }
         } catch (_: Exception) { }
-        val durSec = durationMs / 1000.0
+        // Phase 18: the bitrate proxy must divide the file's size by the
+        // FILE's own duration. The old code divided by the dialog's
+        // durationMs - the WHOLE timeline (every clip in the sequence) -
+        // so the rate (and with it the whole size estimate) came out N
+        // times too small for an N-clip sequence: a 2-clip project
+        // estimated ~49 MB for a ~93 MB output. The file's own duration
+        // is the correct denominator; the timeline value stays only as a
+        // fallback for the single-clip case when probing failed.
+        val durSec = (if (fileDurMs > 0L) fileDurMs else durationMs) / 1000.0
         if (durSec > 0 && f.length() > 0) {
             srcKbps = (f.length() * 8.0 / 1000.0 / durSec).toInt()
         }
@@ -406,9 +417,11 @@ class ExportSettingsDialog(
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        // phase 16: freeze-frame transitions re-encode only their D window
-        // of stills; the clips themselves stay exactly as computed above.
+        // phase 18: transitions re-encode only the window they dip into
+        // (the following clip's opening, which keeps playing under the
+        // effect); the rest of every clip stays exactly as computed above.
         for (dMs in a.transitions.values) {
+            copySec -= dMs / 1000.0
             encSec += dMs / 1000.0
         }
         val outFmt = effectiveVideoFormat()
@@ -427,7 +440,7 @@ class ExportSettingsDialog(
         if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
         if (a.transitions.isNotEmpty()) {
             sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) as freeze-frame segments (only the stills re-encode; the output grows by each transition duration)")
+                .append(" transition(s) (the second clip keeps playing through each one; only that short window re-encodes)")
         }
         sb.append("; final assembly is a lossless concat)")
         return sb.toString()
@@ -505,7 +518,7 @@ class ExportSettingsDialog(
             sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
             if (!selSeparateFiles) {
                 if (a.transitions.isNotEmpty()) {
-                    sb.append("\nffmpeg -framerate FPS -i frame_%04d.jpg -i anullsrc -vf \"scale,setsar,fps,format\" <matched enc> seg_T.mp4   (freeze-frame transition)")
+                    sb.append("\nffmpeg -framerate FPS -i frame_%04d.jpg -ss S -t D -i clip2 -vf \"scale,setsar,fps,format\" <matched enc> seg_T.mp4   (transition: clip2 keeps playing under clip1's frozen last frame)")
                 }
                 sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
                 if (a.hasAudio) sb.append(" -map 0:a:0")
@@ -553,7 +566,7 @@ class ExportSettingsDialog(
                 sb.append("; transitions apply only to the merged single-file export")
             } else {
                 sb.append("; ").append(a.transitions.size)
-                    .append(" transition(s) as freeze-frame segments (only the stills re-encode)")
+                    .append(" transition(s) (the second clip keeps playing through each one)")
             }
         }
         sb.append(")")
@@ -574,10 +587,9 @@ class ExportSettingsDialog(
                 val spanMs = a.clips[i].trimEndMs - a.clips[i].trimStartMs
                 if (spanMs > 0L) totalSec += spanMs / 1000.0
             }
-            // phase 16: each freeze-frame transition adds its duration.
-            for (dMs in a.transitions.values) {
-                totalSec += dMs / 1000.0
-            }
+            // phase 18: transitions add NO seconds anymore - each dips
+            // into the following clip's opening, which re-encodes as part
+            // of the spans already summed above.
             val aKbps = when {
                 selAudioCodec == "pcm_s16le" -> 1411
                 selAudioCodec == "flac" -> 900
@@ -595,10 +607,17 @@ class ExportSettingsDialog(
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        // phase 16 mirror: freeze-frame transitions re-encode their D
-        // window of stills; the clips stay as computed above.
-        for (dMs in a.transitions.values) {
-            encSec += dMs / 1000.0
+        // phase 18 mirror: a transition dips into the FOLLOWING clip's
+        // opening - that window moves from the copied seconds to the
+        // re-encoded ones (estimated at the transition duration; the
+        // stream-copy plans extend a little further to reach a keyframe)
+        // and the output gains no extra seconds. Merged mode only:
+        // separate files export no transitions.
+        if (!selSeparateFiles) {
+            for (dMs in a.transitions.values) {
+                copySec -= dMs / 1000.0
+                encSec += dMs / 1000.0
+            }
         }
         val aKbps = when {
             selAudioCodec == "pcm_s16le" -> 1411

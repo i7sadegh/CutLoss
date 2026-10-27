@@ -476,9 +476,13 @@ object SmartExportPlanner {
         val out = mutableMapOf<Int, Long>()
         for ((gap, td) in transitions) {
             if (gap < 0 || gap >= spans.size - 1) continue
-            val leftDur = spans[gap].second - spans[gap].first
+            // Phase 18: the transition dips into the RIGHT clip only -
+            // the left clip plays untouched to its very end and merely
+            // its last frame freezes as the effect layer - so the right
+            // span is the only one that must fit the duration plus a
+            // sane remainder.
             val rightDur = spans[gap + 1].second - spans[gap + 1].first
-            val maxD = Math.min(leftDur - 250L, rightDur - 250L)
+            val maxD = rightDur - 250L
             if (maxD < 200L) continue
             val d = Math.min(td.second, maxD)
             if (d >= 200L) out[gap] = d
@@ -502,6 +506,37 @@ object SmartExportPlanner {
     private fun fpsCloseEnough(a: Double, b: Double): Boolean {
         val tol = Math.max(0.5, Math.abs(b) * 0.02)
         return Math.abs(a - b) <= tol
+    }
+
+    /**
+     * Phase 18: the first video keyframe at or after [minMs] (clip-file
+     * time, milliseconds), searching no further than [maxMs]. The
+     * stream-copy plans hand the follow-on segment off at a real keyframe
+     * so the concat never replays transition material (a plain -ss copy
+     * would snap BACK to the preceding keyframe and re-show it). Returns
+     * null when the probe fails or no keyframe sits in the window - the
+     * caller then falls back to a frame-accurate re-encode hand-off.
+     */
+    private fun probeNextKeyframeMs(path: String, minMs: Long, maxMs: Long): Long? {
+        if (minMs > maxMs) return null
+        val probeArg = "-v error -select_streams v:0 -show_entries packet=pts_time,flags " +
+            "-of csv=print_section=0 \"" + path + "\""
+        val out: String? = try {
+            FFprobeKit.execute(probeArg).output
+        } catch (e: Exception) {
+            Log.w(TAG, "keyframe probe failed: " + e.message)
+            null
+        }
+        if (out == null || out.isEmpty()) return null
+        for (line in out.split("\n")) {
+            val parts = line.trim().split(",")
+            if (parts.size < 2) continue
+            if (!parts[1].contains("K")) continue
+            val sec = parts[0].toDoubleOrNull() ?: continue
+            val tMs = Math.round(sec * 1000.0)
+            if (tMs >= minMs && tMs <= maxMs) return tMs
+        }
+        return null
     }
 
     // ------------------------------------------------------------------
@@ -848,10 +883,11 @@ object SmartExportPlanner {
         for (c in clips) {
             totalSpanSec += Math.max(0.0, (c.trimEndMs - c.trimStartMs) / 1000.0)
         }
-        // Phase 16: each freeze-frame transition segment adds its duration.
-        for (d in transitionDurations.values) {
-            totalSpanSec += d / 1000.0
-        }
+        // Phase 18: transitions dip into the FOLLOWING clip's opening -
+        // the effect plays over that clip's real, playing frames and the
+        // concat continues right after them - so the output duration is
+        // exactly the sum of the clip spans and NO seconds are added per
+        // transition anymore (the phase-16 stills model added D each).
 
         // ---- build per-segment commands ----
         val commands = mutableListOf<Pair<String, Double>>()
@@ -902,6 +938,14 @@ object SmartExportPlanner {
             segmentFiles.add(f)
             return f
         }
+        // Phase 18 hand-off bookkeeping, filled by
+        // addFreezeTransitionSegment: a transition into clip i consumes
+        // [trimStartMs, pieceHandoffMs[i]] of it (the piece renders that
+        // opening under the effect), and spanReencode marks clips whose
+        // keyframe window was degenerate - those hand off frame-accurately
+        // through the matched re-encode branch instead of a copied span.
+        val pieceHandoffMs = mutableMapOf<Int, Long>()
+        val spanReencode = mutableMapOf<Int, Boolean>()
 
         // ---- phase 16: freeze-frame transition segments ----
         // Like the freeze feature: the boundary frames of the two clips
@@ -940,24 +984,80 @@ object SmartExportPlanner {
             val left = clips[gap]
             val right = clips[gap + 1]
             val type = transitionsRaw[gap]?.first ?: "fade"
-            val frameCount = Math.max(2, Math.round(dMs / 1000.0 * transFpsValue).toInt())
+            // Phase 18: the transition dips into the RIGHT clip's opening,
+            // exactly like the editor preview plays it - the right clip's
+            // real, playing frames are the base layer and the LEFT clip's
+            // frozen last frame carries the effect on top. The follow-on
+            // segment continues the right clip right after the piece, so
+            // the second video is never frozen and the output gains no
+            // extra seconds. Stream-copy plans hand the follow-on segment
+            // off at a real keyframe: the piece bridges from the trim
+            // start to the first keyframe at/after the effect end (plain
+            // playing material once the effect finishes), so the copied
+            // span starts exactly on that keyframe and never replays
+            // transition material. Encode plans are frame-accurate and
+            // need no bridge.
+            var pieceEndMs = right.trimStartMs + dMs
+            var reencodeRight = false
+            if (!perSegmentEncode) {
+                val kf = probeNextKeyframeMs(
+                    right.path, right.trimStartMs + dMs,
+                    Math.min(right.trimStartMs + dMs + 3000L, right.trimEndMs - 100L)
+                )
+                if (kf != null && right.trimEndMs - kf >= 100L) {
+                    pieceEndMs = kf
+                } else {
+                    // no usable keyframe in the window (huge GOP or a tiny
+                    // remainder): hand off frame-accurately instead - the
+                    // right clip's span re-encodes through the existing
+                    // matched re-encode branch
+                    reencodeRight = true
+                }
+            }
+            pieceHandoffMs[gap + 1] = pieceEndMs
+            spanReencode[gap + 1] = reencodeRight
+            val pieceMs = Math.max(200L, pieceEndMs - right.trimStartMs)
+            val frameCount = Math.max(2, Math.round(pieceMs / 1000.0 * transFpsValue).toInt())
+            val effectCount = Math.max(2, Math.round(dMs / 1000.0 * transFpsValue).toInt())
             val dSec = frameCount / transFpsValue
-            // last displayed frame of the left clip, first of the right one
+            // the effect layer: the left clip's frozen last frame
             val endA = extractBoundaryFrame(
                 left.path, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
-            )
-            val startB = extractBoundaryFrame(right.path, right.trimStartMs)
-            if (endA == null || startB == null) return false
+            ) ?: return false
+            // the base layer: the right clip's PLAYING frames, one
+            // extraction per output frame on the reference-rate grid
+            // (OPTION_CLOSEST = the frame nearest that instant, exactly
+            // what the player shows under the preview overlay)
+            val rightStartMs = right.trimStartMs
             val framesDir = File(workDir, "trans_" + gap)
-            if (!TransitionFrameRenderer.renderTransitionFrames(
-                    type, endA, startB, framesDir, frameCount, displayWidth, displayHeight
-                )
-            ) return false
+            val renderOk = TransitionFrameRenderer.renderTransitionFrames(
+                type, endA,
+                { i ->
+                    extractBoundaryFrame(
+                        right.path,
+                        rightStartMs + Math.round(i * 1000.0 / transFpsValue)
+                    )
+                },
+                framesDir, frameCount, effectCount, displayWidth, displayHeight
+            )
+            try { endA.recycle() } catch (e: Exception) {}
+            if (!renderOk) return false
             // encoder spec mirrors whatever the neighbouring segments use:
             // the matched source encoder next to stream-copied segments,
             // the one-flag-per-option encoder inside the encode plans.
             val transVEnc = if (perSegmentEncode) vEncSimple else enc
-            val transAEnc = if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else aEnc
+            // Phase 18 audio: the piece carries the right clip's REAL
+            // audio, stream-copied with it (the sound keeps playing
+            // through the transition, exactly like the preview); the
+            // re-encode form only inside the encode plans with changed
+            // audio settings. Generated silence just for a muted or
+            // audio-less right clip.
+            val realAudio = planHasAudio && right.params.hasAudio && !right.muted
+            val pieceAEnc = if (realAudio) {
+                if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else "-c:a copy"
+            } else {
+                aEncSilence
+            }
             // Phase 17: the transition segment must match its NEIGHBOURS'
             // geometry, which depends on the plan mode. Stream-copied
             // neighbours (pure copy, keyframe cut, or the two-step cut a
@@ -993,7 +1093,13 @@ object SmartExportPlanner {
             val sb = StringBuilder("-y -framerate ").append(transFpsSpec)
                 .append(" -start_number 0 -i \"")
                 .append(framesDir.absolutePath).append("/frame_%04d.jpg\"")
-            if (planHasAudio) {
+            if (realAudio) {
+                // the right clip's real audio rides the piece (stream copy
+                // in the copy plans) - seamless into the follow-on segment
+                if (rightStartMs > 0L) sb.append(" -ss ").append(ms(rightStartMs))
+                sb.append(" -t ").append(String.format(java.util.Locale.US, "%.6f", dSec))
+                sb.append(" -i \"").append(right.path).append("\"")
+            } else if (planHasAudio) {
                 sb.append(" -f lavfi -t ")
                     .append(String.format(java.util.Locale.US, "%.6f", dSec))
                 sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
@@ -1002,7 +1108,7 @@ object SmartExportPlanner {
             if (planHasAudio) sb.append(" -map 1:a:0")
             sb.append(" -vf \"").append(vf).append("\"")
             sb.append(" ").append(transVEnc)
-            if (planHasAudio) sb.append(" ").append(transAEnc)
+            if (planHasAudio) sb.append(" ").append(pieceAEnc)
             // Phase 17: the timescale flag must match the container the
             // segment is actually written to (outExt in the encode plans,
             // segExt next to the stream copies) - video_track_timescale
@@ -1031,10 +1137,18 @@ object SmartExportPlanner {
 
         for (i in clips.indices) {
             val clip = clips[i]
-            val spanStart = clip.trimStartMs
+            // Phase 18: an incoming transition consumed this clip's head
+            // (the piece played its real opening under the effect); the
+            // segment continues from the hand-off point. Copy plans hand
+            // off at the probed keyframe, encode plans at the exact
+            // effect end, and a degenerate keyframe window hands off
+            // frame-accurately through the matched re-encode branch.
+            val handoffMs = pieceHandoffMs[i]
+            val spanStart = handoffMs ?: clip.trimStartMs
             val spanEnd = clip.trimEndMs
             val spanMs = spanEnd - spanStart
-            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
+            val fullRange = handoffMs == null &&
+                spanStart <= 60L && spanEnd >= clip.durationMs - 60L
             val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
 
             if (perSegmentEncode) {
@@ -1074,7 +1188,7 @@ object SmartExportPlanner {
                 sb.append(outTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            } else if (fullRange) {
+            } else if (spanReencode[i] != true && fullRange) {
                 // Whole clip unchanged -> pure stream copy remux
                 val seg = nextSegmentFile(segExt)
                 val sb = StringBuilder("-y -noautorotate -i \"").append(clip.path).append("\"")
@@ -1090,7 +1204,7 @@ object SmartExportPlanner {
                 sb.append(segTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))
-            } else if (keyframeCut) {
+            } else if (spanReencode[i] != true && keyframeCut) {
                 // Keyframe cut (LosslessCut-style): -ss BEFORE -i snaps to the
                 // preceding keyframe automatically, so the trimmed span is
                 // stream-copied - fully lossless, with up to one GOP of extra
@@ -1237,7 +1351,7 @@ object SmartExportPlanner {
                 (if (merged) "" else ", separate mode") +
                 (if (twoStep) ", two-step (lossless cut + one finalize encode)" else "") +
                 (if (perSegmentEncode) ", direct per-segment encode" else "") +
-                (if (hasTransitions) ", " + transitionDurations.size + " freeze-frame transition(s)" else "")
+                (if (hasTransitions) ", " + transitionDurations.size + " dip transition(s)" else "")
         )
         return SmartPlan(planFile)
     }

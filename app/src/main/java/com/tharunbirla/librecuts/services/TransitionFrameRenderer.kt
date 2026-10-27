@@ -11,43 +11,53 @@ import java.io.File
 import java.io.FileOutputStream
 
 /**
- * Phase 16: rasterizes a freeze-frame transition into a numbered JPEG
- * frame sequence that the export pipeline encodes with ONE simple ffmpeg
+ * Phase 16/18: rasterizes a transition into a numbered JPEG frame
+ * sequence that the export pipeline encodes with ONE simple ffmpeg
  * command (image sequence -> matched encode; no filter graph).
  *
- * The transition model (the user's spec, same as the freeze feature):
- * the LAST frame of the left clip and the FIRST frame of the right clip
- * are frozen, the effect plays between those two stills for exactly the
- * transition duration, and the resulting small video is concatenated
- * between the two clips like any other segment.
+ * Phase 18 model (matches the editor's live preview): the LEFT clip
+ * freezes into its LAST frame and that still carries the effect, while
+ * the RIGHT clip keeps PLAYING underneath - the base layer of every
+ * frame is the right clip's actual frame at that instant, extracted one
+ * at a time by the planner. The transition therefore dips into the
+ * second clip's opening: the effect completes, the second clip is
+ * already playing, and the concat continues it seamlessly - no frozen
+ * second video, no extra seconds added to the output.
  *
  * The per-type drawing is a faithful port of the editor's live preview
- * (TransitionPreviewOverlayView): the right clip's still is the base
- * layer and the left clip's still carries the effect, so the export
- * shows what the preview showed. Types the preview maps to a plain fade
- * (pixelize, distance, slices, smooth variants, ...) map to the same
- * fade here.
+ * (TransitionPreviewOverlayView) - the outgoing snapshot transforms away
+ * over the incoming, playing video. Types the preview maps to a plain
+ * fade (pixelize, distance, slices, smooth variants, ...) map to the
+ * same fade here.
  */
 object TransitionFrameRenderer {
 
     /**
-     * Render [frameCount] frames of the transition [type] between [bmpA]
-     * (the frozen last frame of the left clip) and [bmpB] (the frozen
-     * first frame of the right clip) into [outDir] as frame_0000.jpg ..
-     * frame_N-1.jpg at [outW] x [outH]. Returns false when a frame could
-     * not be written; the caller then gives up the plan honestly.
+     * Render [frameCount] frames of the transition [type] into [outDir]
+     * as frame_0000.jpg .. frame_N-1.jpg at [outW] x [outH]: frame i
+     * draws [baseFrames](i) - the right clip's PLAYING frame i, returned
+     * in display orientation and recycled right after drawing - with
+     * [bmpA] (the frozen last frame of the left clip) carrying the
+     * effect on top. The effect runs over the first [effectCount] frames
+     * (progress 0 -> 1); any remaining frames are plain bridge material
+     * (the right clip playing on, no overlay) the stream-copy plans use
+     * to reach a keyframe hand-off. Returns false when a frame could not
+     * be extracted or written; the caller then gives up the plan
+     * honestly.
      */
     fun renderTransitionFrames(
         type: String,
         bmpA: Bitmap,
-        bmpB: Bitmap,
+        baseFrames: (Int) -> Bitmap?,
         outDir: File,
         frameCount: Int,
+        effectCount: Int,
         outW: Int,
         outH: Int
     ): Boolean {
         if (outW <= 0 || outH <= 0 || frameCount < 2) return false
-        if (bmpA.isRecycled || bmpB.isRecycled) return false
+        if (effectCount < 2) return false
+        if (bmpA.isRecycled) return false
         if (outDir.exists() && !outDir.isDirectory) return false
         if (!outDir.exists() && !outDir.mkdirs()) return false
         val kind = type.lowercase()
@@ -56,22 +66,33 @@ object TransitionFrameRenderer {
         val paint = Paint()
         val path = Path()
         val srcA = Rect(0, 0, bmpA.width, bmpA.height)
-        val srcB = Rect(0, 0, bmpB.width, bmpB.height)
         val dst = RectF(0f, 0f, outW.toFloat(), outH.toFloat())
         val w = outW.toFloat()
         val h = outH.toFloat()
         try {
             for (i in 0 until frameCount) {
-                val progress = i.toFloat() / (frameCount - 1).toFloat()
-                drawFrame(canvas, paint, path, kind, progress, bmpA, srcA, bmpB, srcB, dst, w, h)
-                val file = File(outDir, "frame_" +
-                    String.format(java.util.Locale.US, "%04d", i) + ".jpg")
+                val bmpB = baseFrames(i)
+                if (bmpB == null || bmpB.isRecycled) return false
+                val srcB = Rect(0, 0, bmpB.width, bmpB.height)
                 try {
-                    FileOutputStream(file).use { out ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                    val progress = if (i < effectCount) {
+                        i.toFloat() / (effectCount - 1).toFloat()
+                    } else {
+                        1f
                     }
-                } catch (e: Exception) {
-                    return false
+                    drawFrame(canvas, paint, path, kind, progress, i < effectCount,
+                        bmpA, srcA, bmpB, srcB, dst, w, h)
+                    val file = File(outDir, "frame_" +
+                        String.format(java.util.Locale.US, "%04d", i) + ".jpg")
+                    try {
+                        FileOutputStream(file).use { out ->
+                            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
+                        }
+                    } catch (e: Exception) {
+                        return false
+                    }
+                } finally {
+                    try { bmpB.recycle() } catch (e: Exception) {}
                 }
             }
         } finally {
@@ -86,6 +107,7 @@ object TransitionFrameRenderer {
         path: Path,
         kind: String,
         progress: Float,
+        hasOverlay: Boolean,
         bmpA: Bitmap,
         srcA: Rect,
         bmpB: Bitmap,
@@ -97,9 +119,16 @@ object TransitionFrameRenderer {
         paint.reset()
         paint.isAntiAlias = true
         paint.isFilterBitmap = true
-        // Base layer: the right clip's still sits underneath (the live
-        // preview plays the right clip under the transforming snapshot).
+        // Base layer: the right clip's PLAYING frame sits underneath (the
+        // live preview plays the right clip under the transforming
+        // snapshot - phase 18 makes the export match it).
         canvas.drawBitmap(bmpB, srcB, dst, paint)
+        if (!hasOverlay) {
+            // bridge material past the effect window: the right clip
+            // simply plays on with no overlay (the stream-copy plans
+            // reach their keyframe hand-off through it)
+            return
+        }
         when (kind) {
             "fade", "dissolve" -> {
                 paint.alpha = ((1f - progress) * 255f).toInt()
@@ -107,7 +136,8 @@ object TransitionFrameRenderer {
             }
             "fadeblack", "fadewhite" -> {
                 // dip through the color: first half fades the LEFT still
-                // out to the color, second half fades the RIGHT still in
+                // out to the color, second half fades the RIGHT clip's
+                // playing frames back in
                 val base = if (progress < 0.5f) bmpA else bmpB
                 val baseSrc = if (progress < 0.5f) srcA else srcB
                 canvas.drawBitmap(base, baseSrc, dst, paint)
