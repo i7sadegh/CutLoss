@@ -200,11 +200,7 @@
                 android:valueFrom="0.1"
                 android:valueTo="10.0"
                 android:value="1.0"
-                android:stepSize="0.1"
-                app:haloColor="#3300C3FF"
-                app:thumbColor="@color/colorPrimary"
-                app:trackColorActive="@color/colorPrimary"
-                app:trackColorInactive="@color/surfaceVariant" />
+                android:stepSize="0.1" />
         </LinearLayout>
 
     </LinearLayout>

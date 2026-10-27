@@ -70,6 +70,7 @@
         android:textAllCaps="false"
         android:textSize="16sp"
         android:textStyle="bold"
+        android:textColor="@color/textColor"
         app:cornerRadius="12dp"
         app:backgroundTint="@color/surfaceContainerHigh"
         app:strokeColor="@color/outline"

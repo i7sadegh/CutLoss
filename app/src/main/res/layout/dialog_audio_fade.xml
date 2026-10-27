@@ -29,9 +29,7 @@
             android:layout_weight="1"
             android:valueFrom="0.0"
             android:valueTo="5.0"
-            android:value="0.0"
-            app:thumbColor="@color/colorPrimary"
-            app:trackColorActive="@color/colorPrimary" />
+            android:value="0.0" />
 
         <TextView
             android:id="@+id/tvFadeInValue"
@@ -67,9 +65,7 @@
             android:layout_weight="1"
             android:valueFrom="0.0"
             android:valueTo="5.0"
-            android:value="0.0"
-            app:thumbColor="@color/colorPrimary"
-            app:trackColorActive="@color/colorPrimary" />
+            android:value="0.0" />
 
         <TextView
             android:id="@+id/tvFadeOutValue"

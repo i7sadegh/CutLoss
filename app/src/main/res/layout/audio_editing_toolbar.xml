@@ -30,9 +30,7 @@
             android:layout_weight="1"
             android:valueFrom="0.0"
             android:valueTo="2.0"
-            android:value="1.0"
-            app:thumbColor="@color/colorPrimary"
-            app:trackColorActive="@color/colorPrimary" />
+            android:value="1.0" />
 
         <TextView
             android:id="@+id/tvAudioVolumeValue"

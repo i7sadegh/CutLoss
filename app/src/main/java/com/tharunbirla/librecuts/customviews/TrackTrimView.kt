@@ -140,12 +140,16 @@ class TrackTrimView @JvmOverloads constructor(
                     // Dim bounds removed to prevent covering adjacent clips
                     
                     // Draw a thick border enclosing the active range when selected
-                    borderPaint.color = Color.parseColor("#FFB200")
+                    // (phase 20: white frame around the track per the reference
+                    // design; the amber overlay below stays as the selection
+                    // tint)
+                    borderPaint.color = Color.parseColor("#FFFFFF")
                     borderPaint.strokeWidth = 8f
                     canvas.drawRect(rectF, borderPaint)
                 } else {
                     // Main track selection highlight without trimmer handles/ghosts
-                    borderPaint.color = Color.parseColor("#FFB200") // Amber selection
+                    // (phase 20: white frame per the reference design)
+                    borderPaint.color = Color.parseColor("#FFFFFF") // White selection
                     borderPaint.strokeWidth = 10f
                     // Inset the rect so the stroke doesn't get clipped by the parent FrameLayout
                     val inset = borderPaint.strokeWidth / 2f

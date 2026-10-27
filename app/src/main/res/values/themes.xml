@@ -14,6 +14,10 @@
         <item name="android:statusBarColor">@color/statusBarColor</item>
         <!-- Modern transitions -->
         <item name="android:windowActivityTransitions">true</item>
+        <!-- phase 20: every Material Slider gets the reference look - a
+             fat amber capsule track with a white round thumb riding in
+             it (Widget.CutLoss.Slider below) -->
+        <item name="sliderStyle">@style/Widget.CutLoss.Slider</item>
     </style>
 
     <style name="Editor" parent="Theme.Material3.Dark.NoActionBar">
@@ -29,11 +33,29 @@
         <item name="android:textColor">@color/textColor</item>
         <item name="android:navigationBarColor">@color/navigationBarColor</item>
         <item name="android:statusBarColor">@color/statusBarColor</item>
+        <item name="sliderStyle">@style/Widget.CutLoss.Slider</item>
     </style>
 
     <style name="DialogShapeAppearance" parent="">
         <item name="cornerFamily">rounded</item>
         <item name="cornerSize">24dp</item>
+    </style>
+
+    <!-- phase 20: the reference-image slider - a fat amber capsule
+         track (20dp, Cap.ROUND ends so the capsule shape and the
+         amber nose past the thumb match the reference pixels) with a
+         white circular thumb (12dp) riding inside it, a dark
+         inactive track and no tick dots. Applies to every
+         com.google.android.material.slider.Slider via the
+         sliderStyle theme attribute (Material 1.9.0 verified). -->
+    <style name="Widget.CutLoss.Slider" parent="Widget.Material3.Slider">
+        <item name="trackColorActive">@color/colorPrimary</item>
+        <item name="trackColorInactive">@color/outlineVariant</item>
+        <item name="thumbColor">@color/textColor</item>
+        <item name="haloColor">@color/sliderHalo</item>
+        <item name="trackHeight">20dp</item>
+        <item name="thumbRadius">6dp</item>
+        <item name="tickVisible">false</item>
     </style>
 
 </resources>
