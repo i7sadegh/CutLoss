@@ -361,9 +361,10 @@ class ExportSettingsDialog(
             chosenBitrateString().isNotEmpty() || selCodec.isNotEmpty() ||
             selAudioBitrate.isNotEmpty() || selAudioCodec.isNotEmpty() ||
             (nonEncodable && !selKeyframeCut && anyTrimmed) ||
-            // phase 14 mirror: a fade segment on a non-encodable source
-            // cannot match its copied neighbours, so the uniform encode
-            // takes over and the fades ride the per-segment commands.
+            // phase 16 mirror: a freeze-frame transition segment encodes
+            // to 8-bit 4:2:0, so on a non-encodable source it cannot match
+            // stream-copied neighbours - the uniform encode takes over and
+            // every segment (transitions included) becomes yuv420p.
             (nonEncodable && a.transitions.isNotEmpty() && !selSeparateFiles)
     }
 
@@ -405,29 +406,10 @@ class ExportSettingsDialog(
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        // phase 14: the fade windows around each transition re-encode (the
-        // pieces); with a normal cut the whole adjacent clips do, because
-        // the fades ride their re-encode.
-        if (selKeyframeCut) {
-            for (dMs in a.transitions.values) {
-                val dSec = dMs / 1000.0
-                copySec = Math.max(0.0, copySec - dSec)
-                encSec += dSec
-            }
-        } else {
-            val adjacentIdx = mutableSetOf<Int>()
-            for (gap in a.transitions.keys) {
-                adjacentIdx.add(gap)
-                adjacentIdx.add(gap + 1)
-            }
-            for (idx in adjacentIdx) {
-                val c = a.clips.getOrNull(idx) ?: continue
-                if (!c.fullRange) continue
-                val spanMs = c.trimEndMs - c.trimStartMs
-                if (spanMs <= 0L) continue
-                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
-                encSec += spanMs / 1000.0
-            }
+        // phase 16: freeze-frame transitions re-encode only their D window
+        // of stills; the clips themselves stay exactly as computed above.
+        for (dMs in a.transitions.values) {
+            encSec += dMs / 1000.0
         }
         val outFmt = effectiveVideoFormat()
         val sb = StringBuilder()
@@ -445,7 +427,7 @@ class ExportSettingsDialog(
         if (selKeyframeCut) sb.append("; keyframe cut ON (trims snap to keyframes, +/- one GOP accuracy)")
         if (a.transitions.isNotEmpty()) {
             sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
+                .append(" transition(s) as freeze-frame segments (only the stills re-encode; the output grows by each transition duration)")
         }
         sb.append("; final assembly is a lossless concat)")
         return sb.toString()
@@ -523,7 +505,7 @@ class ExportSettingsDialog(
             sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
             if (!selSeparateFiles) {
                 if (a.transitions.isNotEmpty()) {
-                    sb.append("\nffmpeg -ss S -t D -i input -vf \"fps,setsar,fade\" -af afade <matched enc> seg_T.mp4   (transition piece)")
+                    sb.append("\nffmpeg -framerate FPS -i frame_%04d.jpg -i anullsrc -vf \"scale,setsar,fps,format\" <matched enc> seg_T.mp4   (freeze-frame transition)")
                 }
                 sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
                 if (a.hasAudio) sb.append(" -map 0:a:0")
@@ -571,7 +553,7 @@ class ExportSettingsDialog(
                 sb.append("; transitions apply only to the merged single-file export")
             } else {
                 sb.append("; ").append(a.transitions.size)
-                    .append(" transition(s) as matched fade segments (only the transition window is re-encoded)")
+                    .append(" transition(s) as freeze-frame segments (only the stills re-encode)")
             }
         }
         sb.append(")")
@@ -592,6 +574,10 @@ class ExportSettingsDialog(
                 val spanMs = a.clips[i].trimEndMs - a.clips[i].trimStartMs
                 if (spanMs > 0L) totalSec += spanMs / 1000.0
             }
+            // phase 16: each freeze-frame transition adds its duration.
+            for (dMs in a.transitions.values) {
+                totalSec += dMs / 1000.0
+            }
             val aKbps = when {
                 selAudioCodec == "pcm_s16le" -> 1411
                 selAudioCodec == "flac" -> 900
@@ -609,28 +595,10 @@ class ExportSettingsDialog(
             val full = c.fullRange
             if (full || selKeyframeCut) copySec += spanMs / 1000.0 else encSec += spanMs / 1000.0
         }
-        // phase 14 mirror of the summary math: fade windows re-encode with
-        // a keyframe cut, whole adjacent clips with a normal cut.
-        if (selKeyframeCut) {
-            for (dMs in a.transitions.values) {
-                val dSec = dMs / 1000.0
-                copySec = Math.max(0.0, copySec - dSec)
-                encSec += dSec
-            }
-        } else {
-            val adjacentIdx = mutableSetOf<Int>()
-            for (gap in a.transitions.keys) {
-                adjacentIdx.add(gap)
-                adjacentIdx.add(gap + 1)
-            }
-            for (idx in adjacentIdx) {
-                val c = a.clips.getOrNull(idx) ?: continue
-                if (!c.fullRange) continue
-                val spanMs = c.trimEndMs - c.trimStartMs
-                if (spanMs <= 0L) continue
-                copySec = Math.max(0.0, copySec - spanMs / 1000.0)
-                encSec += spanMs / 1000.0
-            }
+        // phase 16 mirror: freeze-frame transitions re-encode their D
+        // window of stills; the clips stay as computed above.
+        for (dMs in a.transitions.values) {
+            encSec += dMs / 1000.0
         }
         val aKbps = when {
             selAudioCodec == "pcm_s16le" -> 1411

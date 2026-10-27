@@ -32,6 +32,13 @@ android {
         vectorDrawables {
             useSupportLibrary true
         }
+
+        // Phase 16: ship ONE APK for arm64-v8a devices only (user
+        // request). The ffmpeg-kit native libraries for the other ABIs
+        // are dropped from the package, which also shrinks the APK a lot.
+        ndk {
+            abiFilters 'arm64-v8a'
+        }
     }
 
     sourceSets {
@@ -78,25 +85,9 @@ android {
         }
     }
 
-    splits {
-        abi {
-            enable true
-            reset()
-            include 'armeabi-v7a', 'arm64-v8a', 'x86_64'
-            universalApk false
-        }
-    }
-
-    applicationVariants.all { variant ->
-        def abiCodes = ['armeabi-v7a': 0, 'arm64-v8a': 1, 'x86_64': 2]
-
-        variant.outputs.each { output ->
-            def abi = output.getFilter(com.android.build.OutputFile.ABI)
-            if (abi != null && abiCodes.containsKey(abi)) {
-                output.versionCodeOverride = variant.versionCode + abiCodes.get(abi)
-            }
-        }
-    }
+    // Phase 16: the per-ABI split APKs and their version-code offsets are
+    // gone - the single arm64-v8a build (ndk.abiFilters above) replaces
+    // all of them.
 }
 
 dependencies {
