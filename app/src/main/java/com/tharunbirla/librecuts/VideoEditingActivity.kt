@@ -4522,6 +4522,18 @@ class VideoEditingActivity : AppCompatActivity() {
             val segmentView = layoutInflater.inflate(R.layout.item_sequence_segment, sequenceTrackContainer, false) as FrameLayout
             segmentView.clipChildren = false
             segmentView.clipToPadding = false
+            // phase 22: clip the clip's thumbnails to the rounded
+            // silhouette of the white trim frame (the same 22%-of-height
+            // radius TrackTrimView draws for the frame and the handle
+            // outer corners); without it the square thumbnail corners
+            // poke out under the rounded handle corners
+            segmentView.clipToOutline = true
+            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {
+                override fun getOutline(view: View, outline: android.graphics.Outline) {
+                    outline.setRoundRect(0, 0, view.width, view.height, view.height * 0.22f)
+                }
+            }
+            segmentView.post { segmentView.invalidateOutline() }
             val segmentWidth = (item.trimmedDurationMs * pixelsPerMs).toInt()
             val segmentLeft = (accumulatedStartMs * pixelsPerMs).toInt()
             val params = FrameLayout.LayoutParams(segmentWidth, ViewGroup.LayoutParams.MATCH_PARENT).apply {
@@ -4541,7 +4553,12 @@ class VideoEditingActivity : AppCompatActivity() {
             val lm = LinearLayoutManager(this, RecyclerView.HORIZONTAL, false)
             rv.layoutManager = lm
             val frameSpanMs = if (isPhoto) stretchedMaxDurationMs else stretchedDurationMs
-            val itemWidth = maxOf(1, ((frameSpanMs * pixelsPerMs) / 15).toInt())
+            // phase 22: round UP so the 15 frame tiles always cover the
+            // clip's full width; with floor() the strip could end up to
+            // 15px short of the right edge, leaving a dark gap before
+            // the next clip that made the transition chip look glued to
+            // the right clip instead of sitting centered on the cut
+            val itemWidth = maxOf(1, kotlin.math.ceil(frameSpanMs * pixelsPerMs / 15f).toInt())
             val adapter = FrameAdapter(emptyList(), itemWidth)
             rv.adapter = adapter
             

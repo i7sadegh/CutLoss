@@ -484,7 +484,7 @@
                     android:layout_width="36dp"
                     android:layout_height="36dp"
                     android:background="@drawable/bg_add_media_tile"
-                    android:src="@drawable/ic_add_24"
+                    android:src="@drawable/ic_add_thin_24"
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
                     android:padding="10dp"
