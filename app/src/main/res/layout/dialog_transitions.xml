@@ -97,7 +97,7 @@
             android:layout_height="wrap_content"
             android:layout_alignParentEnd="true"
             android:text="@string/done"
-            android:textColor="@color/colorOnPrimary"
+            android:textColor="@color/onAmber"
             android:backgroundTint="@color/colorPrimary"
             android:textSize="14sp"
             android:fontFamily="sans-serif-medium" />

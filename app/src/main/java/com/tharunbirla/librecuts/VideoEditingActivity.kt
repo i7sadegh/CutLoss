@@ -200,7 +200,7 @@ class VideoEditingActivity : AppCompatActivity() {
             when (intent?.action) {
                 com.tharunbirla.librecuts.services.ExportService.ACTION_EXPORT_PROGRESS -> {
                     val progress = intent.getIntExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_PROGRESS, 0)
-                    viewModel.updateExportProgress(progress)
+                    viewModel.updateExportProgress(mapFfmpegProgress(progress))
                 }
                 com.tharunbirla.librecuts.services.ExportService.ACTION_EXPORT_SUCCESS -> {
                     val uri = intent.getStringExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_SAVED_URI)
@@ -475,8 +475,9 @@ class VideoEditingActivity : AppCompatActivity() {
         pixelsPerMs = 0.15f * resources.displayMetrics.density
 
         // Apply system UI visibility based on user setting
+        // (phase 19: OFF by default - the user flips it on in Settings)
         val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
-        val isFullscreen = prefs.getBoolean("fullscreen_editor", true)
+        val isFullscreen = prefs.getBoolean("fullscreen_editor", false)
         if (isFullscreen) {
             window.decorView.systemUiVisibility = (
                     View.SYSTEM_UI_FLAG_FULLSCREEN
@@ -1754,6 +1755,11 @@ class VideoEditingActivity : AppCompatActivity() {
                     val progress = uiState.exportProgress
                     exportScreen.findViewById<TextView>(R.id.tvExportPercentage)?.text = "$progress%"
                     exportScreen.findViewById<android.widget.ProgressBar>(R.id.exportProgressBar)?.progress = progress
+                    // phase 19: the preparation stage label replaces the
+                    // default subtitle while the plan is being built
+                    exportScreen.findViewById<TextView>(R.id.tvExportMessage)?.setText(
+                        uiState.exportStageRes ?: R.string.str_please_don_t_close_the_app
+                    )
                 } else {
                     val emptyStateVisible = findViewById<View>(R.id.emptyProjectState)?.visibility == View.VISIBLE
                     if (isImportLoading || (!isVideoLoaded && !emptyStateVisible)) {
@@ -2766,7 +2772,7 @@ class VideoEditingActivity : AppCompatActivity() {
             val txt = toolbar.findViewById<TextView>(views.second)
             if (kotlin.math.abs(speed - s) < 0.01f) {
                 bg?.setBackgroundResource(R.drawable.bg_aspect_ratio_selected)
-                txt?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.colorOnPrimary))
+                txt?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.onAmber))
             } else {
                 bg?.setBackgroundResource(R.drawable.bg_aspect_ratio_item)
                 txt?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
@@ -3265,7 +3271,7 @@ class VideoEditingActivity : AppCompatActivity() {
                     "Check that assets/fonts/Roboto-Regular.ttf exists.")
         }
 
-        lifecycleScope.launch(Dispatchers.Main) {
+        exportJob = lifecycleScope.launch(Dispatchers.Main) {
             var tempOutputFile: File? = null
             try {
                 viewModel.startExport()
@@ -3304,7 +3310,10 @@ class VideoEditingActivity : AppCompatActivity() {
                             keyframeCut = viewModel.advancedExport.value.keyframeCut,
                             exportSeparateFiles = viewModel.advancedExport.value.exportSeparateFiles,
                             movFastStart = viewModel.advancedExport.value.movFastStart,
-                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata
+                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata,
+                            onPrepareProgress = { pct, stageRes ->
+                                viewModel.updateExportPreparation(stageRes, pct)
+                            }
                         )?.planFile?.absolutePath
                     }
                 } catch (e: Exception) {
@@ -3365,6 +3374,10 @@ class VideoEditingActivity : AppCompatActivity() {
                 )
                 Toast.makeText(this@VideoEditingActivity, "Export blocked: " + reason, Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
+                // phase 19: a user cancel (cancelExport -> exportJob.cancel)
+                // must not surface as an error dialog - rethrow so the
+                // coroutine simply ends cancelled
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 tempOutputFile?.let { if (it.exists()) it.delete() }
                 viewModel.exportError(e.message ?: "Unknown error")
                 Log.e(TAG, "Export start exception: ${e.message}", e)
@@ -3614,6 +3627,17 @@ class VideoEditingActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    /**
+     * Phase 19: the export dialog's 1-14% band belongs to the planning
+     * stage (clip probing + transition frame rasterization); the ffmpeg
+     * session progress maps onto the remaining 15-100 so the ring never
+     * jumps backwards when the background service takes over.
+     */
+    private fun mapFfmpegProgress(progress: Int): Int {
+        val p = progress.coerceIn(0, 100)
+        return if (p >= 100) 100 else 15 + p * 85 / 100
     }
 
     private fun cancelExport() {

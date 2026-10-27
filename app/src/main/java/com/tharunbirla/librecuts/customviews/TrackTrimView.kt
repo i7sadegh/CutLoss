@@ -140,12 +140,12 @@ class TrackTrimView @JvmOverloads constructor(
                     // Dim bounds removed to prevent covering adjacent clips
                     
                     // Draw a thick border enclosing the active range when selected
-                    borderPaint.color = Color.parseColor("#FF4081")
+                    borderPaint.color = Color.parseColor("#FFB200")
                     borderPaint.strokeWidth = 8f
                     canvas.drawRect(rectF, borderPaint)
                 } else {
                     // Main track selection highlight without trimmer handles/ghosts
-                    borderPaint.color = Color.parseColor("#FF2A6D") // Electric Pink selection
+                    borderPaint.color = Color.parseColor("#FFB200") // Amber selection
                     borderPaint.strokeWidth = 10f
                     // Inset the rect so the stroke doesn't get clipped by the parent FrameLayout
                     val inset = borderPaint.strokeWidth / 2f
@@ -153,7 +153,7 @@ class TrackTrimView @JvmOverloads constructor(
                     canvas.drawRect(selRect, borderPaint)
                     
                     val overlay = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                        color = Color.parseColor("#33FF2A6D")
+                        color = Color.parseColor("#33FFB200")
                         style = Paint.Style.FILL
                     }
                     canvas.drawRect(selRect, overlay)
@@ -258,13 +258,13 @@ class TrackTrimView @JvmOverloads constructor(
         // Draw track border
         if (!isMainVideoTrack) {
             if (isSelectedTrack) {
-                borderPaint.color = Color.parseColor("#FF4081") // Vibrant pink selection accent
+                borderPaint.color = Color.parseColor("#FFB200") // Vibrant pink selection accent
                 borderPaint.strokeWidth = 6f
                 canvas.drawRoundRect(rectF, 12f, 12f, borderPaint)
                 
                 // Draw a subtle 10% opacity pink overlay inside the track
                 val selectionOverlayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    color = Color.parseColor("#1AFF4081")
+                    color = Color.parseColor("#1AFFB200")
                     style = Paint.Style.FILL
                 }
                 canvas.drawRoundRect(rectF, 12f, 12f, selectionOverlayPaint)
@@ -314,7 +314,7 @@ class TrackTrimView @JvmOverloads constructor(
         if (isTrimEnabled) {
             val currentHandleWidth = handleWidth * currentHandleScale
             if (isMainVideoTrack) {
-                handlePaint.color = Color.parseColor("#FF4081")
+                handlePaint.color = Color.parseColor("#FFB200")
             } else {
                 handlePaint.color = Color.WHITE
             }

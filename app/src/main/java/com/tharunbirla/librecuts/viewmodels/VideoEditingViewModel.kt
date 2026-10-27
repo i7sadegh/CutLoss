@@ -402,7 +402,18 @@ class VideoEditingViewModel : ViewModel() {
     }
 
     fun updateExportProgress(progress: Int) {
-        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 100)) }
+        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 100), exportStageRes = null) }
+    }
+
+    /**
+     * Phase 19: live progress while the export is still being PLANNED
+     * (clip probing + transition frame rasterization) - the 1-14% band
+     * of the export dialog, with the stage label replacing the default
+     * subtitle. Any real ffmpeg progress clears the stage again
+     * (updateExportProgress sets exportStageRes back to null).
+     */
+    fun updateExportPreparation(stageRes: Int, progress: Int) {
+        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 14), exportStageRes = stageRes) }
     }
 
     fun finishExport() {

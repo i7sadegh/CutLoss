@@ -658,13 +658,13 @@ class ProjectImportActivity : AppCompatActivity() {
 
             if (item.isFound && item.currentUri != null) {
                 holder.ivStatusBadge.setImageResource(R.drawable.ic_check_24)
-                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onPrimaryContainer))
+                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onAmber))
                 holder.ivStatusBadge.background = ContextCompat.getDrawable(this@ProjectImportActivity, R.drawable.circle_primary_container)
 
                 loadThumbnailAsync(holder, item)
             } else {
                 holder.ivStatusBadge.setImageResource(R.drawable.ic_close_24)
-                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.colorOnPrimary))
+                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onAmber))
                 
                 val bg = ContextCompat.getDrawable(this@ProjectImportActivity, R.drawable.circle_primary_container)?.mutate()
                 bg?.setTint(ContextCompat.getColor(this@ProjectImportActivity, R.color.colorPrimary))

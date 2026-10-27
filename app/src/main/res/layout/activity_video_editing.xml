@@ -101,7 +101,7 @@
                     android:layout_height="match_parent"
                     android:gravity="center"
                     android:text="@string/export"
-                    android:textColor="@color/onPrimaryContainer"
+                    android:textColor="@color/onAmber"
                     android:fontFamily="sans-serif-medium"
                     android:textSize="13sp"
                     android:clickable="true"
@@ -299,7 +299,7 @@
                     android:padding="8dp"
                     android:scaleType="fitCenter"
                     android:elevation="4dp"
-                    app:tint="@color/onPrimaryContainer" />
+                    app:tint="@color/onAmber" />
 
                 <Space
                     android:layout_width="0dp"
@@ -437,7 +437,7 @@
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
                     android:padding="8dp"
-                    app:tint="@color/colorOnPrimary" />
+                    app:tint="@color/onAmber" />
 
                 <com.tharunbirla.librecuts.customviews.CustomVideoSeeker
                     android:id="@+id/customVideoSeeker"
@@ -669,7 +669,7 @@
             android:layout_height="50dp"
             android:layout_gravity="center"
             android:indeterminate="true"
-            android:indeterminateTint="#FF4081" />
+            android:indeterminateTint="#FFB200" />
     </FrameLayout>
 
     <!-- Floating PiP Container for Timeline Expand Mode -->
@@ -734,7 +734,7 @@
                 android:scaleType="fitCenter"
                 android:elevation="8dp"
                 android:contentDescription="Play Pause"
-                app:tint="@color/onPrimaryContainer" />
+                app:tint="@color/onAmber" />
 
             <LinearLayout
                 android:layout_width="match_parent"

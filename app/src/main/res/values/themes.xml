@@ -4,10 +4,10 @@
     <style name="AppTheme" parent="Theme.Material3.Dark.NoActionBar">
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryVariant">@color/colorPrimaryVariant</item>
-        <item name="colorOnPrimary">@color/colorOnPrimary</item>
+        <item name="colorOnPrimary">@color/onAmber</item>
         <item name="colorSecondary">@color/colorSecondary</item>
         <item name="colorSecondaryVariant">@color/colorSecondaryVariant</item>
-        <item name="colorOnSecondary">@color/colorOnSecondary</item>
+        <item name="colorOnSecondary">@color/onAmber</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:textColor">@color/textColor</item>
         <item name="android:navigationBarColor">@color/navigationBarColor</item>
@@ -21,10 +21,10 @@
         <item name="shapeAppearanceOverlay">@style/DialogShapeAppearance</item> <!-- Custom shape -->
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryVariant">@color/colorPrimaryVariant</item>
-        <item name="colorOnPrimary">@color/colorOnPrimary</item>
+        <item name="colorOnPrimary">@color/onAmber</item>
         <item name="colorSecondary">@color/colorSecondary</item>
         <item name="colorSecondaryVariant">@color/colorSecondaryVariant</item>
-        <item name="colorOnSecondary">@color/colorOnSecondary</item>
+        <item name="colorOnSecondary">@color/onAmber</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:textColor">@color/textColor</item>
         <item name="android:navigationBarColor">@color/navigationBarColor</item>

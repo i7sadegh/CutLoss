@@ -42,7 +42,7 @@
             android:layout_centerVertical="true"
             android:layout_alignParentEnd="true"
             android:text="Next"
-            android:textColor="@color/onPrimaryContainer"
+            android:textColor="@color/onAmber"
             android:backgroundTint="@color/colorPrimary"
             app:cornerRadius="20dp"
             android:textSize="14sp"

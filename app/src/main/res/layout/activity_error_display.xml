@@ -226,7 +226,7 @@
                 app:icon="@drawable/ic_github_24"
                 app:iconGravity="textStart"
                 app:backgroundTint="@color/colorPrimary"
-                android:textColor="@color/colorOnPrimary"
+                android:textColor="@color/onAmber"
                 app:cornerRadius="12dp"
                 android:layout_marginBottom="8dp" />
 

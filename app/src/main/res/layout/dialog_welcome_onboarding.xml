@@ -137,7 +137,7 @@
                     android:layout_width="32dp"
                     android:layout_height="32dp"
                     android:src="@drawable/ic_heart_24"
-                    app:tint="#E91E63" />
+                    app:tint="#FFB200" />
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -259,7 +259,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="48dp"
                 android:text="@string/str_get_started"
-                android:textColor="@color/onPrimaryContainer"
+                android:textColor="@color/onAmber"
                 android:textSize="14sp"
                 android:fontFamily="sans-serif-medium"
                 android:backgroundTint="@color/colorPrimary"

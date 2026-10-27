@@ -14,7 +14,7 @@ import android.view.View
  * CustomVideoSeeker — redesigned to match the CapCut-style reference UI.
  *
  * Visual changes (no functional changes):
- *  • Playhead line color → #FF4081 (accent)
+ *  • Playhead line color → #FFB200 (accent)
  *  • Playhead has a teardrop / rounded-top handle at the top (like the reference)
  *  • Line is slightly thinner for a refined look
  *
@@ -30,7 +30,7 @@ class CustomVideoSeeker @JvmOverloads constructor(
 
     /** The main accent line */
     private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF2A6D") // Primary theme color
+        color = Color.parseColor("#FFB200") // Primary theme color
         strokeWidth = 2f // Will be multiplied by density in init/draw
         style = Paint.Style.FILL_AND_STROKE
         strokeCap = Paint.Cap.ROUND
@@ -38,7 +38,7 @@ class CustomVideoSeeker @JvmOverloads constructor(
 
     /** The "Shield" handle at the top */
     private val handlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#FF2A6D") // Primary theme color
+        color = Color.parseColor("#FFB200") // Primary theme color
         style = Paint.Style.FILL
     }
 

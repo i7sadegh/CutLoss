@@ -272,11 +272,11 @@
             android:layout_height="56dp"
             android:layout_marginTop="16dp"
             android:text="Save Project (.lcprj)"
-            android:textColor="@color/onPrimaryContainer"
+            android:textColor="@color/onAmber"
             android:backgroundTint="@color/colorPrimary"
             app:cornerRadius="12dp"
             app:icon="@drawable/ic_save_24"
-            app:iconTint="@color/onPrimaryContainer"
+            app:iconTint="@color/onAmber"
             app:iconGravity="textStart" />
 
     </LinearLayout>

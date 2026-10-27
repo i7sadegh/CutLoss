@@ -34,8 +34,10 @@ android {
         // invalid"). 15 clears the highest offset ever produced.
         // Phase 18: 16 / beta11 - the playing-transition + size-estimate
         // build; every APK stays a strict upgrade over the installed one.
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 16
-        versionName "1.0-beta11"
+        // Phase 19: 17 / beta12 - amber theme, English-only, fullscreen
+        // default off, live preparation progress on the export dialog.
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 17
+        versionName "1.0-beta12"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

@@ -5,6 +5,7 @@ import android.net.Uri
 import android.util.Log
 import com.antonkarpenko.ffmpegkit.FFmpegKitConfig
 import com.antonkarpenko.ffmpegkit.FFprobeKit
+import com.tharunbirla.librecuts.R
 import com.tharunbirla.librecuts.models.EditOperation
 import com.tharunbirla.librecuts.models.VideoProject
 import org.json.JSONArray
@@ -621,7 +622,8 @@ object SmartExportPlanner {
         keyframeCut: Boolean = false,
         exportSeparateFiles: Boolean = false,
         movFastStart: Boolean = true,
-        preserveMetadata: Boolean = true
+        preserveMetadata: Boolean = true,
+        onPrepareProgress: ((Int, Int) -> Unit)? = null
     ): SmartPlan? {
         try {
             return planInternal(
@@ -629,7 +631,8 @@ object SmartExportPlanner {
                 exportResolution, exportFps, exportBitrate, audioOnly,
                 advancedVideoCodec, advancedAudioCodec, advancedPreset,
                 advancedAudioBitrate, customWidth, customHeight, videoFormat,
-                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata
+                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata,
+                onPrepareProgress
             )
         } catch (e: Exception) {
             Log.w(TAG, "smart export planning failed: " + e.message, e)
@@ -656,8 +659,12 @@ object SmartExportPlanner {
         keyframeCut: Boolean,
         exportSeparateFiles: Boolean,
         movFastStart: Boolean,
-        preserveMetadata: Boolean
+        preserveMetadata: Boolean,
+        onPrepareProgress: ((Int, Int) -> Unit)? = null
     ): SmartPlan? {
+        // phase 19: 1% the moment planning starts - the dialog must
+        // never sit dead on 0% while probes and frame extraction run
+        onPrepareProgress?.invoke(1, R.string.str_preparing_analyzing)
         sweepStaleWorkDirs(context)
 
         if (audioOnly) return null
@@ -683,6 +690,7 @@ object SmartExportPlanner {
 
         // ---- probe the main clip (reference parameters) ----
         val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
+        onPrepareProgress?.invoke(2, R.string.str_preparing_analyzing)
         if (refParams.vCodec != "h264" && refParams.vCodec != "hevc") return null
         if (refParams.width <= 0 || refParams.height <= 0) return null
         if (refParams.width % 2 != 0 || refParams.height % 2 != 0) return null
@@ -758,6 +766,7 @@ object SmartExportPlanner {
                 }
                 if (localPath == null || isImagePath(localPath)) return null
                 val p = probeMedia(context, item.uri, localPath) ?: return null
+                onPrepareProgress?.invoke((2 + clips.size).coerceAtMost(4), R.string.str_preparing_analyzing)
                 if (p.vCodec != refParams.vCodec) return null
                 if (!p.vProfile.equals(refParams.vProfile, ignoreCase = true)) return null
                 if (p.width != refParams.width || p.height != refParams.height) return null
@@ -957,20 +966,35 @@ object SmartExportPlanner {
         // the clips themselves never re-encode for a transition and only
         // D seconds of still frames encode (stills are trivial for the
         // encoder - sub-second per transition on a phone).
-        fun extractBoundaryFrame(path: String, timeMs: Long): android.graphics.Bitmap? {
-            val retriever = android.media.MediaMetadataRetriever()
+        // Phase 19: ONE retriever per clip path serves the whole
+        // extraction batch - reopening the demuxer per frame dominated
+        // the planning latency (the dead 0% the user watched). The left
+        // still and the right clip's playing frames share the retriever
+        // when both spans come from the same file (the common
+        // single-video trim case).
+        fun openRetriever(path: String): android.media.MediaMetadataRetriever? {
             return try {
-                retriever.setDataSource(path)
+                android.media.MediaMetadataRetriever().also { it.setDataSource(path) }
+            } catch (e: Exception) {
+                Log.w(TAG, "transition retriever open failed: " + e.message)
+                null
+            }
+        }
+        fun frameAt(retriever: android.media.MediaMetadataRetriever?, timeMs: Long): android.graphics.Bitmap? {
+            if (retriever == null) return null
+            return try {
                 retriever.getFrameAtTime(
                     timeMs * 1000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST
                 )
             } catch (e: Exception) {
                 Log.w(TAG, "transition frame extraction failed: " + e.message)
                 null
-            } finally {
-                try { retriever.release() } catch (e: Exception) {}
             }
         }
+        // Phase 19: monotonic preparation tick for the transition frames
+        // (5..14 of the export dialog band) - multiple transitions never
+        // move the ring backwards.
+        var prepFrameTick = 5
         // Phase 17: the transition runs at the EXPORT frame rate only
         // when its neighbours encode at it (per-segment encode). In the
         // copy and two-step plans the neighbours are stream copies at the
@@ -1020,27 +1044,48 @@ object SmartExportPlanner {
             val frameCount = Math.max(2, Math.round(pieceMs / 1000.0 * transFpsValue).toInt())
             val effectCount = Math.max(2, Math.round(dMs / 1000.0 * transFpsValue).toInt())
             val dSec = frameCount / transFpsValue
-            // the effect layer: the left clip's frozen last frame
-            val endA = extractBoundaryFrame(
-                left.path, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
-            ) ?: return false
-            // the base layer: the right clip's PLAYING frames, one
-            // extraction per output frame on the reference-rate grid
-            // (OPTION_CLOSEST = the frame nearest that instant, exactly
-            // what the player shows under the preview overlay)
-            val rightStartMs = right.trimStartMs
-            val framesDir = File(workDir, "trans_" + gap)
-            val renderOk = TransitionFrameRenderer.renderTransitionFrames(
-                type, endA,
-                { i ->
-                    extractBoundaryFrame(
-                        right.path,
-                        rightStartMs + Math.round(i * 1000.0 / transFpsValue)
-                    )
-                },
-                framesDir, frameCount, effectCount, displayWidth, displayHeight
-            )
-            try { endA.recycle() } catch (e: Exception) {}
+            // the effect layer: the left clip's frozen last frame; the
+            // base layer: the right clip's PLAYING frames, one extraction
+            // per output frame on the reference-rate grid (OPTION_CLOSEST =
+            // the frame nearest that instant, exactly what the player
+            // shows under the preview overlay). Phase 19: shared
+            // retrievers (one per clip path) and a live preparation tick
+            // per extracted frame, so the export dialog visibly advances
+            // while the frames rasterize instead of sitting dead on 0%.
+            val leftRetriever = openRetriever(left.path)
+            val rightRetriever = if (right.path == left.path) leftRetriever else openRetriever(right.path)
+            var renderOk = false
+            var endA: android.graphics.Bitmap? = null
+            try {
+                endA = frameAt(
+                    leftRetriever, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
+                )
+                if (endA == null) return false
+                val rightStartMs = right.trimStartMs
+                val framesDir = File(workDir, "trans_" + gap)
+                renderOk = TransitionFrameRenderer.renderTransitionFrames(
+                    type, endA,
+                    { i ->
+                        val tick = 5 + i * 10 / Math.max(1, frameCount)
+                        if (tick > prepFrameTick) prepFrameTick = tick
+                        onPrepareProgress?.invoke(
+                            prepFrameTick.coerceAtMost(14),
+                            R.string.str_preparing_transition
+                        )
+                        frameAt(
+                            rightRetriever,
+                            rightStartMs + Math.round(i * 1000.0 / transFpsValue)
+                        )
+                    },
+                    framesDir, frameCount, effectCount, displayWidth, displayHeight
+                )
+            } finally {
+                try { endA?.recycle() } catch (e: Exception) {}
+                try { leftRetriever?.release() } catch (e: Exception) {}
+                if (rightRetriever !== leftRetriever) {
+                    try { rightRetriever?.release() } catch (e: Exception) {}
+                }
+            }
             if (!renderOk) return false
             // encoder spec mirrors whatever the neighbouring segments use:
             // the matched source encoder next to stream-copied segments,

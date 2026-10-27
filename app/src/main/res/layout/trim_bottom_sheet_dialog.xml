@@ -78,7 +78,7 @@
             android:layout_width="match_parent"
             android:layout_height="48dp"
             android:text="@string/done"
-            android:textColor="@color/onPrimaryContainer"
+            android:textColor="@color/onAmber"
             android:textSize="14sp"
             android:fontFamily="sans-serif-medium"
             android:backgroundTint="@color/primaryContainer"

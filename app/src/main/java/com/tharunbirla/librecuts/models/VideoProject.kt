@@ -139,6 +139,7 @@ data class VideoEditingUiState(
     val isLoading: Boolean = false,
     val isExporting: Boolean = false,
     val exportProgress: Int = 0, // 0-100
+    val exportStageRes: Int? = null, // phase 19: preparation stage label (string resource)
     val errorMessage: String? = null,
     val pendingOperationCount: Int = 0,
     val currentPreviewOperationIndex: Int = -1, // -1 means show original, 0+ means after Nth operation
