@@ -927,8 +927,15 @@ object SmartExportPlanner {
                 try { retriever.release() } catch (e: Exception) {}
             }
         }
-        val transFpsValue = if (fpsChange) exportFps.toDouble() else refParams.fpsValue
-        val transFpsSpec = if (fpsChange) exportFps.toString() else refParams.fpsString
+        // Phase 17: the transition runs at the EXPORT frame rate only
+        // when its neighbours encode at it (per-segment encode). In the
+        // copy and two-step plans the neighbours are stream copies at the
+        // source rate and the finalize command converts the assembled cut
+        // as a whole, so the transition stays at the source rate there -
+        // baking the export rate would make it the odd one out inside the
+        // lossless concat.
+        val transFpsValue = if (perSegmentEncode && fpsChange) exportFps.toDouble() else refParams.fpsValue
+        val transFpsSpec = if (perSegmentEncode && fpsChange) exportFps.toString() else refParams.fpsString
         fun addFreezeTransitionSegment(gap: Int, dMs: Long): Boolean {
             val left = clips[gap]
             val right = clips[gap + 1]
@@ -951,17 +958,38 @@ object SmartExportPlanner {
             // the one-flag-per-option encoder inside the encode plans.
             val transVEnc = if (perSegmentEncode) vEncSimple else enc
             val transAEnc = if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else aEnc
-            val transpose = when (refParams.rotation) {
+            // Phase 17: the transition segment must match its NEIGHBOURS'
+            // geometry, which depends on the plan mode. Stream-copied
+            // neighbours (pure copy, keyframe cut, or the two-step cut a
+            // later finalize command re-encodes as one) are SENSOR frames
+            // carrying the rotation metadata at the SOURCE resolution: the
+            // display bitmaps transpose back, the rotation metadata is
+            // remuxed in, and NO export scale is baked here (the finalize
+            // applies it to the assembled cut). Encoded neighbours
+            // (per-segment encode) bake the rotation into display space
+            // and apply the export scale themselves: the transition stays
+            // in display space with the SAME scale and no rotation
+            // metadata. Mixing the two modes breaks the concat uniformity
+            // (both shapes lab-verified to round-trip cleanly).
+            val sensorMode = !perSegmentEncode
+            val transposeRaw = when (refParams.rotation) {
                 90 -> "transpose=2,"
                 180 -> "transpose=1,transpose=1,"
                 270 -> "transpose=1,"
                 else -> ""
             }
-            val scalePart = scaleFilter
-                ?: ("scale=" + refParams.width + ":" + refParams.height + ",setsar=" + sarSpec)
+            val transpose = if (sensorMode) transposeRaw else ""
+            val scalePart = if (perSegmentEncode) {
+                scaleFilter
+                    ?: ("scale=" + displayWidth + ":" + displayHeight + ",setsar=" + sarSpec)
+            } else {
+                "scale=" + refParams.width + ":" + refParams.height + ",setsar=" + sarSpec
+            }
             val vf = transpose + scalePart + ",fps=" + transFpsSpec +
                 ",format=" + encodablePixFmt(refParams)
-            val seg = nextSegmentFile(segExt)
+            // Phase 17: match the neighbours' container too - encoded
+            // neighbours are written as outExt, copied ones as segExt.
+            val seg = nextSegmentFile(if (perSegmentEncode) outExt else segExt)
             val sb = StringBuilder("-y -framerate ").append(transFpsSpec)
                 .append(" -start_number 0 -i \"")
                 .append(framesDir.absolutePath).append("/frame_%04d.jpg\"")
@@ -975,10 +1003,16 @@ object SmartExportPlanner {
             sb.append(" -vf \"").append(vf).append("\"")
             sb.append(" ").append(transVEnc)
             if (planHasAudio) sb.append(" ").append(transAEnc)
-            sb.append(segTbn)
-            if (refParams.rotation != 0) {
+            // Phase 17: the timescale flag must match the container the
+            // segment is actually written to (outExt in the encode plans,
+            // segExt next to the stream copies) - video_track_timescale
+            // is an MP4/MOV muxer option and fails on other containers.
+            sb.append(if (perSegmentEncode) outTbn else segTbn)
+            if (sensorMode && refParams.rotation != 0) {
                 // like the freeze builder: encode sensor-space first, then
                 // remux the rotation metadata back in with a pure -c copy
+                // (display-mode neighbours carry no rotation metadata, so
+                // the transition must not either - phase 17)
                 val tmp = File(workDir, "trans_tmp_" + gap + ".mp4")
                 sb.append(" \"").append(tmp.absolutePath).append("\"")
                 val rot = StringBuilder("-y -display_rotation:v ").append(-refParams.rotation)

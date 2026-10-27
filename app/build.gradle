@@ -25,8 +25,15 @@ android {
         applicationId "com.i7sadegh.cutloss"
         minSdk 26
         targetSdk 34
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 12
-        versionName "1.0-beta9"
+        // Phase 17: the single arm64-v8a APK must carry a versionCode
+        // ABOVE every split APK ever shipped - the old per-ABI splits
+        // offset this base by ABI (12 armeabi-v7a / 13 arm64-v8a /
+        // 14 x86_64), so leaving the base at 12 made the phase-16 build
+        // a DOWNGRADE next to the installed arm64 split (13) and Android
+        // refused it ("app not installed as package appeared to be
+        // invalid"). 15 clears the highest offset ever produced.
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 15
+        versionName "1.0-beta10"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
