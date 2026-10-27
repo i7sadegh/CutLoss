@@ -1054,6 +1054,13 @@ object SmartExportPlanner {
             // while the frames rasterize instead of sitting dead on 0%.
             val leftRetriever = openRetriever(left.path)
             val rightRetriever = if (right.path == left.path) leftRetriever else openRetriever(right.path)
+            // phase 19a: scope fix - the segment command builder BELOW
+            // the finally block reads rightStartMs and framesDir, so both
+            // must be declared OUTSIDE the try (the phase-19 edit moved
+            // them inside and broke the build: unresolved references at
+            // the -i framesDir / -ss rightStartMs command lines)
+            val rightStartMs = right.trimStartMs
+            val framesDir = File(workDir, "trans_" + gap)
             var renderOk = false
             var endA: android.graphics.Bitmap? = null
             try {
@@ -1061,8 +1068,6 @@ object SmartExportPlanner {
                     leftRetriever, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
                 )
                 if (endA == null) return false
-                val rightStartMs = right.trimStartMs
-                val framesDir = File(workDir, "trans_" + gap)
                 renderOk = TransitionFrameRenderer.renderTransitionFrames(
                     type, endA,
                     { i ->
