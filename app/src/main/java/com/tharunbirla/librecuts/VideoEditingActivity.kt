@@ -1636,7 +1636,7 @@ class VideoEditingActivity : AppCompatActivity() {
         findViewById<ImageButton>(R.id.btnHome)?.setBounceClickListener {
             onBackPressedDispatcher.onBackPressed()
         }
-        findViewById<ImageView>(R.id.btnClose)?.setBounceClickListener {
+        findViewById<View>(R.id.btnClose)?.setBounceClickListener {
             onBackPressedDispatcher.onBackPressed()
         }
 
@@ -4741,12 +4741,16 @@ class VideoEditingActivity : AppCompatActivity() {
                 
                 // Highlight if a transition is selected
                 val transitionOp = project.operations.filterIsInstance<com.tharunbirla.librecuts.models.EditOperation.Transition>().find { it.index == index - 1 }
+                // phase 21: reference transition chip states - a black
+                // cut bar on the white tile when empty, a black bowtie
+                // when a transition is applied; the white tile stays in
+                // both states so the chip reads as one control
                 if (transitionOp != null && transitionOp.type != "none") {
-                    btnTransition.setImageResource(R.drawable.ic_check_24) // Or some infinite icon
-                    btnTransition.setColorFilter(android.graphics.Color.WHITE)
-                    transitionView.background = null
+                    btnTransition.setImageResource(R.drawable.ic_transition_bowtie_24)
+                    btnTransition.setColorFilter(null)
                 } else {
-                    btnTransition.setImageResource(R.drawable.ic_add_24)
+                    btnTransition.setImageResource(R.drawable.ic_transition_cut_24)
+                    btnTransition.setColorFilter(null)
                 }
                 
                 val transitionWidth = 24.dpToPx()

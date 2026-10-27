@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- phase 21: the reference transition chip tile - a white rounded
+     square (7dp radius, squircle-ish) that floats between the clips -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="#FFFFFF" />
+    <corners android:radius="7dp" />
+</shape>

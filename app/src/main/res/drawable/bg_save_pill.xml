@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- phase 21: reference top-bar Save pill - the vivid amber capsule
+     (colorPrimary, 20dp radius on the 40dp pill) behind bold black
+     text -->
+<shape xmlns:android="http://schemas.android.com/apk/res/android"
+    android:shape="rectangle">
+    <solid android:color="@color/colorPrimary" />
+    <corners android:radius="20dp" />
+</shape>

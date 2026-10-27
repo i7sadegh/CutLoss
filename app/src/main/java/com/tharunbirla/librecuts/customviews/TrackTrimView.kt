@@ -84,7 +84,11 @@ class TrackTrimView @JvmOverloads constructor(
     
     private val rectF = RectF()
     private val thumbnailRectF = RectF()
-    private val handleWidth = 24f
+    // phase 21: handle grab width now scales with the track height
+    // (~30%, the reference frame's thick white edge zones) instead of
+    // a fixed 24px sliver; coerced to the old floor pre-layout
+    private val handleWidth: Float
+        get() = (height * 0.30f).coerceAtLeast(24f)
 
     private var dragTarget = DragTarget.NONE
     private var lastTouchX = 0f
@@ -139,34 +143,42 @@ class TrackTrimView @JvmOverloads constructor(
                 if (isTrimEnabled) {
                     // Dim bounds removed to prevent covering adjacent clips
                     
-                    // Draw a thick border enclosing the active range when selected
-                    // (phase 20: white frame around the track per the reference
-                    // design; the amber overlay below stays as the selection
-                    // tint)
+                    // phase 21: reference track frame - a white rounded
+                    // rectangle stroke around the active range (phase
+                    // 20's sharp corners never matched the sample);
+                    // stroke and radius scale with the track height so
+                    // the silhouette holds at every density
                     borderPaint.color = Color.parseColor("#FFFFFF")
-                    borderPaint.strokeWidth = 8f
-                    canvas.drawRect(rectF, borderPaint)
+                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
+                    val frameInset = borderPaint.strokeWidth / 2f
+                    val frameRadius = height * 0.22f
+                    val frameRect = RectF(
+                        rectF.left + frameInset, rectF.top + frameInset,
+                        rectF.right - frameInset, rectF.bottom - frameInset
+                    )
+                    canvas.drawRoundRect(frameRect, frameRadius, frameRadius, borderPaint)
                 } else {
                     // Main track selection highlight without trimmer handles/ghosts
-                    // (phase 20: white frame per the reference design)
-                    borderPaint.color = Color.parseColor("#FFFFFF") // White selection
-                    borderPaint.strokeWidth = 10f
+                    // (phase 21: rounded white frame + rounded amber tint)
+                    borderPaint.color = Color.parseColor("#FFFFFF")
+                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
                     // Inset the rect so the stroke doesn't get clipped by the parent FrameLayout
                     val inset = borderPaint.strokeWidth / 2f
+                    val selRadius = height * 0.22f
                     val selRect = RectF(rectF.left + inset, rectF.top + inset, rectF.right - inset, rectF.bottom - inset)
-                    canvas.drawRect(selRect, borderPaint)
+                    canvas.drawRoundRect(selRect, selRadius, selRadius, borderPaint)
                     
                     val overlay = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                         color = Color.parseColor("#33FFB200")
                         style = Paint.Style.FILL
                     }
-                    canvas.drawRect(selRect, overlay)
+                    canvas.drawRoundRect(selRect, selRadius, selRadius, overlay)
                 }
             }
         } else {
             trackPaint.color = trackColor
             trackPaint.alpha = 200
-            canvas.drawRoundRect(rectF, 12f, 12f, trackPaint)
+            canvas.drawRoundRect(rectF, height * 0.22f, height * 0.22f, trackPaint)
         }
 
         // Draw Audio Wave Background
@@ -262,20 +274,36 @@ class TrackTrimView @JvmOverloads constructor(
         // Draw track border
         if (!isMainVideoTrack) {
             if (isSelectedTrack) {
-                borderPaint.color = Color.parseColor("#FFB200") // Vibrant pink selection accent
-                borderPaint.strokeWidth = 6f
-                canvas.drawRoundRect(rectF, 12f, 12f, borderPaint)
+                // phase 21: white rounded frame on every selected track
+                // (selection still reads via the amber tint below)
+                val trackRadius = height * 0.22f
+                borderPaint.color = Color.parseColor("#FFFFFF")
+                borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
+                val borderInset = borderPaint.strokeWidth / 2f
+                val borderRect = RectF(
+                    rectF.left + borderInset, rectF.top + borderInset,
+                    rectF.right - borderInset, rectF.bottom - borderInset
+                )
+                canvas.drawRoundRect(borderRect, trackRadius, trackRadius, borderPaint)
                 
-                // Draw a subtle 10% opacity pink overlay inside the track
+                // Draw a subtle 10% opacity amber overlay inside the track
                 val selectionOverlayPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                     color = Color.parseColor("#1AFFB200")
                     style = Paint.Style.FILL
                 }
-                canvas.drawRoundRect(rectF, 12f, 12f, selectionOverlayPaint)
+                canvas.drawRoundRect(borderRect, trackRadius, trackRadius, selectionOverlayPaint)
             } else {
-                borderPaint.color = Color.parseColor("#33FFFFFF") // Subtle 20% opacity white outline
-                borderPaint.strokeWidth = 2f
-                canvas.drawRoundRect(rectF, 12f, 12f, borderPaint)
+                // phase 21: unselected tracks keep a soft white rounded
+                // outline, slightly more present than the old 20% hairline
+                val trackRadius = height * 0.22f
+                borderPaint.color = Color.parseColor("#59FFFFFF")
+                borderPaint.strokeWidth = (height * 0.03f).coerceAtLeast(2f)
+                val borderInset = borderPaint.strokeWidth / 2f
+                val borderRect = RectF(
+                    rectF.left + borderInset, rectF.top + borderInset,
+                    rectF.right - borderInset, rectF.bottom - borderInset
+                )
+                canvas.drawRoundRect(borderRect, trackRadius, trackRadius, borderPaint)
             }
         }
 
@@ -317,15 +345,27 @@ class TrackTrimView @JvmOverloads constructor(
 
         if (isTrimEnabled) {
             val currentHandleWidth = handleWidth * currentHandleScale
-            if (isMainVideoTrack) {
-                handlePaint.color = Color.parseColor("#FFB200")
-            } else {
-                handlePaint.color = Color.WHITE
-            }
-            // Draw left handle
-            canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)
-            // Draw right handle
-            canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)
+            // phase 21: reference trim handles - the frame's left and
+            // right edges become thick white grab zones whose OUTER
+            // corners carry the frame radius so they fuse seamlessly
+            // into the rounded outline; amber is dropped so the whole
+            // frame reads white like the sample (grip marks stay)
+            handlePaint.color = Color.WHITE
+            val handleRadius = height * 0.22f
+            val handlePath = android.graphics.Path()
+            // Left handle - round only the outer (left) corners
+            handlePath.addRoundRect(
+                RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),
+                floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),
+                android.graphics.Path.Direction.CW
+            )
+            // Right handle - round only the outer (right) corners
+            handlePath.addRoundRect(
+                RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),
+                floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),
+                android.graphics.Path.Direction.CW
+            )
+            canvas.drawPath(handlePath, handlePaint)
 
             // Draw vertical grip lines on the handles
             val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

@@ -5,6 +5,7 @@
     <string name="trim">Trim</string>
     <string name="split">Split</string>
     <string name="export">Export</string>
+    <string name="save">Save</string>
     <string name="delete">Delete</string>
     <string name="loading">Importing Video...</string>
     <string name="cancel">Cancel</string>

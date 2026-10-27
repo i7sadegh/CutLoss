@@ -22,16 +22,29 @@
             android:background="@color/background"
             android:paddingHorizontal="16dp">
 
-            <ImageButton
+            <!-- phase 21: reference top bar - the icon-only back
+                 capsule becomes a dark Cancel pill (same id btnClose
+                 and same click wiring; the Kotlin cast was widened to
+                 View so the LinearLayout binds cleanly) -->
+            <LinearLayout
                 android:id="@+id/btnClose"
-                android:layout_width="48dp"
-                android:layout_height="36dp"
-                android:background="@drawable/bg_back_capsule"
-                android:src="@drawable/ic_back_24"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                android:contentDescription="Back"
-                app:tint="@color/textColor" />
+                android:layout_width="wrap_content"
+                android:layout_height="40dp"
+                android:orientation="horizontal"
+                android:gravity="center"
+                android:paddingHorizontal="22dp"
+                android:background="@drawable/bg_cancel_pill"
+                android:elevation="2dp"
+                android:contentDescription="Cancel">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/cancel"
+                    android:textColor="@color/textColor"
+                    android:textSize="15sp"
+                    android:fontFamily="sans-serif-medium" />
+            </LinearLayout>
 
             <!-- Hidden duplicate btnHome kept for backwards binary compatibility -->
             <ImageButton
@@ -45,33 +58,9 @@
                 android:layout_height="0dp"
                 android:layout_weight="1" />
 
-            <ImageButton
-                android:id="@+id/btnUndo"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:src="@drawable/ic_undo_24"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                android:contentDescription="Undo"
-                android:layout_marginEnd="6dp"
-                android:alpha="0.5"
-                android:enabled="false"
-                app:tint="@color/textColor" />
-
-            <ImageButton
-                android:id="@+id/btnRedo"
-                android:layout_width="40dp"
-                android:layout_height="40dp"
-                android:src="@drawable/ic_redo_24"
-                android:background="?attr/selectableItemBackgroundBorderless"
-                android:padding="8dp"
-                android:scaleType="fitCenter"
-                android:contentDescription="Redo"
-                android:layout_marginEnd="12dp"
-                android:alpha="0.5"
-                android:enabled="false"
-                app:tint="@color/textColor" />
+            <!-- phase 21: undo/redo relocated to the player control row
+                 (right of the play button) so the top bar can mirror the
+                 reference Cancel / RES / Save layout -->
 
             <ImageButton
                 android:id="@+id/btnPreview"
@@ -86,12 +75,31 @@
                 android:visibility="gone"
                 app:tint="@color/textColor" />
 
+            <!-- phase 21: placeholder resolution label for the top bar
+                 center (a real resolution selector arrives in a later
+                 phase; "RES" is inert text for now) -->
+            <TextView
+                android:id="@+id/tvResolutionBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="RES"
+                android:textColor="#B3FFFFFF"
+                android:textSize="15sp"
+                android:fontFamily="sans-serif-medium" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+            <!-- phase 21: reference Save pill - vivid amber capsule with
+                 bold black text (was the wide muted Export lozenge) -->
             <LinearLayout
                 android:id="@+id/layoutSaveSplit"
-                android:layout_width="124dp"
-                android:layout_height="36dp"
+                android:layout_width="96dp"
+                android:layout_height="40dp"
                 android:orientation="horizontal"
-                android:background="@drawable/bg_split_save_button"
+                android:background="@drawable/bg_save_pill"
                 android:clipToOutline="true"
                 android:elevation="2dp">
 
@@ -100,10 +108,11 @@
                     android:layout_width="match_parent"
                     android:layout_height="match_parent"
                     android:gravity="center"
-                    android:text="@string/export"
+                    android:text="@string/save"
                     android:textColor="@color/onAmber"
-                    android:fontFamily="sans-serif-medium"
-                    android:textSize="13sp"
+                    android:fontFamily="sans-serif"
+                    android:textStyle="bold"
+                    android:textSize="15sp"
                     android:clickable="true"
                     android:focusable="true"
                     android:background="?attr/selectableItemBackground" />
@@ -260,6 +269,20 @@
                         android:contentDescription="Expand Timeline"
                         app:tint="@color/colorOnSecondary" />
 
+                    <!-- phase 21: the magnet moved from the right cluster
+                         to the left, beside the timeline-expand arrow,
+                         per the reference player control row -->
+                    <ImageButton
+                        android:id="@+id/btnMagnet"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:background="@android:color/transparent"
+                        android:src="@drawable/ic_magnet_24"
+                        android:padding="8dp"
+                        android:scaleType="fitCenter"
+                        android:layout_marginStart="4dp"
+                        app:tint="@color/colorOnSecondary" />
+
                     <ImageButton
                         android:id="@+id/btnMoveLayerUp"
                         android:layout_width="40dp"
@@ -312,15 +335,36 @@
                     android:orientation="horizontal"
                     android:gravity="end|center_vertical">
 
+                    <!-- phase 21: undo/redo relocated from the top bar to
+                         sit right of the play button, per the reference
+                         player control row -->
                     <ImageButton
-                        android:id="@+id/btnMagnet"
+                        android:id="@+id/btnUndo"
                         android:layout_width="40dp"
                         android:layout_height="40dp"
-                        android:background="@android:color/transparent"
-                        android:src="@drawable/ic_magnet_24"
+                        android:src="@drawable/ic_undo_24"
+                        android:background="?attr/selectableItemBackgroundBorderless"
                         android:padding="8dp"
                         android:scaleType="fitCenter"
-                        app:tint="@color/colorOnSecondary" />
+                        android:contentDescription="Undo"
+                        android:alpha="0.5"
+                        android:enabled="false"
+                        android:layout_marginEnd="4dp"
+                        app:tint="@color/textColor" />
+
+                    <ImageButton
+                        android:id="@+id/btnRedo"
+                        android:layout_width="40dp"
+                        android:layout_height="40dp"
+                        android:src="@drawable/ic_redo_24"
+                        android:background="?attr/selectableItemBackgroundBorderless"
+                        android:padding="8dp"
+                        android:scaleType="fitCenter"
+                        android:contentDescription="Redo"
+                        android:alpha="0.5"
+                        android:enabled="false"
+                        android:layout_marginEnd="12dp"
+                        app:tint="@color/textColor" />
 
                     <ImageButton
                         android:id="@+id/btnMute"
@@ -432,6 +476,9 @@
                      design - a dark rounded square with a thin white
                      border and a white plus glyph (was an amber
                      circle with a black plus) -->
+                <!-- phase 21: plus glyph shrunk - padding 8dp -> 10dp so
+                     the glyph lands at ~37% of the tile (the reference
+                     ratio) instead of dominating the rounded square -->
                 <ImageButton
                     android:id="@+id/btnTimelineAdd"
                     android:layout_width="36dp"
@@ -440,7 +487,7 @@
                     android:src="@drawable/ic_add_24"
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
-                    android:padding="8dp"
+                    android:padding="10dp"
                     app:tint="@color/textColor" />
 
                 <com.tharunbirla.librecuts.customviews.CustomVideoSeeker
