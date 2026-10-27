@@ -1,119 +1,176 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 18 -- "the transition must not freeze the second video"
-# (+ the export size estimate fix)
+# CutLoss phase 19 -- amber theme + English-only + fullscreen default off
+# + LIVE preparation progress on the export dialog (the dead 0% fix)
 #
-# User report (two issues):
-#   1. "the transition part, where the first video finishes - for that
-#      same time the second video stays FROZEN, then it plays. This must
-#      be fixed."
-#   2. "the approximate size shown in the export section is wrong."
+# User report (4 requests + 1 observation):
+#   1. "For starting the file conversion it pauses for a few moments -
+#      the loading stays at 0 and doesn't move at all" (watched in the
+#      uploaded screen recording: 0% for ~25 seconds, then a jump to
+#      47%, 51-55%, 97%).
+#   2. Remove every language except English.
+#   3. Remove the language picker from Settings entirely.
+#   4. The fullscreen editor mode (status + navigation bars hidden) must
+#      be OFF by default; the setting stays available in Settings.
+#   5. Change the app theme from red/pink to the attached image's color
+#      (an amber #FFB200 capsule with BLACK "Save" text - sampled
+#      directly from the screenshot).
 #
-# Root cause 1 (the freeze): the phase-16 model rendered the transition
-# between TWO stills - the left clip's frozen last frame AND the right
-# clip's frozen FIRST frame - so the second video sat frozen on screen
-# for the whole transition and only started playing afterwards. The
-# editor's live preview never does this: the player keeps PLAYING the
-# second clip under the outgoing snapshot (TransitionPreviewOverlayView
-# animates the left clip's frozen frame over the moving picture).
+# Root cause 1 (the dead 0%): everything between tapping Export and the
+# first ffmpeg statistics callback happens BEFORE the ExportService even
+# starts - the smart-plan phase probes every clip (FFprobeKit +
+# MediaMetadataRetriever), copies SAF clips to cache, probes the
+# keyframe hand-off window, and rasterizes the transition pieces one
+# MediaMetadataRetriever extraction per output frame. The phase-18 model
+# opens a NEW retriever per frame (setDataSource + OPTION_CLOSEST decode
+# + release, ~300-800ms each on a phone), which dominates the latency -
+# ~30 frames = the 25 dead seconds the user recorded - while the export
+# dialog sits on 0% because no progress source exists yet.
 #
-# Fix 1 (the dip model, matches the preview):
-#   The transition segment is now built from the second clip's REAL,
-#   PLAYING head frames - one MediaMetadataRetriever extraction per
-#   output frame (OPTION_CLOSEST at the reference-rate grid) - with the
-#   first clip's frozen LAST frame carrying the effect on top
-#   (TransitionFrameRenderer draws each playing frame as the base
-#   layer). The follow-on segment continues the second clip right after
-#   the piece:
-#     - per-segment-encode plans: hand-off at the exact effect end
-#       (frame-accurate -ss).
-#     - stream-copy / keyframe-cut / two-step plans: the piece BRIDGES
-#       from the trim start to the first real keyframe at/after the
-#       effect end (new compact probeNextKeyframeMs via FFprobeKit), so
-#       the copied span starts exactly on that keyframe and never
-#       replays transition material (a plain -ss would snap BACK to the
-#       preceding keyframe). Degenerate keyframe windows (huge GOP or a
-#       tiny remainder) hand off frame-accurately through the existing
-#       matched re-encode branch instead.
-#   Audio: the piece carries the second clip's REAL audio, stream-copied
-#   with it (-ss S -t D -i clip2 -map 1:a:0; -c:a copy in the copy
-#   plans, the re-encode form only inside encode plans with changed
-#   audio settings) - the sound keeps playing through the transition
-#   exactly like the preview. Silence only for muted / audio-less clips.
-#   Timeline: the transition dips INTO the second clip's opening, so the
-#   output duration is exactly the sum of the clip spans (the editor
-#   timeline's own number - the phase-16 "+D per transition" is gone).
+# Fix 1 (two parts):
+#   a) The planning phase now reports progress: planSmartExport takes an
+#      onPrepareProgress callback that ticks the export dialog's 1-14%
+#      band (1 = plan started, 2-4 = clip probes, 5-14 = transition
+#      frames, monotonic across transitions) and swaps the dialog
+#      subtitle to "Preparing export..." / "Rendering transition...".
+#      The ffmpeg session progress from the ExportService then maps
+#      onto 15-100 (mapFfmpegProgress), so the ring never jumps
+#      backwards when the service takes over.
+#   b) ONE MediaMetadataRetriever per clip path serves the whole
+#      extraction batch (the left still and all the right clip's playing
+#      frames share the demuxer when they come from the same file - the
+#      common single-video trim case), removing ~30 setDataSource calls
+#      per transition. Bonus: tapping Cancel during planning now truly
+#      aborts it (saveAction's coroutine is exportJob; the catch
+#      rethrows CancellationException instead of showing an error).
 #
-# Lab proof (ffmpeg 7.1.5, the user's own uploaded clips - ALL CHECKS
-# PASS): [v1 whole copy] + [piece = v2's real frames 0..1.003s under
-# v1's frozen last frame fading out, v2's real audio sample-exact] +
-# [v2 copy from keyframe 1.003s] concat to 40.640s (= 20.501 + 20.139,
-# NO +D), 1216 frames, uniform h264 High 1920x1080 yuvj420p tbn 1/90000
-# aac 48k stereo, clean seam decodes, the piece's audio positioned
-# sample-exactly at 20.501s and v2's continuation at 21.551s, last piece
-# frame == v2 frame 29, first copied frame == the keyframe frame 30
-# (adjacent, forward motion, no back-jump).
+# Fix 2/3 (English only): the 16 translated values-* folders are
+# deleted, the App Language row disappears from the Settings card, the
+# language bottom sheet + item layouts and all the picker code in
+# MainActivity (getAvailableLanguages / showLanguageDialog /
+# updateLanguageUI / LanguageItem + 3 imports) are removed. Android
+# resource fallback serves English for every system locale;
+# generateLocaleConfig now emits an English-only locales config.
 #
-# Root cause 2 (the size estimate): probeSource() divided the FIRST
-# file's byte size by durationMs - the dialog's WHOLE-timeline duration
-# (every clip summed) - so srcKbps came out N times too small for an
-# N-clip sequence and every size estimate with it (the reported case:
-# ~49 MB estimated for a ~93 MB output).
+# Fix 4: getBoolean("fullscreen_editor", ...) defaults flip true ->
+# false in the 3 readers (MainActivity toggle + label, VideoEditing
+# onCreate); the Settings toggle itself stays.
 #
-# Fix 2: divide by the FILE's own duration (MediaMetadataRetriever
-# METADATA_KEY_DURATION - the retriever is already open for the
-# width/height probe), plus the estimate mirrors the new dip timeline:
-# transition seconds MOVE from the copied to the re-encoded column and
-# the encode-mode estimate no longer adds D per transition.
+# Fix 5 (the amber rebrand): colorPrimary / colorSecondary / their
+# variants / primaryContainer / activeTool / toolTextActive ->
+# #FFB200 (sampled from the user's image), colorPrimaryVariant ->
+# #C78D00, activeToolBackground -> #2A1D00. Theme-level onPrimary /
+# onSecondary go to a NEW black resource (onAmber) - Material buttons
+# get the reference look (black text/icons on amber fills) - while the
+# white colorOnPrimary/colorOnSecondary RESOURCES stay for the toolbar
+# icons that tint on dark surfaces; every explicit onPrimary-family
+# reference that sits ON an amber background (save button, play
+# capsules, add-timeline circle, GitHub button, dialog buttons, status
+# badges - 20 layout sites + 3 Kotlin sites) switches to onAmber. The
+# remaining hardcoded pinks go too: the nav pill, import hero gradients,
+# save/banner icons, trim-view selection paints (#FF4081 family), the
+# seek bar, the overlay handles, the indeterminate spinner tint. The
+# three functional track-category colors (text pink / image orange /
+# audio green chips) deliberately stay - they are content markers, not
+# the theme, and must stay mutually distinct.
 #
-# 21 edits total. Idempotent: re-running skips every edit already
-# present. Apply + build: upload as scripts/apply-changes.sh; the
-# apply-and-build workflow runs it, commits the result and builds the
-# APK (versionCode 16 / 1.0-beta11 - a strict upgrade over the
-# installed 15).
+# Edits: 5 Kotlin files + 1 model + 15 layouts + 5 drawables +
+# 4 values files + gradle + 16 folder deletions + 2 layout deletions.
+# Idempotent: re-running skips every edit already present. Apply +
+# build: upload as scripts/apply-changes.sh; the apply-and-build
+# workflow runs it, commits the result and builds the APK (versionCode
+# 17 / 1.0-beta12 - a strict upgrade over the installed 16).
 ###############################################################################
 set -euo pipefail
 
-RENDERER="app/src/main/java/com/tharunbirla/librecuts/services/TransitionFrameRenderer.kt"
+VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+MAIN="app/src/main/java/com/tharunbirla/librecuts/MainActivity.kt"
+PIA="app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
+VM="app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
+UISTATE="app/src/main/java/com/tharunbirla/librecuts/models/VideoProject.kt"
 PLANNER="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-ESD="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+DIV="app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt"
+CVS="app/src/main/java/com/tharunbirla/librecuts/customviews/CustomVideoSeeker.kt"
+TTV="app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 GRADLE="app/build.gradle"
+COLORS="app/src/main/res/values/colors.xml"
+THEMES="app/src/main/res/values/themes.xml"
+STRINGS="app/src/main/res/values/strings.xml"
+MAINXML="app/src/main/res/layout/activity_main.xml"
+VEAXML="app/src/main/res/layout/activity_video_editing.xml"
+WELCOME="app/src/main/res/layout/dialog_welcome_onboarding.xml"
 
-for f in "$RENDERER" "$PLANNER" "$ESD" "$GRADLE"; do
+for f in "$VEA" "$MAIN" "$PIA" "$VM" "$UISTATE" "$PLANNER" "$DIV" "$CVS" \
+         "$TTV" "$GRADLE" "$COLORS" "$THEMES" "$STRINGS" "$MAINXML" \
+         "$VEAXML" "$WELCOME"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: $f not found - run from the repository root at the expected commit"
     exit 1
   fi
 done
 
-echo "== phase 18: applying the playing-transition + size-estimate fixes =="
+echo "== phase 19: amber theme + English-only + fullscreen-off + live prep progress =="
 
 python3 - <<'PYEOF'
 import sys
+import os
+import glob
+import shutil
 import subprocess
 
-RENDERER = "app/src/main/java/com/tharunbirla/librecuts/services/TransitionFrameRenderer.kt"
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
+MAIN = "app/src/main/java/com/tharunbirla/librecuts/MainActivity.kt"
+PIA = "app/src/main/java/com/tharunbirla/librecuts/ProjectImportActivity.kt"
+VM = "app/src/main/java/com/tharunbirla/librecuts/viewmodels/VideoEditingViewModel.kt"
+UISTATE = "app/src/main/java/com/tharunbirla/librecuts/models/VideoProject.kt"
 PLANNER = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-ESD = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
+DIV = "app/src/main/java/com/tharunbirla/librecuts/customviews/DraggableImageOverlayView.kt"
+CVS = "app/src/main/java/com/tharunbirla/librecuts/customviews/CustomVideoSeeker.kt"
+TTV = "app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 GRADLE = "app/build.gradle"
+COLORS = "app/src/main/res/values/colors.xml"
+THEMES = "app/src/main/res/values/themes.xml"
+STRINGS = "app/src/main/res/values/strings.xml"
+MAINXML = "app/src/main/res/layout/activity_main.xml"
+VEAXML = "app/src/main/res/layout/activity_video_editing.xml"
+WELCOME = "app/src/main/res/layout/dialog_welcome_onboarding.xml"
+
+L = "app/src/main/res/layout/"
 
 edits_applied = 0
 edits_skipped = 0
+deletions = 0
 
 
 def apply_edit(path, old, new, name):
     global edits_applied, edits_skipped
     with open(path, "r") as f:
         s = f.read()
-    if new in s:
-        edits_skipped += 1
-        print("  [skip] " + name)
-        return
-    if old not in s:
-        print("  [FAIL] " + name + ": anchor not found")
-        sys.exit(1)
+    # idempotency, two shapes:
+    #  - append-style edits (the new text CONTAINS the old anchor, e.g.
+    #    a tick line inserted after an existing line): applied == the
+    #    full new text is present exactly once
+    #  - replacement edits: applied == the old anchor is gone (pure
+    #    deletions with new == "" or new already a subset of the file
+    #    must be judged by the anchor, not by "new in s")
+    if new != "" and old in new:
+        if s.count(new) == 1:
+            edits_skipped += 1
+            print("  [skip] " + name)
+            return
+        if old not in s:
+            print("  [FAIL] " + name + ": anchor not found")
+            sys.exit(1)
+    else:
+        if old not in s:
+            if new in s or new == "":
+                edits_skipped += 1
+                print("  [skip] " + name)
+                return
+            print("  [FAIL] " + name + ": anchor not found")
+            sys.exit(1)
     if s.count(old) != 1:
-        print("  [FAIL] " + name + ": anchor not unique")
+        print("  [FAIL] " + name + ": anchor not unique (%d)" % s.count(old))
         sys.exit(1)
     s = s.replace(old, new, 1)
     with open(path, "w") as f:
@@ -122,427 +179,507 @@ def apply_edit(path, old, new, name):
     print("  [ ok ] " + name)
 
 
-# ===================== TransitionFrameRenderer.kt =====================
+def apply_replace_all(path, old, new, expected, name):
+    global edits_applied, edits_skipped
+    with open(path, "r") as f:
+        s = f.read()
+    n = s.count(old)
+    if n == 0 and s.count(new) >= expected:
+        edits_skipped += 1
+        print("  [skip] " + name)
+        return
+    if n != expected:
+        print("  [FAIL] " + name + ": expected %d occurrences, found %d" % (expected, n))
+        sys.exit(1)
+    s = s.replace(old, new)
+    with open(path, "w") as f:
+        f.write(s)
+    edits_applied += 1
+    print("  [ ok ] " + name + " (x%d)" % n)
 
-# ---- R1) object doc: the new model ----
-apply_edit(RENDERER, """/**
- * Phase 16: rasterizes a freeze-frame transition into a numbered JPEG
- * frame sequence that the export pipeline encodes with ONE simple ffmpeg
- * command (image sequence -> matched encode; no filter graph).
- *
- * The transition model (the user's spec, same as the freeze feature):
- * the LAST frame of the left clip and the FIRST frame of the right clip
- * are frozen, the effect plays between those two stills for exactly the
- * transition duration, and the resulting small video is concatenated
- * between the two clips like any other segment.
- *
- * The per-type drawing is a faithful port of the editor's live preview
- * (TransitionPreviewOverlayView): the right clip's still is the base
- * layer and the left clip's still carries the effect, so the export
- * shows what the preview showed. Types the preview maps to a plain fade
- * (pixelize, distance, slices, smooth variants, ...) map to the same
- * fade here.
- */
-""",
-"""/**
- * Phase 16/18: rasterizes a transition into a numbered JPEG frame
- * sequence that the export pipeline encodes with ONE simple ffmpeg
- * command (image sequence -> matched encode; no filter graph).
- *
- * Phase 18 model (matches the editor's live preview): the LEFT clip
- * freezes into its LAST frame and that still carries the effect, while
- * the RIGHT clip keeps PLAYING underneath - the base layer of every
- * frame is the right clip's actual frame at that instant, extracted one
- * at a time by the planner. The transition therefore dips into the
- * second clip's opening: the effect completes, the second clip is
- * already playing, and the concat continues it seamlessly - no frozen
- * second video, no extra seconds added to the output.
- *
- * The per-type drawing is a faithful port of the editor's live preview
- * (TransitionPreviewOverlayView) - the outgoing snapshot transforms away
- * over the incoming, playing video. Types the preview maps to a plain
- * fade (pixelize, distance, slices, smooth variants, ...) map to the
- * same fade here.
- */
-""",
-"renderer: doc comment -> the dip model")
 
-# ---- R2) renderTransitionFrames: per-frame playing base + effect ----
-# ---- window ----
-apply_edit(RENDERER, """    /**
-     * Render [frameCount] frames of the transition [type] between [bmpA]
-     * (the frozen last frame of the left clip) and [bmpB] (the frozen
-     * first frame of the right clip) into [outDir] as frame_0000.jpg ..
-     * frame_N-1.jpg at [outW] x [outH]. Returns false when a frame could
-     * not be written; the caller then gives up the plan honestly.
-     */
-    fun renderTransitionFrames(
-        type: String,
-        bmpA: Bitmap,
-        bmpB: Bitmap,
-        outDir: File,
-        frameCount: Int,
-        outW: Int,
-        outH: Int
-    ): Boolean {
-        if (outW <= 0 || outH <= 0 || frameCount < 2) return false
-        if (bmpA.isRecycled || bmpB.isRecycled) return false
-        if (outDir.exists() && !outDir.isDirectory) return false
-        if (!outDir.exists() && !outDir.mkdirs()) return false
-        val kind = type.lowercase()
-        val bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = Paint()
-        val path = Path()
-        val srcA = Rect(0, 0, bmpA.width, bmpA.height)
-        val srcB = Rect(0, 0, bmpB.width, bmpB.height)
-        val dst = RectF(0f, 0f, outW.toFloat(), outH.toFloat())
-        val w = outW.toFloat()
-        val h = outH.toFloat()
+def apply_span_cut(path, start_marker, end_marker, name):
+    """Delete whole lines from the line EQUAL to start_marker (inclusive)
+    up to (NOT including) the line EQUAL to end_marker. Idempotent: the
+    start marker being gone means the cut already happened."""
+    global edits_applied, edits_skipped
+    with open(path, "r") as f:
+        lines = f.readlines()
+    if not any(l.rstrip("\r\n") == start_marker for l in lines):
+        edits_skipped += 1
+        print("  [skip] " + name)
+        return
+    si = [i for i, l in enumerate(lines) if l.rstrip("\r\n") == start_marker]
+    ei = [i for i, l in enumerate(lines) if l.rstrip("\r\n") == end_marker]
+    if len(si) != 1 or len(ei) != 1:
+        print("  [FAIL] " + name + ": marker not unique (start=%d end=%d)" % (len(si), len(ei)))
+        sys.exit(1)
+    if ei[0] <= si[0]:
+        print("  [FAIL] " + name + ": end marker before start marker")
+        sys.exit(1)
+    removed = ei[0] - si[0]
+    del lines[si[0]:ei[0]]
+    with open(path, "w") as f:
+        f.writelines(lines)
+    edits_applied += 1
+    print("  [ ok ] " + name + " (removed %d lines)" % removed)
+
+
+def delete_path(path, name):
+    global deletions
+    if not os.path.exists(path):
+        print("  [skip] delete " + name)
+        return
+    if os.path.isdir(path):
+        shutil.rmtree(path)
+    else:
+        os.remove(path)
+    deletions += 1
+    print("  [ ok ] delete " + name)
+
+
+# ===================== G1) versionCode 17 / beta12 =====================
+
+apply_edit(GRADLE, """        // Phase 18: 16 / beta11 - the playing-transition + size-estimate
+        // build; every APK stays a strict upgrade over the installed one.
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 16
+        versionName "1.0-beta11"
+""",
+"""        // Phase 18: 16 / beta11 - the playing-transition + size-estimate
+        // build; every APK stays a strict upgrade over the installed one.
+        // Phase 19: 17 / beta12 - amber theme, English-only, fullscreen
+        // default off, live preparation progress on the export dialog.
+        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 17
+        versionName "1.0-beta12"
+""",
+"gradle: versionCode 17 + beta12")
+
+# ===================== T1) colors.xml + themes.xml =====================
+
+apply_edit(COLORS, """    <!-- PRIMARY: Electric Pink -->
+    <color name="colorPrimary">#FF2A6D</color>
+    <color name="colorPrimaryVariant">#C81D52</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+
+    <!-- SECONDARY: Bright Pink Accent -->
+    <color name="colorSecondary">#FF2A6D</color>
+    <color name="colorSecondaryVariant">#C81D52</color>
+    <color name="colorOnSecondary">#FFFFFF</color>
+""",
+"""    <!-- PRIMARY: Signature Amber (phase 19 rebrand - sampled from the
+         user's reference image: an amber capsule with black text) -->
+    <color name="colorPrimary">#FFB200</color>
+    <color name="colorPrimaryVariant">#C78D00</color>
+    <color name="colorOnPrimary">#FFFFFF</color>
+    <!-- content drawn ON TOP of amber fills - black, like the reference
+         Save button. Theme-level onPrimary/onSecondary and every explicit
+         reference sitting on an amber background use this; the white
+         colorOn* resources above stay for icons tinted on dark surfaces -->
+    <color name="onAmber">#000000</color>
+
+    <!-- SECONDARY: Amber Accent -->
+    <color name="colorSecondary">#FFB200</color>
+    <color name="colorSecondaryVariant">#C78D00</color>
+    <color name="colorOnSecondary">#FFFFFF</color>
+""",
+"colors: primary/secondary -> amber + onAmber resource")
+
+apply_edit(COLORS, """    <color name="primaryContainer">#FF2A6D</color>
+    <color name="onPrimaryContainer">#FFFFFF</color>
+""",
+"""    <color name="primaryContainer">#FFB200</color>
+    <color name="onPrimaryContainer">#FFFFFF</color>
+""",
+"colors: primaryContainer -> amber")
+
+apply_edit(COLORS, """    <color name="activeTool">#FF2A6D</color>
+    <color name="activeToolBackground">#2A1118</color> <!-- Subtle pink tint for active tool -->
+    <color name="inactiveTool">#8A8A93</color>
+    <color name="inactiveToolBackground">#111114</color>
+
+    <color name="toolTextActive">#FF2A6D</color>
+""",
+"""    <color name="activeTool">#FFB200</color>
+    <color name="activeToolBackground">#2A1D00</color> <!-- Subtle amber tint for active tool -->
+    <color name="inactiveTool">#8A8A93</color>
+    <color name="inactiveToolBackground">#111114</color>
+
+    <color name="toolTextActive">#FFB200</color>
+""",
+"colors: tool colors -> amber")
+
+# theme-level on-colors go black (Material fills are amber now); the
+# white resources above stay for the dark-surface icon tints
+apply_replace_all(THEMES, "<item name=\"colorOnPrimary\">@color/colorOnPrimary</item>",
+                  "<item name=\"colorOnPrimary\">@color/onAmber</item>", 2,
+                  "themes: AppTheme+Editor colorOnPrimary -> onAmber")
+apply_replace_all(THEMES, "<item name=\"colorOnSecondary\">@color/colorOnSecondary</item>",
+                  "<item name=\"colorOnSecondary\">@color/onAmber</item>", 2,
+                  "themes: AppTheme+Editor colorOnSecondary -> onAmber")
+
+# ===================== T2) drawable recolors =====================
+
+apply_edit("app/src/main/res/drawable/bg_nav_active_pill.xml", """    <solid android:color="#20FF2A6D" />
+    <stroke
+        android:width="1dp"
+        android:color="#4DFF2A6D" />
+""",
+"""    <solid android:color="#20FFB200" />
+    <stroke
+        android:width="1dp"
+        android:color="#4DFFB200" />
+""",
+"drawable: nav active pill -> amber")
+
+apply_edit("app/src/main/res/drawable/bg_import_hero.xml",
+          "        android:startColor=\"#2A1118\"",
+          "        android:startColor=\"#2A1D00\"",
+          "drawable: import hero gradient -> amber tint")
+
+apply_edit("app/src/main/res/drawable/bg_hero_bento_primary.xml",
+          "        android:startColor=\"#2A1118\"",
+          "        android:startColor=\"#2A1D00\"",
+          "drawable: hero bento primary gradient -> amber tint")
+
+apply_edit("app/src/main/res/drawable/ic_save_color_24.xml",
+          "android:tint=\"#FF4081\"",
+          "android:tint=\"#FFB200\"",
+          "drawable: save icon tint -> amber")
+
+apply_edit("app/src/main/res/drawable/ic_banner_foreground.xml",
+          "android:fillColor=\"#FF4081\"",
+          "android:fillColor=\"#FFB200\"",
+          "drawable: banner accent -> amber")
+
+# ===================== T3) hardcoded pinks in layouts =====================
+
+apply_edit(VEAXML, "            android:indeterminateTint=\"#FF4081\" />",
+          "            android:indeterminateTint=\"#FFB200\" />",
+          "editing layout: indeterminate spinner -> amber")
+
+apply_edit(WELCOME, "                    app:tint=\"#E91E63\" />",
+          "                    app:tint=\"#FFB200\" />",
+          "welcome dialog: heart icon tint -> amber")
+
+# ===================== T4) onPrimary-family refs on amber fills =====================
+# Every reference below sits ON a primary/primaryContainer background and
+# switches to the black onAmber resource; the colorOnSecondary toolbar
+# icons (dark surfaces) are deliberately NOT touched.
+
+apply_replace_all(MAINXML, "@color/onPrimaryContainer", "@color/onAmber", 5,
+                  "main layout: 5 amber-bg refs -> onAmber (3 circle icons + GitHub text/icon)")
+
+apply_replace_all(VEAXML, "@color/onPrimaryContainer", "@color/onAmber", 3,
+                  "editing layout: 3 amber-bg refs -> onAmber (save text + 2 play icons)")
+apply_replace_all(VEAXML, "app:tint=\"@color/colorOnPrimary\"",
+                  "app:tint=\"@color/onAmber\"", 1,
+                  "editing layout: add-timeline icon on amber circle -> onAmber")
+
+for f, old, expected, note in [
+    ("dialog_export_settings.xml", "android:textColor=\"@color/onPrimaryContainer\"", 1,
+     "export settings button text"),
+    ("trim_bottom_sheet_dialog.xml", "android:textColor=\"@color/onPrimaryContainer\"", 1,
+     "trim sheet button text"),
+    ("activity_project_import.xml", "android:textColor=\"@color/onPrimaryContainer\"", 1,
+     "project import button text"),
+    ("dialog_welcome_onboarding.xml", "android:textColor=\"@color/onPrimaryContainer\"", 1,
+     "welcome button text"),
+    ("dialog_audio_fade.xml", "android:textColor=\"@color/onPrimaryContainer\"", 1,
+     "audio fade button text"),
+    ("export_quality_bottom_sheet_dialog.xml", "@color/onPrimaryContainer", 2,
+     "export quality button text + icon"),
+    ("activity_error_display.xml", "android:textColor=\"@color/colorOnPrimary\"", 1,
+     "error display button text"),
+    ("dialog_unsaved_changes.xml", "app:tint=\"@color/colorOnPrimary\"", 1,
+     "unsaved-changes warning icon on amber circle"),
+    ("dialog_transitions.xml", "android:textColor=\"@color/colorOnPrimary\"", 1,
+     "transitions dialog button text"),
+    ("item_dependency.xml", "app:tint=\"@color/onPrimaryContainer\"", 1,
+     "dependency status badge icon"),
+]:
+    apply_replace_all(L + f, old, old.replace("colorOnPrimary", "onAmber")
+                      .replace("onPrimaryContainer", "onAmber"), expected,
+                      "layout %s -> onAmber" % note)
+
+# ===================== T5) hardcoded pinks in Kotlin =====================
+
+apply_edit(DIV, "        color = Color.parseColor(\"#FF2A6D\")",
+          "        color = Color.parseColor(\"#FFB200\")",
+          "DraggableImageOverlayView: handle fill -> amber")
+
+apply_replace_all(CVS, "color = Color.parseColor(\"#FF2A6D\") // Primary theme color",
+                  "color = Color.parseColor(\"#FFB200\") // Primary theme color", 2,
+                  "CustomVideoSeeker: accent line + handle -> amber")
+
+# the class doc comment still advertises the old pink accent (unicode
+# escapes for the bullet and arrow keep this script ASCII)
+apply_edit(CVS, " *  \u2022 Playhead line color \u2192 #FF4081 (accent)\n",
+          " *  \u2022 Playhead line color \u2192 #FFB200 (accent)\n",
+          "CustomVideoSeeker: doc comment color -> amber")
+
+apply_replace_all(TTV, "Color.parseColor(\"#FF4081\")", "Color.parseColor(\"#FFB200\")", 3,
+                  "TrackTrimView: selection borders + handle -> amber")
+
+# VEA: the speed chip's selected label sits on the amber selected pill
+apply_edit(VEA, "                txt?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.colorOnPrimary))",
+          "                txt?.setTextColor(androidx.core.content.ContextCompat.getColor(this, R.color.onAmber))",
+          "VEA: speed chip selected text -> onAmber")
+apply_edit(TTV, "                    borderPaint.color = Color.parseColor(\"#FF2A6D\") // Electric Pink selection",
+          "                    borderPaint.color = Color.parseColor(\"#FFB200\") // Amber selection",
+          "TrackTrimView: main-track selection border -> amber")
+apply_edit(TTV, "                        color = Color.parseColor(\"#33FF2A6D\")",
+          "                        color = Color.parseColor(\"#33FFB200\")",
+          "TrackTrimView: selection overlay -> amber")
+apply_edit(TTV, "                    color = Color.parseColor(\"#1AFF4081\")",
+          "                    color = Color.parseColor(\"#1AFFB200\")",
+          "TrackTrimView: track selection overlay -> amber")
+
+# ProjectImportActivity: status badge icons sit on amber circles
+apply_edit(PIA, "holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onPrimaryContainer))",
+          "holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onAmber))",
+          "ProjectImportActivity: found badge -> onAmber")
+apply_edit(PIA, """                holder.ivStatusBadge.setImageResource(R.drawable.ic_close_24)
+                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.colorOnPrimary))
+""",
+"""                holder.ivStatusBadge.setImageResource(R.drawable.ic_close_24)
+                holder.ivStatusBadge.setColorFilter(ContextCompat.getColor(this@ProjectImportActivity, R.color.onAmber))
+""",
+"ProjectImportActivity: missing badge -> onAmber")
+
+# ===================== L1) delete the translations + language layouts =====================
+
+for d in ["ar", "cs", "de", "el", "es", "et", "hi", "in", "it", "nl",
+          "pt-rBR", "ru", "sk", "ta", "tr", "zh-rCN"]:
+    delete_path("app/src/main/res/values-" + d, "values-" + d + "/")
+
+delete_path("app/src/main/res/layout/language_bottom_sheet_dialog.xml",
+            "language_bottom_sheet_dialog.xml")
+delete_path("app/src/main/res/layout/item_language_selection.xml",
+            "item_language_selection.xml")
+
+# ===================== L2) Settings card: drop the App Language row =====================
+
+apply_span_cut(MAINXML,
+               "                <!-- App Language Setting -->",
+               "                <!-- Video Export Folder Setting -->",
+               "main layout: App Language row + separator cut")
+
+# ===================== L3) MainActivity: drop the language picker =====================
+
+apply_edit(MAIN, """import android.widget.TextView
+import androidx.appcompat.app.AppCompatDelegate
+import androidx.core.os.LocaleListCompat
+import com.google.android.material.bottomsheet.BottomSheetDialog
+import com.tharunbirla.librecuts.databinding.ActivityMainBinding
+""",
+"""import android.widget.TextView
+import com.tharunbirla.librecuts.databinding.ActivityMainBinding
+""",
+"MainActivity: language imports cut")
+
+apply_span_cut(MAIN,
+               "        binding.btnChangeLanguage.setBounceClickListener {",
+               "        binding.btnCheckForUpdates.setBounceClickListener {",
+               "MainActivity: btnChangeLanguage wiring cut")
+
+apply_span_cut(MAIN,
+               "        updateLanguageUI()",
+               "        // Initialize Haptic Feedback preference",
+               "MainActivity: updateLanguageUI() call cut")
+
+apply_span_cut(MAIN,
+               "    private data class LanguageItem(",
+               "    private fun updateHapticFeedbackUI() {",
+               "MainActivity: LanguageItem + getAvailableLanguages + updateLanguageUI cut")
+
+apply_span_cut(MAIN,
+               "    private fun showLanguageDialog() {",
+               "    private fun switchTab(tabIndex: Int) {",
+               "MainActivity: showLanguageDialog cut")
+
+# ===================== L4) strings.xml =====================
+
+apply_edit(STRINGS, """    <string name="str_app_language">App Language</string>
+    <string name="str_system_default">System Default</string>
+    <string name="str_opacity">Opacity</string>
+""",
+"""    <string name="str_opacity">Opacity</string>
+""",
+"str_app_language + str_system_default removed")
+
+apply_edit(STRINGS,
+          "    <string name=\"str_please_don_t_close_the_app\">Please don\\'t close the app</string>",
+          "    <string name=\"str_please_don_t_close_the_app\">Please don\\'t close the app</string>\n"
+          "    <string name=\"str_preparing_analyzing\">Preparing export...</string>\n"
+          "    <string name=\"str_preparing_transition\">Rendering transition...</string>",
+          "preparation stage strings added")
+
+# ===================== F1) fullscreen editor OFF by default =====================
+
+apply_edit(MAIN, """        binding.btnToggleFullscreenEditor.setBounceClickListener {
+            val current = prefs.getBoolean("fullscreen_editor", true)
+""",
+"""        binding.btnToggleFullscreenEditor.setBounceClickListener {
+            val current = prefs.getBoolean("fullscreen_editor", false)
+""",
+"MainActivity: fullscreen toggle default false")
+
+apply_edit(MAIN, """    private fun updateFullscreenEditorUI() {
+        val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
+        val isFullscreen = prefs.getBoolean("fullscreen_editor", true)
+""",
+"""    private fun updateFullscreenEditorUI() {
+        val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
+        val isFullscreen = prefs.getBoolean("fullscreen_editor", false)
+""",
+"MainActivity: fullscreen label default false")
+
+apply_edit(VEA, """        // Apply system UI visibility based on user setting
+        val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
+        val isFullscreen = prefs.getBoolean("fullscreen_editor", true)
+""",
+"""        // Apply system UI visibility based on user setting
+        // (phase 19: OFF by default - the user flips it on in Settings)
+        val prefs = getSharedPreferences("librecuts_prefs", MODE_PRIVATE)
+        val isFullscreen = prefs.getBoolean("fullscreen_editor", false)
+""",
+"VideoEditingActivity: fullscreen default false")
+
+# ===================== P1-P7) planner: live prep progress =====================
+
+# R import for the stage string resources
+apply_edit(PLANNER, """import com.tharunbirla.librecuts.models.EditOperation
+import com.tharunbirla.librecuts.models.VideoProject
+""",
+"""import com.tharunbirla.librecuts.R
+import com.tharunbirla.librecuts.models.EditOperation
+import com.tharunbirla.librecuts.models.VideoProject
+""",
+"planner: R import for stage strings")
+
+# P1) planSmartExport signature + pass-through
+apply_edit(PLANNER, """        keyframeCut: Boolean = false,
+        exportSeparateFiles: Boolean = false,
+        movFastStart: Boolean = true,
+        preserveMetadata: Boolean = true
+    ): SmartPlan? {
         try {
-            for (i in 0 until frameCount) {
-                val progress = i.toFloat() / (frameCount - 1).toFloat()
-                drawFrame(canvas, paint, path, kind, progress, bmpA, srcA, bmpB, srcB, dst, w, h)
-                val file = File(outDir, "frame_" +
-                    String.format(java.util.Locale.US, "%04d", i) + ".jpg")
-                try {
-                    FileOutputStream(file).use { out ->
-                        bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                    }
-                } catch (e: Exception) {
-                    return false
-                }
-            }
-        } finally {
-            bitmap.recycle()
-        }
-        return true
-    }
-""",
-"""    /**
-     * Render [frameCount] frames of the transition [type] into [outDir]
-     * as frame_0000.jpg .. frame_N-1.jpg at [outW] x [outH]: frame i
-     * draws [baseFrames](i) - the right clip's PLAYING frame i, returned
-     * in display orientation and recycled right after drawing - with
-     * [bmpA] (the frozen last frame of the left clip) carrying the
-     * effect on top. The effect runs over the first [effectCount] frames
-     * (progress 0 -> 1); any remaining frames are plain bridge material
-     * (the right clip playing on, no overlay) the stream-copy plans use
-     * to reach a keyframe hand-off. Returns false when a frame could not
-     * be extracted or written; the caller then gives up the plan
-     * honestly.
-     */
-    fun renderTransitionFrames(
-        type: String,
-        bmpA: Bitmap,
-        baseFrames: (Int) -> Bitmap?,
-        outDir: File,
-        frameCount: Int,
-        effectCount: Int,
-        outW: Int,
-        outH: Int
-    ): Boolean {
-        if (outW <= 0 || outH <= 0 || frameCount < 2) return false
-        if (effectCount < 2) return false
-        if (bmpA.isRecycled) return false
-        if (outDir.exists() && !outDir.isDirectory) return false
-        if (!outDir.exists() && !outDir.mkdirs()) return false
-        val kind = type.lowercase()
-        val bitmap = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = Paint()
-        val path = Path()
-        val srcA = Rect(0, 0, bmpA.width, bmpA.height)
-        val dst = RectF(0f, 0f, outW.toFloat(), outH.toFloat())
-        val w = outW.toFloat()
-        val h = outH.toFloat()
-        try {
-            for (i in 0 until frameCount) {
-                val bmpB = baseFrames(i)
-                if (bmpB == null || bmpB.isRecycled) return false
-                val srcB = Rect(0, 0, bmpB.width, bmpB.height)
-                try {
-                    val progress = if (i < effectCount) {
-                        i.toFloat() / (effectCount - 1).toFloat()
-                    } else {
-                        1f
-                    }
-                    drawFrame(canvas, paint, path, kind, progress, i < effectCount,
-                        bmpA, srcA, bmpB, srcB, dst, w, h)
-                    val file = File(outDir, "frame_" +
-                        String.format(java.util.Locale.US, "%04d", i) + ".jpg")
-                    try {
-                        FileOutputStream(file).use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                        }
-                    } catch (e: Exception) {
-                        return false
-                    }
-                } finally {
-                    try { bmpB.recycle() } catch (e: Exception) {}
-                }
-            }
-        } finally {
-            bitmap.recycle()
-        }
-        return true
-    }
-""",
-"renderer: playing base layer + effect window")
-
-# ---- R3) drawFrame: hasOverlay param + plain-bridge early return ----
-apply_edit(RENDERER, """    private fun drawFrame(
-        canvas: Canvas,
-        paint: Paint,
-        path: Path,
-        kind: String,
-        progress: Float,
-        bmpA: Bitmap,
-        srcA: Rect,
-        bmpB: Bitmap,
-        srcB: Rect,
-        dst: RectF,
-        w: Float,
-        h: Float
-    ) {
-        paint.reset()
-        paint.isAntiAlias = true
-        paint.isFilterBitmap = true
-        // Base layer: the right clip's still sits underneath (the live
-        // preview plays the right clip under the transforming snapshot).
-        canvas.drawBitmap(bmpB, srcB, dst, paint)
-""",
-"""    private fun drawFrame(
-        canvas: Canvas,
-        paint: Paint,
-        path: Path,
-        kind: String,
-        progress: Float,
-        hasOverlay: Boolean,
-        bmpA: Bitmap,
-        srcA: Rect,
-        bmpB: Bitmap,
-        srcB: Rect,
-        dst: RectF,
-        w: Float,
-        h: Float
-    ) {
-        paint.reset()
-        paint.isAntiAlias = true
-        paint.isFilterBitmap = true
-        // Base layer: the right clip's PLAYING frame sits underneath (the
-        // live preview plays the right clip under the transforming
-        // snapshot - phase 18 makes the export match it).
-        canvas.drawBitmap(bmpB, srcB, dst, paint)
-        if (!hasOverlay) {
-            // bridge material past the effect window: the right clip
-            // simply plays on with no overlay (the stream-copy plans
-            // reach their keyframe hand-off through it)
-            return
-        }
-""",
-"renderer: drawFrame overlay gate")
-
-# ---- R4) fadeblack/fadewhite comment follows the new model ----
-apply_edit(RENDERER, """            "fadeblack", "fadewhite" -> {
-                // dip through the color: first half fades the LEFT still
-                // out to the color, second half fades the RIGHT still in
-""",
-"""            "fadeblack", "fadewhite" -> {
-                // dip through the color: first half fades the LEFT still
-                // out to the color, second half fades the RIGHT clip's
-                // playing frames back in
-""",
-"renderer: color-dip comment")
-
-# ===================== SmartExportPlanner.kt =====================
-
-# ---- P1) transition clamp: the right span is the only constraint ----
-apply_edit(PLANNER, """        for ((gap, td) in transitions) {
-            if (gap < 0 || gap >= spans.size - 1) continue
-            val leftDur = spans[gap].second - spans[gap].first
-            val rightDur = spans[gap + 1].second - spans[gap + 1].first
-            val maxD = Math.min(leftDur - 250L, rightDur - 250L)
-            if (maxD < 200L) continue
-            val d = Math.min(td.second, maxD)
-            if (d >= 200L) out[gap] = d
-        }
-""",
-"""        for ((gap, td) in transitions) {
-            if (gap < 0 || gap >= spans.size - 1) continue
-            // Phase 18: the transition dips into the RIGHT clip only -
-            // the left clip plays untouched to its very end and merely
-            // its last frame freezes as the effect layer - so the right
-            // span is the only one that must fit the duration plus a
-            // sane remainder.
-            val rightDur = spans[gap + 1].second - spans[gap + 1].first
-            val maxD = rightDur - 250L
-            if (maxD < 200L) continue
-            val d = Math.min(td.second, maxD)
-            if (d >= 200L) out[gap] = d
-        }
-""",
-"planner: transition clamp follows the right span only")
-
-# ---- P2) output duration: no seconds added per transition ----
-apply_edit(PLANNER, """        // Phase 16: each freeze-frame transition segment adds its duration.
-        for (d in transitionDurations.values) {
-            totalSpanSec += d / 1000.0
-        }
-""",
-"""        // Phase 18: transitions dip into the FOLLOWING clip's opening -
-        // the effect plays over that clip's real, playing frames and the
-        // concat continues right after them - so the output duration is
-        // exactly the sum of the clip spans and NO seconds are added per
-        // transition anymore (the phase-16 stills model added D each).
-""",
-"planner: totalSpanSec no longer grows per transition")
-
-# ---- P3) new helper: probe the next video keyframe ----
-apply_edit(PLANNER, """    private fun fpsCloseEnough(a: Double, b: Double): Boolean {
-        val tol = Math.max(0.5, Math.abs(b) * 0.02)
-        return Math.abs(a - b) <= tol
-    }
-
-    // ------------------------------------------------------------------
-    // Freeze frame command builder
-    // ------------------------------------------------------------------
-""",
-"""    private fun fpsCloseEnough(a: Double, b: Double): Boolean {
-        val tol = Math.max(0.5, Math.abs(b) * 0.02)
-        return Math.abs(a - b) <= tol
-    }
-
-    /**
-     * Phase 18: the first video keyframe at or after [minMs] (clip-file
-     * time, milliseconds), searching no further than [maxMs]. The
-     * stream-copy plans hand the follow-on segment off at a real keyframe
-     * so the concat never replays transition material (a plain -ss copy
-     * would snap BACK to the preceding keyframe and re-show it). Returns
-     * null when the probe fails or no keyframe sits in the window - the
-     * caller then falls back to a frame-accurate re-encode hand-off.
-     */
-    private fun probeNextKeyframeMs(path: String, minMs: Long, maxMs: Long): Long? {
-        if (minMs > maxMs) return null
-        val probeArg = "-v error -select_streams v:0 -show_entries packet=pts_time,flags " +
-            "-of csv=print_section=0 \\"" + path + "\\""
-        val out: String? = try {
-            FFprobeKit.execute(probeArg).output
-        } catch (e: Exception) {
-            Log.w(TAG, "keyframe probe failed: " + e.message)
-            null
-        }
-        if (out == null || out.isEmpty()) return null
-        for (line in out.split("\\n")) {
-            val parts = line.trim().split(",")
-            if (parts.size < 2) continue
-            if (!parts[1].contains("K")) continue
-            val sec = parts[0].toDoubleOrNull() ?: continue
-            val tMs = Math.round(sec * 1000.0)
-            if (tMs >= minMs && tMs <= maxMs) return tMs
-        }
-        return null
-    }
-
-    // ------------------------------------------------------------------
-    // Freeze frame command builder
-    // ------------------------------------------------------------------
-""",
-"planner: probeNextKeyframeMs helper")
-
-# ---- P4) hand-off bookkeeping the transition fills, the loop reads ----
-apply_edit(PLANNER, """        var segCounter = 0
-        fun nextSegmentFile(ext: String): File {
-            val f = File(workDir, "seg_" + segCounter + ext)
-            segCounter++
-            segmentFiles.add(f)
-            return f
-        }
-""",
-"""        var segCounter = 0
-        fun nextSegmentFile(ext: String): File {
-            val f = File(workDir, "seg_" + segCounter + ext)
-            segCounter++
-            segmentFiles.add(f)
-            return f
-        }
-        // Phase 18 hand-off bookkeeping, filled by
-        // addFreezeTransitionSegment: a transition into clip i consumes
-        // [trimStartMs, pieceHandoffMs[i]] of it (the piece renders that
-        // opening under the effect), and spanReencode marks clips whose
-        // keyframe window was degenerate - those hand off frame-accurately
-        // through the matched re-encode branch instead of a copied span.
-        val pieceHandoffMs = mutableMapOf<Int, Long>()
-        val spanReencode = mutableMapOf<Int, Boolean>()
-""",
-"planner: hand-off bookkeeping maps")
-
-# ---- P5) the transition piece itself: playing base, real audio, ----
-# ---- keyframe hand-off ----
-apply_edit(PLANNER, """        fun addFreezeTransitionSegment(gap: Int, dMs: Long): Boolean {
-            val left = clips[gap]
-            val right = clips[gap + 1]
-            val type = transitionsRaw[gap]?.first ?: "fade"
-            val frameCount = Math.max(2, Math.round(dMs / 1000.0 * transFpsValue).toInt())
-            val dSec = frameCount / transFpsValue
-            // last displayed frame of the left clip, first of the right one
-            val endA = extractBoundaryFrame(
-                left.path, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
+            return planInternal(
+                context, project, sourceFilePath, outputFilePath,
+                exportResolution, exportFps, exportBitrate, audioOnly,
+                advancedVideoCodec, advancedAudioCodec, advancedPreset,
+                advancedAudioBitrate, customWidth, customHeight, videoFormat,
+                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata
             )
-            val startB = extractBoundaryFrame(right.path, right.trimStartMs)
-            if (endA == null || startB == null) return false
-            val framesDir = File(workDir, "trans_" + gap)
-            if (!TransitionFrameRenderer.renderTransitionFrames(
-                    type, endA, startB, framesDir, frameCount, displayWidth, displayHeight
-                )
-            ) return false
-            // encoder spec mirrors whatever the neighbouring segments use:
-            // the matched source encoder next to stream-copied segments,
-            // the one-flag-per-option encoder inside the encode plans.
-            val transVEnc = if (perSegmentEncode) vEncSimple else enc
-            val transAEnc = if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else aEnc
 """,
-"""        fun addFreezeTransitionSegment(gap: Int, dMs: Long): Boolean {
-            val left = clips[gap]
-            val right = clips[gap + 1]
-            val type = transitionsRaw[gap]?.first ?: "fade"
-            // Phase 18: the transition dips into the RIGHT clip's opening,
-            // exactly like the editor preview plays it - the right clip's
-            // real, playing frames are the base layer and the LEFT clip's
-            // frozen last frame carries the effect on top. The follow-on
-            // segment continues the right clip right after the piece, so
-            // the second video is never frozen and the output gains no
-            // extra seconds. Stream-copy plans hand the follow-on segment
-            // off at a real keyframe: the piece bridges from the trim
-            // start to the first keyframe at/after the effect end (plain
-            // playing material once the effect finishes), so the copied
-            // span starts exactly on that keyframe and never replays
-            // transition material. Encode plans are frame-accurate and
-            // need no bridge.
-            var pieceEndMs = right.trimStartMs + dMs
-            var reencodeRight = false
-            if (!perSegmentEncode) {
-                val kf = probeNextKeyframeMs(
-                    right.path, right.trimStartMs + dMs,
-                    Math.min(right.trimStartMs + dMs + 3000L, right.trimEndMs - 100L)
+"""        keyframeCut: Boolean = false,
+        exportSeparateFiles: Boolean = false,
+        movFastStart: Boolean = true,
+        preserveMetadata: Boolean = true,
+        onPrepareProgress: ((Int, Int) -> Unit)? = null
+    ): SmartPlan? {
+        try {
+            return planInternal(
+                context, project, sourceFilePath, outputFilePath,
+                exportResolution, exportFps, exportBitrate, audioOnly,
+                advancedVideoCodec, advancedAudioCodec, advancedPreset,
+                advancedAudioBitrate, customWidth, customHeight, videoFormat,
+                keyframeCut, exportSeparateFiles, movFastStart, preserveMetadata,
+                onPrepareProgress
+            )
+""",
+"planner: planSmartExport takes onPrepareProgress")
+
+# P2) planInternal signature + the instant entry tick (fires before any
+# early-return gate, so the dialog leaves 0% immediately)
+apply_edit(PLANNER, """        keyframeCut: Boolean,
+        exportSeparateFiles: Boolean,
+        movFastStart: Boolean,
+        preserveMetadata: Boolean
+    ): SmartPlan? {
+        sweepStaleWorkDirs(context)
+""",
+"""        keyframeCut: Boolean,
+        exportSeparateFiles: Boolean,
+        movFastStart: Boolean,
+        preserveMetadata: Boolean,
+        onPrepareProgress: ((Int, Int) -> Unit)? = null
+    ): SmartPlan? {
+        // phase 19: 1% the moment planning starts - the dialog must
+        // never sit dead on 0% while probes and frame extraction run
+        onPrepareProgress?.invoke(1, R.string.str_preparing_analyzing)
+        sweepStaleWorkDirs(context)
+""",
+"planner: planInternal signature + entry tick")
+
+# P4) tick after the reference clip probe
+apply_edit(PLANNER, """        // ---- probe the main clip (reference parameters) ----
+        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
+""",
+"""        // ---- probe the main clip (reference parameters) ----
+        val refParams = probeMedia(context, Uri.fromFile(File(sourceFilePath)), sourceFilePath) ?: return null
+        onPrepareProgress?.invoke(2, R.string.str_preparing_analyzing)
+""",
+"planner: tick after reference probe")
+
+# P5) tick after each merged clip's cache copy + probe
+apply_edit(PLANNER, """                val p = probeMedia(context, item.uri, localPath) ?: return null
+""",
+"""                val p = probeMedia(context, item.uri, localPath) ?: return null
+                onPrepareProgress?.invoke((2 + clips.size).coerceAtMost(4), R.string.str_preparing_analyzing)
+""",
+"planner: tick per merged clip probe")
+
+# P6) shared retrievers replace the per-frame open/close
+apply_edit(PLANNER, """        fun extractBoundaryFrame(path: String, timeMs: Long): android.graphics.Bitmap? {
+            val retriever = android.media.MediaMetadataRetriever()
+            return try {
+                retriever.setDataSource(path)
+                retriever.getFrameAtTime(
+                    timeMs * 1000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST
                 )
-                if (kf != null && right.trimEndMs - kf >= 100L) {
-                    pieceEndMs = kf
-                } else {
-                    // no usable keyframe in the window (huge GOP or a tiny
-                    // remainder): hand off frame-accurately instead - the
-                    // right clip's span re-encodes through the existing
-                    // matched re-encode branch
-                    reencodeRight = true
-                }
+            } catch (e: Exception) {
+                Log.w(TAG, "transition frame extraction failed: " + e.message)
+                null
+            } finally {
+                try { retriever.release() } catch (e: Exception) {}
             }
-            pieceHandoffMs[gap + 1] = pieceEndMs
-            spanReencode[gap + 1] = reencodeRight
-            val pieceMs = Math.max(200L, pieceEndMs - right.trimStartMs)
-            val frameCount = Math.max(2, Math.round(pieceMs / 1000.0 * transFpsValue).toInt())
-            val effectCount = Math.max(2, Math.round(dMs / 1000.0 * transFpsValue).toInt())
-            val dSec = frameCount / transFpsValue
-            // the effect layer: the left clip's frozen last frame
+        }
+""",
+"""        // Phase 19: ONE retriever per clip path serves the whole
+        // extraction batch - reopening the demuxer per frame dominated
+        // the planning latency (the dead 0% the user watched). The left
+        // still and the right clip's playing frames share the retriever
+        // when both spans come from the same file (the common
+        // single-video trim case).
+        fun openRetriever(path: String): android.media.MediaMetadataRetriever? {
+            return try {
+                android.media.MediaMetadataRetriever().also { it.setDataSource(path) }
+            } catch (e: Exception) {
+                Log.w(TAG, "transition retriever open failed: " + e.message)
+                null
+            }
+        }
+        fun frameAt(retriever: android.media.MediaMetadataRetriever?, timeMs: Long): android.graphics.Bitmap? {
+            if (retriever == null) return null
+            return try {
+                retriever.getFrameAtTime(
+                    timeMs * 1000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST
+                )
+            } catch (e: Exception) {
+                Log.w(TAG, "transition frame extraction failed: " + e.message)
+                null
+            }
+        }
+        // Phase 19: monotonic preparation tick for the transition frames
+        // (5..14 of the export dialog band) - multiple transitions never
+        // move the ring backwards.
+        var prepFrameTick = 5
+""",
+"planner: shared retriever helpers + prepFrameTick")
+
+# P7) the transition extraction block itself
+apply_edit(PLANNER, """            // the effect layer: the left clip's frozen last frame
             val endA = extractBoundaryFrame(
                 left.path, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
             ) ?: return false
@@ -564,268 +701,189 @@ apply_edit(PLANNER, """        fun addFreezeTransitionSegment(gap: Int, dMs: Lon
             )
             try { endA.recycle() } catch (e: Exception) {}
             if (!renderOk) return false
-            // encoder spec mirrors whatever the neighbouring segments use:
-            // the matched source encoder next to stream-copied segments,
-            // the one-flag-per-option encoder inside the encode plans.
-            val transVEnc = if (perSegmentEncode) vEncSimple else enc
-            // Phase 18 audio: the piece carries the right clip's REAL
-            // audio, stream-copied with it (the sound keeps playing
-            // through the transition, exactly like the preview); the
-            // re-encode form only inside the encode plans with changed
-            // audio settings. Generated silence just for a muted or
-            // audio-less right clip.
-            val realAudio = planHasAudio && right.params.hasAudio && !right.muted
-            val pieceAEnc = if (realAudio) {
-                if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else "-c:a copy"
-            } else {
-                aEncSilence
-            }
 """,
-"planner: transition piece head (dip model)")
-
-# ---- P5b) the piece command: real audio input instead of anullsrc ----
-apply_edit(PLANNER, """            val sb = StringBuilder("-y -framerate ").append(transFpsSpec)
-                .append(" -start_number 0 -i \\"")
-                .append(framesDir.absolutePath).append("/frame_%04d.jpg\\"")
-            if (planHasAudio) {
-                sb.append(" -f lavfi -t ")
-                    .append(String.format(java.util.Locale.US, "%.6f", dSec))
-                sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-            }
-            sb.append(" -map 0:v:0")
-            if (planHasAudio) sb.append(" -map 1:a:0")
-            sb.append(" -vf \\"").append(vf).append("\\"")
-            sb.append(" ").append(transVEnc)
-            if (planHasAudio) sb.append(" ").append(transAEnc)
-""",
-"""            val sb = StringBuilder("-y -framerate ").append(transFpsSpec)
-                .append(" -start_number 0 -i \\"")
-                .append(framesDir.absolutePath).append("/frame_%04d.jpg\\"")
-            if (realAudio) {
-                // the right clip's real audio rides the piece (stream copy
-                // in the copy plans) - seamless into the follow-on segment
-                if (rightStartMs > 0L) sb.append(" -ss ").append(ms(rightStartMs))
-                sb.append(" -t ").append(String.format(java.util.Locale.US, "%.6f", dSec))
-                sb.append(" -i \\"").append(right.path).append("\\"")
-            } else if (planHasAudio) {
-                sb.append(" -f lavfi -t ")
-                    .append(String.format(java.util.Locale.US, "%.6f", dSec))
-                sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-            }
-            sb.append(" -map 0:v:0")
-            if (planHasAudio) sb.append(" -map 1:a:0")
-            sb.append(" -vf \\"").append(vf).append("\\"")
-            sb.append(" ").append(transVEnc)
-            if (planHasAudio) sb.append(" ").append(pieceAEnc)
-""",
-"planner: transition piece audio + encoder args")
-
-# ---- P6) the clip loop: spans continue from the hand-off point ----
-apply_edit(PLANNER, """        for (i in clips.indices) {
-            val clip = clips[i]
-            val spanStart = clip.trimStartMs
-            val spanEnd = clip.trimEndMs
-            val spanMs = spanEnd - spanStart
-            val fullRange = spanStart <= 60L && spanEnd >= clip.durationMs - 60L
-            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
-""",
-"""        for (i in clips.indices) {
-            val clip = clips[i]
-            // Phase 18: an incoming transition consumed this clip's head
-            // (the piece played its real opening under the effect); the
-            // segment continues from the hand-off point. Copy plans hand
-            // off at the probed keyframe, encode plans at the exact
-            // effect end, and a degenerate keyframe window hands off
-            // frame-accurately through the matched re-encode branch.
-            val handoffMs = pieceHandoffMs[i]
-            val spanStart = handoffMs ?: clip.trimStartMs
-            val spanEnd = clip.trimEndMs
-            val spanMs = spanEnd - spanStart
-            val fullRange = handoffMs == null &&
-                spanStart <= 60L && spanEnd >= clip.durationMs - 60L
-            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
-""",
-"planner: clip spans follow the transition hand-off")
-
-# ---- P7) whole-clip copy branch: only without a re-encode hand-off ----
-apply_edit(PLANNER, """            } else if (fullRange) {
-""",
-"""            } else if (spanReencode[i] != true && fullRange) {
-""",
-"planner: fullRange branch gated on spanReencode")
-
-# ---- P8) keyframe-cut branch: only without a re-encode hand-off ----
-apply_edit(PLANNER, """            } else if (keyframeCut) {
-""",
-"""            } else if (spanReencode[i] != true && keyframeCut) {
-""",
-"planner: keyframeCut branch gated on spanReencode")
-
-# ---- P9) log line wording ----
-apply_edit(PLANNER, """                (if (hasTransitions) ", " + transitionDurations.size + " freeze-frame transition(s)" else "")
-""",
-"""                (if (hasTransitions) ", " + transitionDurations.size + " dip transition(s)" else "")
-""",
-"planner: log wording")
-
-# ===================== ExportSettingsDialog.kt =====================
-
-# ---- E1) size estimate root cause: the FILE's own duration ----
-apply_edit(ESD, """    private fun probeSource() {
-        val f = sourceFile ?: return
-        if (!f.exists()) return
-        try {
-            val r = MediaMetadataRetriever()
+"""            // the effect layer: the left clip's frozen last frame; the
+            // base layer: the right clip's PLAYING frames, one extraction
+            // per output frame on the reference-rate grid (OPTION_CLOSEST =
+            // the frame nearest that instant, exactly what the player
+            // shows under the preview overlay). Phase 19: shared
+            // retrievers (one per clip path) and a live preparation tick
+            // per extracted frame, so the export dialog visibly advances
+            // while the frames rasterize instead of sitting dead on 0%.
+            val leftRetriever = openRetriever(left.path)
+            val rightRetriever = if (right.path == left.path) leftRetriever else openRetriever(right.path)
+            var renderOk = false
+            var endA: android.graphics.Bitmap? = null
             try {
-                r.setDataSource(f.absolutePath)
-                var w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-                var h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-                val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-                if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
-                srcW = w
-                srcH = h
-            } finally { r.release() }
-        } catch (_: Exception) { }
-        val durSec = durationMs / 1000.0
-        if (durSec > 0 && f.length() > 0) {
-            srcKbps = (f.length() * 8.0 / 1000.0 / durSec).toInt()
-        }
+                endA = frameAt(
+                    leftRetriever, (left.trimEndMs - 1L).coerceAtLeast(left.trimStartMs)
+                )
+                if (endA == null) return false
+                val rightStartMs = right.trimStartMs
+                val framesDir = File(workDir, "trans_" + gap)
+                renderOk = TransitionFrameRenderer.renderTransitionFrames(
+                    type, endA,
+                    { i ->
+                        val tick = 5 + i * 10 / Math.max(1, frameCount)
+                        if (tick > prepFrameTick) prepFrameTick = tick
+                        onPrepareProgress?.invoke(
+                            prepFrameTick.coerceAtMost(14),
+                            R.string.str_preparing_transition
+                        )
+                        frameAt(
+                            rightRetriever,
+                            rightStartMs + Math.round(i * 1000.0 / transFpsValue)
+                        )
+                    },
+                    framesDir, frameCount, effectCount, displayWidth, displayHeight
+                )
+            } finally {
+                try { endA?.recycle() } catch (e: Exception) {}
+                try { leftRetriever?.release() } catch (e: Exception) {}
+                if (rightRetriever !== leftRetriever) {
+                    try { rightRetriever?.release() } catch (e: Exception) {}
+                }
+            }
+            if (!renderOk) return false
+""",
+"planner: transition block -> shared retrievers + live ticks")
+
+# ===================== P8) UiState + ViewModel =====================
+
+apply_edit(UISTATE, """data class VideoEditingUiState(
+    val isLoading: Boolean = false,
+    val isExporting: Boolean = false,
+    val exportProgress: Int = 0, // 0-100
+    val errorMessage: String? = null,
+""",
+"""data class VideoEditingUiState(
+    val isLoading: Boolean = false,
+    val isExporting: Boolean = false,
+    val exportProgress: Int = 0, // 0-100
+    val exportStageRes: Int? = null, // phase 19: preparation stage label (string resource)
+    val errorMessage: String? = null,
+""",
+"UiState: exportStageRes field")
+
+apply_edit(VM, """    fun updateExportProgress(progress: Int) {
+        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 100)) }
     }
 """,
-"""    private fun probeSource() {
-        val f = sourceFile ?: return
-        if (!f.exists()) return
-        var fileDurMs = 0L
-        try {
-            val r = MediaMetadataRetriever()
-            try {
-                r.setDataSource(f.absolutePath)
-                var w = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 0
-                var h = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 0
-                val rot = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_ROTATION)?.toIntOrNull() ?: 0
-                if (rot == 90 || rot == 270) { val t = w; w = h; h = t }
-                srcW = w
-                srcH = h
-                fileDurMs = r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                    ?.toLongOrNull() ?: 0L
-            } finally { r.release() }
-        } catch (_: Exception) { }
-        // Phase 18: the bitrate proxy must divide the file's size by the
-        // FILE's own duration. The old code divided by the dialog's
-        // durationMs - the WHOLE timeline (every clip in the sequence) -
-        // so the rate (and with it the whole size estimate) came out N
-        // times too small for an N-clip sequence: a 2-clip project
-        // estimated ~49 MB for a ~93 MB output. The file's own duration
-        // is the correct denominator; the timeline value stays only as a
-        // fallback for the single-clip case when probing failed.
-        val durSec = (if (fileDurMs > 0L) fileDurMs else durationMs) / 1000.0
-        if (durSec > 0 && f.length() > 0) {
-            srcKbps = (f.length() * 8.0 / 1000.0 / durSec).toInt()
-        }
+"""    fun updateExportProgress(progress: Int) {
+        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 100), exportStageRes = null) }
+    }
+
+    /**
+     * Phase 19: live progress while the export is still being PLANNED
+     * (clip probing + transition frame rasterization) - the 1-14% band
+     * of the export dialog, with the stage label replacing the default
+     * subtitle. Any real ffmpeg progress clears the stage again
+     * (updateExportProgress sets exportStageRes back to null).
+     */
+    fun updateExportPreparation(stageRes: Int, progress: Int) {
+        updateUiState { it.copy(exportProgress = progress.coerceIn(0, 14), exportStageRes = stageRes) }
     }
 """,
-"esd: srcKbps from the file's own duration")
+"ViewModel: updateExportPreparation + stage clearing")
 
-# ---- E2) encode-mode estimate: no seconds added per transition ----
-apply_edit(ESD, """            // phase 16: each freeze-frame transition adds its duration.
-            for (dMs in a.transitions.values) {
-                totalSec += dMs / 1000.0
-            }
-""",
-"""            // phase 18: transitions add NO seconds anymore - each dips
-            // into the following clip's opening, which re-encodes as part
-            // of the spans already summed above.
-""",
-"esd: encode estimate drops the +D")
+# ===================== P9) VideoEditingActivity wiring =====================
 
-# ---- E3) copy-mode estimate: the transition window moves copy->encode ----
-apply_edit(ESD, """        // phase 16 mirror: freeze-frame transitions re-encode their D
-        // window of stills; the clips stay as computed above.
-        for (dMs in a.transitions.values) {
-            encSec += dMs / 1000.0
-        }
-""",
-"""        // phase 18 mirror: a transition dips into the FOLLOWING clip's
-        // opening - that window moves from the copied seconds to the
-        // re-encoded ones (estimated at the transition duration; the
-        // stream-copy plans extend a little further to reach a keyframe)
-        // and the output gains no extra seconds. Merged mode only:
-        // separate files export no transitions.
-        if (!selSeparateFiles) {
-            for (dMs in a.transitions.values) {
-                copySec -= dMs / 1000.0
-                encSec += dMs / 1000.0
-            }
-        }
-""",
-"esd: copy estimate moves the transition window")
-
-# ---- E4) summary seconds: same mirror ----
-apply_edit(ESD, """        // phase 16: freeze-frame transitions re-encode only their D window
-        // of stills; the clips themselves stay exactly as computed above.
-        for (dMs in a.transitions.values) {
-            encSec += dMs / 1000.0
-        }
-""",
-"""        // phase 18: transitions re-encode only the window they dip into
-        // (the following clip's opening, which keeps playing under the
-        // effect); the rest of every clip stays exactly as computed above.
-        for (dMs in a.transitions.values) {
-            copySec -= dMs / 1000.0
-            encSec += dMs / 1000.0
-        }
-""",
-"esd: summary seconds move the window")
-
-# ---- E5) copy-mode transition note ----
-apply_edit(ESD, """        if (a.transitions.isNotEmpty()) {
-            sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) as freeze-frame segments (only the stills re-encode; the output grows by each transition duration)")
-        }
-""",
-"""        if (a.transitions.isNotEmpty()) {
-            sb.append("; ").append(a.transitions.size)
-                .append(" transition(s) (the second clip keeps playing through each one; only that short window re-encodes)")
-        }
-""",
-"esd: copy-mode transition note")
-
-# ---- E6) two-step command preview line ----
-apply_edit(ESD, """                if (a.transitions.isNotEmpty()) {
-                    sb.append("\\nffmpeg -framerate FPS -i frame_%04d.jpg -i anullsrc -vf \\"scale,setsar,fps,format\\" <matched enc> seg_T.mp4   (freeze-frame transition)")
+# the receiver maps the service progress onto 15-100
+apply_edit(VEA, """                com.tharunbirla.librecuts.services.ExportService.ACTION_EXPORT_PROGRESS -> {
+                    val progress = intent.getIntExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_PROGRESS, 0)
+                    viewModel.updateExportProgress(progress)
                 }
 """,
-"""                if (a.transitions.isNotEmpty()) {
-                    sb.append("\\nffmpeg -framerate FPS -i frame_%04d.jpg -ss S -t D -i clip2 -vf \\"scale,setsar,fps,format\\" <matched enc> seg_T.mp4   (transition: clip2 keeps playing under clip1's frozen last frame)")
+"""                com.tharunbirla.librecuts.services.ExportService.ACTION_EXPORT_PROGRESS -> {
+                    val progress = intent.getIntExtra(com.tharunbirla.librecuts.services.ExportService.EXTRA_PROGRESS, 0)
+                    viewModel.updateExportProgress(mapFfmpegProgress(progress))
                 }
 """,
-"esd: two-step transition preview line")
+"VEA: receiver maps service progress onto 15-100")
 
-# ---- E7) encode-mode transition note ----
-apply_edit(ESD, """                sb.append("; ").append(a.transitions.size)
-                    .append(" transition(s) as freeze-frame segments (only the stills re-encode)")
+# the dialog subtitle shows the preparation stage while planning
+apply_edit(VEA, """                if (uiState.isExporting) {
+                    loadingScreen.visibility = View.GONE
+                    val progress = uiState.exportProgress
+                    exportScreen.findViewById<TextView>(R.id.tvExportPercentage)?.text = "$progress%"
+                    exportScreen.findViewById<android.widget.ProgressBar>(R.id.exportProgressBar)?.progress = progress
+                } else {
 """,
-"""                sb.append("; ").append(a.transitions.size)
-                    .append(" transition(s) (the second clip keeps playing through each one)")
+"""                if (uiState.isExporting) {
+                    loadingScreen.visibility = View.GONE
+                    val progress = uiState.exportProgress
+                    exportScreen.findViewById<TextView>(R.id.tvExportPercentage)?.text = "$progress%"
+                    exportScreen.findViewById<android.widget.ProgressBar>(R.id.exportProgressBar)?.progress = progress
+                    // phase 19: the preparation stage label replaces the
+                    // default subtitle while the plan is being built
+                    exportScreen.findViewById<TextView>(R.id.tvExportMessage)?.setText(
+                        uiState.exportStageRes ?: R.string.str_please_don_t_close_the_app
+                    )
+                } else {
 """,
-"esd: encode-mode transition note")
+"VEA: collector shows the preparation stage label")
 
-# ===================== app/build.gradle =====================
-
-# ---- G1) versionCode 16 / beta11 ----
-apply_edit(GRADLE, """        // invalid"). 15 clears the highest offset ever produced.
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 15
-        versionName "1.0-beta10"
+# saveAction feeds the planner ticks into the ViewModel
+apply_edit(VEA, """                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata
+                        )?.planFile?.absolutePath
 """,
-"""        // invalid"). 15 clears the highest offset ever produced.
-        // Phase 18: 16 / beta11 - the playing-transition + size-estimate
-        // build; every APK stays a strict upgrade over the installed one.
-        versionCode project.hasProperty('versionCode') ? project.property('versionCode').toInteger() : 16
-        versionName "1.0-beta11"
+"""                            preserveMetadata = viewModel.advancedExport.value.preserveMetadata,
+                            onPrepareProgress = { pct, stageRes ->
+                                viewModel.updateExportPreparation(stageRes, pct)
+                            }
+                        )?.planFile?.absolutePath
 """,
-"gradle: versionCode 16 + beta11")
+"VEA: saveAction wires onPrepareProgress")
 
-print("edits applied: %d, skipped: %d" % (edits_applied, edits_skipped))
+# saveAction's coroutine becomes exportJob so Cancel truly aborts the
+# planning phase
+apply_edit(VEA, """        lifecycleScope.launch(Dispatchers.Main) {
+            var tempOutputFile: File? = null
+""",
+"""        exportJob = lifecycleScope.launch(Dispatchers.Main) {
+            var tempOutputFile: File? = null
+""",
+"VEA: saveAction coroutine is exportJob (cancellable)")
+
+# a user cancel must not surface as an error dialog
+apply_edit(VEA, """            } catch (e: Exception) {
+                tempOutputFile?.let { if (it.exists()) it.delete() }
+                viewModel.exportError(e.message ?: "Unknown error")
+                Log.e(TAG, "Export start exception: ${e.message}", e)
+            }
+""",
+"""            } catch (e: Exception) {
+                // phase 19: a user cancel (cancelExport -> exportJob.cancel)
+                // must not surface as an error dialog - rethrow so the
+                // coroutine simply ends cancelled
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                tempOutputFile?.let { if (it.exists()) it.delete() }
+                viewModel.exportError(e.message ?: "Unknown error")
+                Log.e(TAG, "Export start exception: ${e.message}", e)
+            }
+""",
+"VEA: catch rethrows CancellationException")
+
+# the 15-100 mapping helper, next to cancelExport
+apply_edit(VEA, """    private fun cancelExport() {
+""",
+"""    /**
+     * Phase 19: the export dialog's 1-14% band belongs to the planning
+     * stage (clip probing + transition frame rasterization); the ffmpeg
+     * session progress maps onto the remaining 15-100 so the ring never
+     * jumps backwards when the background service takes over.
+     */
+    private fun mapFfmpegProgress(progress: Int): Int {
+        val p = progress.coerceIn(0, 100)
+        return if (p >= 100) 100 else 15 + p * 85 / 100
+    }
+
+    private fun cancelExport() {
+""",
+"VEA: mapFfmpegProgress helper")
+
+print("edits applied: %d, skipped: %d, deletions: %d" %
+      (edits_applied, edits_skipped, deletions))
 
 # ========================= gates =========================
 fail = []
@@ -837,110 +895,188 @@ def check(cond, msg):
         fail.append(msg)
 
 
-# 1) the standing invariant: no complex filter graphs anywhere
-n = subprocess.run(["grep", "-r", "-o", "filter_complex", "app/src/main/java"],
-                   capture_output=True, text=True).stdout.count("filter_complex")
-check(n == 0, "filter_complex count in app/src/main/java == 0 (got %d)" % n)
+def read(p):
+    with open(p) as f:
+        return f.read()
 
-G = open("app/build.gradle").read()
-R = open(RENDERER).read()
-P = open(PLANNER).read()
-E = open(ESD).read()
 
-# 2) the version bump is in and the old values are gone
-check(G.count("toInteger() : 16") == 1, "gradle versionCode 16")
-check(G.count("toInteger() : 15") == 0, "gradle versionCode 15 gone")
-check(G.count('"1.0-beta11"') == 1, "gradle versionName beta11")
-check(G.count('"1.0-beta10"') == 0, "gradle versionName beta10 gone")
-check(G.count("abiFilters 'arm64-v8a'") == 1, "gradle arm64-v8a abiFilter kept")
-check(G.count("splits {") == 0, "gradle splits still gone")
-check(G.count("versionCodeOverride") == 0, "gradle versionCodeOverride still gone")
+def rg_count(pattern, root="app/src/main"):
+    r = subprocess.run(["grep", "-r", "-o", pattern, root],
+                       capture_output=True, text=True)
+    return r.stdout.count(pattern) if r.returncode in (0, 1) else -1
 
-# 3) the renderer runs the dip model
-check(R.count("baseFrames: (Int) -> Bitmap?") == 1,
-      "renderer per-frame base provider x1")
-check(R.count("val bmpB = baseFrames(i)") == 1,
-      "renderer pulls a fresh base frame per output frame")
-check(R.count("effectCount: Int") == 1, "renderer effectCount param x1")
-check(R.count("hasOverlay: Boolean") == 1, "renderer hasOverlay param x1")
-check(R.count("if (!hasOverlay)") == 1, "renderer plain-bridge early return x1")
-check(R.count("bmpB.recycle()") == 1, "renderer recycles each base bitmap x1")
-check(R.count("bmpB: Bitmap,") == 1, "renderer drawFrame base param x1 (old two-still param gone)")
 
-# 4) the planner wires the dip model exactly once each
-check(P.count("private fun probeNextKeyframeMs") == 1,
-      "planner probeNextKeyframeMs definition x1")
-check(P.count("probeNextKeyframeMs(") == 2,
-      "planner probeNextKeyframeMs definition + call x2")
-check(P.count("pieceHandoffMs") == 4,
-      "planner pieceHandoffMs x4 (comment + declare + fill + read)")
-check(P.count("spanReencode[i] != true") == 2,
-      "planner spanReencode branch gates x2")
-check(P.count("val spanReencode = mutableMapOf") == 1,
-      "planner spanReencode declaration x1")
-check(P.count("val realAudio = planHasAudio") == 1,
-      "planner realAudio selection x1")
-check(P.count("pieceAEnc") == 2, "planner pieceAEnc x2 (define + use)")
-check(P.count("rightStartMs + Math.round(i * 1000.0 / transFpsValue)") == 1,
-      "planner playing-base extraction grid x1")
-check(P.count("dip transition(s)") == 1, "planner log wording updated")
-check(P.count("freeze-frame transition(s)") == 0, "planner old wording gone")
-check(P.count("transAEnc") == 0, "planner old transAEnc gone")
-check(P.count("val startB = extractBoundaryFrame") == 0,
-      "planner frozen-first-frame extraction gone")
-check(P.count("totalSpanSec += d / 1000.0") == 0,
-      "planner output duration no longer grows per transition")
-check(P.count("val leftDur = spans[gap].second") == 0,
-      "planner clamp no longer constrains the left span")
+G = read(GRADLE)
+C = read(COLORS)
+T = read(THEMES)
+S = read(STRINGS)
+MA = read(MAIN)
+VE = read(VEA)
+PI = read(PIA)
+VMV = read(VM)
+US = read(UISTATE)
+PL = read(PLANNER)
+MX = read(MAINXML)
+VX = read(VEAXML)
 
-# 5) the dialog estimate follows the file duration + dip timeline
-check(E.count("fileDurMs") == 4, "esd fileDurMs x4 (declare + probe + use x2)")
-check(E.count("(if (fileDurMs > 0L) fileDurMs else durationMs)") == 1,
-      "esd file-own-duration denominator x1")
-check(E.count("copySec -= dMs / 1000.0") == 2,
-      "esd transition window moves copy->encode x2")
-check(E.count("totalSec += dMs / 1000.0") == 0, "esd encode estimate +D gone")
-check(E.count("the output grows by") == 0, "esd grows-by note gone")
-check(E.count("keeps playing through") == 2, "esd new transition notes x2")
-check(E.count("clip1's frozen last frame") == 1,
-      "esd two-step preview line mentions the effect layer")
+# 1) the version bump
+check(G.count("toInteger() : 17") == 1, "gradle versionCode 17")
+check(G.count("toInteger() : 16") == 0, "gradle versionCode 16 gone")
+check(G.count('"1.0-beta12"') == 1, "gradle versionName beta12")
+check(G.count('"1.0-beta11"') == 0, "gradle versionName beta11 gone")
 
-# 6) structural balance (the edits add balanced blocks only)
-for name, s in (("renderer", R), ("planner", P), ("esd", E), ("gradle", G)):
+# 2) the amber theme
+check(C.count("#FFB200") == 5, "colors.xml: 5 amber primaries (got %d)" % C.count("#FFB200"))
+check(C.count("#C78D00") == 2, "colors.xml: 2 amber variants")
+check(C.count("#2A1D00") == 1, "colors.xml: activeToolBackground amber tint")
+check(C.count('name="onAmber"') == 1, "colors.xml: onAmber black resource")
+check(T.count("@color/onAmber") == 4, "themes.xml: 2 styles x onPrimary+onSecondary -> onAmber")
+check(rg_count("#FF2A6D") == 0, "no #FF2A6D anywhere in app/src/main")
+check(rg_count("#C81D52") == 0, "no #C81D52 anywhere")
+check(rg_count("#2A1118") == 0, "no #2A1118 anywhere")
+check(rg_count("#FF4081") == 0, "no #FF4081 anywhere")
+check(rg_count("#33FF2A6D") == 0, "no #33FF2A6D anywhere")
+check(rg_count("#1AFF4081") == 0, "no #1AFF4081 anywhere")
+check(rg_count("#E91E63") == 1,
+      "the single functional text-track pink kept (got %d)" % rg_count("#E91E63"))
+check(rg_count("@color/onAmber") == 24,
+      "24 @color/onAmber refs (4 theme + 20 layout) (got %d)" % rg_count("@color/onAmber"))
+check(rg_count("R.color.onAmber") == 3,
+      "3 R.color.onAmber refs in Kotlin (got %d)" % rg_count("R.color.onAmber"))
+check(read("app/src/main/res/drawable/ic_save_color_24.xml").count("#FFB200") == 1,
+      "save icon amber tint x1")
+check(read("app/src/main/res/drawable/ic_banner_foreground.xml").count("#FFB200") == 1,
+      "banner amber fill x1")
+
+# 3) English only
+leftover = sorted(glob.glob("app/src/main/res/values-*"))
+check(len(leftover) == 0, "no values-* locale folders left (%s)" % leftover)
+for tok in ["btnChangeLanguage", "tvCurrentLanguage", "showLanguageDialog",
+            "getAvailableLanguages", "updateLanguageUI", "LanguageItem",
+            "str_app_language", "str_system_default",
+            "language_bottom_sheet_dialog", "item_language_selection",
+            "LocaleListCompat", "LocaleConfig"]:
+    check(rg_count(tok) == 0, "language token gone: %s" % tok)
+check(MA.count("AppCompatDelegate") == 0, "MainActivity: AppCompatDelegate gone")
+check(MA.count("BottomSheetDialog") == 0, "MainActivity: BottomSheetDialog import gone")
+check(MA.count("showEncoderDialog") == 2, "MainActivity: encoder dialog survives (def + call)")
+check(MA.count("btnToggleFullscreenEditor") == 1, "MainActivity: fullscreen toggle wiring stays")
+check(MA.count("btnTranslate") == 1, "MainActivity: About translate link survives")
+
+# 4) fullscreen OFF by default
+check(rg_count('getBoolean("fullscreen_editor", false)') == 3,
+      "fullscreen_editor default false x3 (got %d)" % rg_count('getBoolean("fullscreen_editor", false)'))
+check(rg_count('getBoolean("fullscreen_editor", true)') == 0,
+      "fullscreen_editor default true gone")
+
+# 5) the live preparation progress
+check(PL.count("onPrepareProgress") == 7,
+      "planner onPrepareProgress x7 (got %d)" % PL.count("onPrepareProgress"))
+check(PL.count("fun openRetriever") == 1, "planner openRetriever def x1")
+check(PL.count("openRetriever(") == 3, "planner openRetriever def + 2 calls")
+check(PL.count("fun frameAt") == 1, "planner frameAt def x1")
+check(PL.count("frameAt(") == 3, "planner frameAt def + 2 calls")
+check(PL.count("prepFrameTick") == 4, "planner prepFrameTick x4 (declare + compare + assign + coerce)")
+check(PL.count("R.string.str_preparing_analyzing") == 3, "planner analyze-stage ticks x3")
+check(PL.count("R.string.str_preparing_transition") == 1, "planner transition-stage tick x1")
+check(PL.count("extractBoundaryFrame") == 0, "planner per-frame extractBoundaryFrame gone")
+check(VE.count("mapFfmpegProgress") == 2, "VEA mapFfmpegProgress def + call x2")
+check(VE.count("updateExportPreparation") == 1, "VEA prep callback wiring x1")
+check(VMV.count("updateExportPreparation") == 1, "VM updateExportPreparation def x1")
+check(VMV.count("exportStageRes") == 3, "VM exportStageRes x3 (2 code + 1 doc)")
+check(US.count("exportStageRes") == 1, "UiState exportStageRes x1")
+check(VE.count("tvExportMessage") == 1, "VEA stage subtitle wiring x1")
+check(VE.count("15 + p * 85 / 100") == 1, "VEA 15-100 mapping formula x1")
+check(S.count("str_preparing_analyzing") == 1, "strings: preparing_analyzing x1")
+check(S.count("str_preparing_transition") == 1, "strings: preparing_transition x1")
+check(VE.count("if (e is kotlinx.coroutines.CancellationException) throw e") == 1,
+      "VEA cancel rethrow line x1")
+check(VE.count("exportJob = lifecycleScope.launch") == 1, "VEA saveAction is exportJob")
+
+# 6) structural balance for every edited Kotlin file
+# ProjectImportActivity is excluded: its 169/168 brace imbalance is
+# pre-existing (a brace inside a string literal) and none of the phase-19
+# edits touch its braces
+for name, s in (("MainActivity", MA), ("VEA", VE),
+                ("ViewModel", VMV), ("UiState", US), ("planner", PL),
+                ("DraggableImageOverlayView", read(DIV)),
+                ("CustomVideoSeeker", read(CVS)), ("TrackTrimView", read(TTV))):
     check(s.count("{") == s.count("}"),
           "%s braces balanced (%d/%d)" % (name, s.count("{"), s.count("}")))
     check(s.count("(") == s.count(")"),
           "%s parens balanced (%d/%d)" % (name, s.count("("), s.count(")")))
 
-# 7) ASCII purity
-for name, s in (("renderer", R), ("planner", P), ("esd", E), ("gradle", G)):
+# 7) XML parses for every edited layout + values file
+import xml.etree.ElementTree as ET
+for p in [COLORS, THEMES, STRINGS, MAINXML, VEAXML, WELCOME,
+          L + "dialog_export_settings.xml", L + "trim_bottom_sheet_dialog.xml",
+          L + "activity_project_import.xml", L + "dialog_audio_fade.xml",
+          L + "export_quality_bottom_sheet_dialog.xml",
+          L + "activity_error_display.xml", L + "dialog_unsaved_changes.xml",
+          L + "dialog_transitions.xml", L + "item_dependency.xml",
+          "app/src/main/res/drawable/bg_nav_active_pill.xml",
+          "app/src/main/res/drawable/bg_import_hero.xml",
+          "app/src/main/res/drawable/bg_hero_bento_primary.xml",
+          "app/src/main/res/drawable/ic_save_color_24.xml",
+          "app/src/main/res/drawable/ic_banner_foreground.xml"]:
+    try:
+        ET.parse(p)
+        check(True, "xml parses: " + p.split("/")[-1])
+    except Exception as e:
+        check(False, "xml parses: %s (%s)" % (p.split("/")[-1], e))
+
+# 8) ASCII purity for every edited text file
+# strings/MainActivity/VEA/VM already contain non-ASCII (degree signs,
+# em-dashes, box characters) in pristine - only gate the files that were
+# ASCII-clean before AND that this phase edited
+for name, s in (("gradle", G), ("colors", C), ("themes", T),
+                ("PIA", PI), ("UiState", US), ("planner", PL),
+                ("main layout", MX), ("editing layout", VX)):
     check(sum(1 for ch in s if ord(ch) > 127) == 0, "%s ASCII" % name)
 
-# 8) survival tokens (phase 16/17 + earlier invariants intact)
-for tok in ["renderTransitionFrames", "addFreezeTransitionSegment",
-            "effectiveTransitionDurations", "fpsCloseEnough",
-            "nextSegmentFile", "encodablePixFmt", "-framerate ",
-            "trans_tmp_", "video_track_timescale", "extractBoundaryFrame",
-            "OPTION_CLOSEST", "anullsrc=r=", "-bsf:v dump_extra",
-            "val sensorMode = !perSegmentEncode",
-            "sensorMode && refParams.rotation != 0",
-            "val transVEnc = if (perSegmentEncode) vEncSimple else enc"]:
-    check(P.count(tok) > 0, "planner keeps '%s'" % tok)
-for tok in ["smartEstimateBytes", "estimateSizeText", "formatBytes",
-            "METADATA_KEY_DURATION"]:
-    check(E.count(tok) > 0, "esd keeps '%s'" % tok)
-for tok in ["drawBitmap(bmpB", "drawBitmap(bmpA"]:
-    check(R.count(tok) > 0, "renderer keeps '%s'" % tok)
+# 9) survival tokens (standing invariants from earlier phases)
+for tok in ["probeMedia", "probeNextKeyframeMs", "addFreezeTransitionSegment",
+            "renderTransitionFrames", "OPTION_CLOSEST", "anullsrc=r=",
+            "-bsf:v dump_extra", "video_track_timescale",
+            "val sensorMode = !perSegmentEncode", "pieceHandoffMs",
+            "spanReencode", "fpsCloseEnough", "encodablePixFmt"]:
+    check(PL.count(tok) > 0, "planner keeps '%s'" % tok)
+check(VE.count("exportVideoFile") > 0, "VEA keeps exportVideoFile")
+check(VE.count("btnCancelExport") > 0, "VEA keeps the cancel button wiring")
+check(G.count("generateLocaleConfig = true") == 1,
+      "gradle locale config generation kept (English-only output)")
 
-# 9) scope: only the four intended files may be dirty (clean tree also ok -
-#    that is the re-run-after-commit case)
-r = subprocess.run(["git", "status", "--porcelain"],
-                   capture_output=True, text=True)
-allowed = {"app/build.gradle", RENDERER, PLANNER, ESD}
-dirty = [l[3:].strip() for l in r.stdout.splitlines() if l.strip()]
-bad = [p for p in dirty if p not in allowed]
-check(len(bad) == 0, "scope: no unexpected dirty files (dirty=%d, bad=%d)" %
-      (len(dirty), len(bad)))
+# 10) scope: only the intended files may be dirty (clean tree also ok -
+#     that is the re-run-after-commit case); deleted locale folders are
+#     reported as D paths under values-* and must be allowed
+r = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+allowed = set()
+for p in [GRADLE, COLORS, THEMES, STRINGS, MAINXML, VEAXML, WELCOME,
+          VEA, MAIN, PIA, VM, UISTATE, PLANNER, DIV, CVS, TTV,
+          L + "dialog_export_settings.xml", L + "trim_bottom_sheet_dialog.xml",
+          L + "activity_project_import.xml", L + "dialog_audio_fade.xml",
+          L + "export_quality_bottom_sheet_dialog.xml",
+          L + "activity_error_display.xml", L + "dialog_unsaved_changes.xml",
+          L + "dialog_transitions.xml", L + "item_dependency.xml",
+          "app/src/main/res/drawable/bg_nav_active_pill.xml",
+          "app/src/main/res/drawable/bg_import_hero.xml",
+          "app/src/main/res/drawable/bg_hero_bento_primary.xml",
+          "app/src/main/res/drawable/ic_save_color_24.xml",
+          "app/src/main/res/drawable/ic_banner_foreground.xml",
+          "app/src/main/res/layout/language_bottom_sheet_dialog.xml",
+          "app/src/main/res/layout/item_language_selection.xml"]:
+    allowed.add(p)
+bad = []
+for line in r.stdout.splitlines():
+    if not line.strip():
+        continue
+    p = line[3:].strip()
+    if p in allowed:
+        continue
+    if p.startswith("app/src/main/res/values-"):
+        continue
+    bad.append(p)
+check(len(bad) == 0, "scope: no unexpected dirty files (bad=%d)" % len(bad))
 
 if fail:
     print("GATES FAILED: %d" % len(fail))
@@ -948,4 +1084,4 @@ if fail:
 print("ALL GATES GREEN")
 PYEOF
 
-echo "== phase 18: done =="
+echo "== phase 19: done =="
