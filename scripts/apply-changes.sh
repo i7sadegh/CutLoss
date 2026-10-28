@@ -1,28 +1,34 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 23 -- 5 user items (corner behaviour + glyph weights +
-# top-bar text size + global mute honouring in the export plan)
+# CutLoss phase 24 -- reference-image retune of the three UI groups the
+# user measured on the sample editor (two 1080x2412 screenshots, read at
+# 420dpi / 2.625x, strip = 144px = 55dp):
 #
-# User requests (after phase 22):
-#   1. Track corners: ROUNDED only while a clip is UNSELECTED; the
-#      SELECTED clip (trim handles visible on the left/right edges)
-#      must draw SHARP corners - phase 21/22 rounded everything.
-#   2. The + glyph in the timeline add-media tile is still too big -
-#      shrink it again (padding 10dp -> 12dp, ink ~28% of the tile).
-#   3. The glyphs inside the between-clips transition button must NOT
-#      read bold/thick: the cut bar slims 3dp -> 2dp and the bowtie
-#      becomes a 1dp stroked outline instead of a filled shape.
-#   4. The Save and Cancel labels in the top bar grow: 15sp -> 17sp.
-#   5. Pressing the speaker (mute) button must produce a MUTE final
-#      output: no "-map 0:a:0" anywhere in the join/concat stage. The
-#      real planner already gated its concat; this phase extends the
-#      gate to every per-segment command, the transition pieces, the
-#      rotation remuxes, and the export dialog's command preview.
+#   1. The + add-media tile: the sample tile is 68px = 26dp (incl. its
+#      1.5dp border) with a 9dp plus glyph whose arms are ~1.7dp; the
+#      current 36dp tile with a 12dp glyph reads big. -> tile 26dp,
+#      padding 8dp (glyph ink ~8.3dp), and the ic_add_thin_24 arms widen
+#      2 -> 4 viewport units (arm/ink 20% = the sample's 19%) so the
+#      stroke no longer renders hairline at the smaller size. The tile
+#      radius stays 4dp and the border 1.5dp - both already match.
+#   2. Track radius, both states: the sample's UNSELECTED strip corner
+#      is ~4px = 2.8% of the strip height (barely rounded), and its
+#      SELECTED trim-handle outer corners are ~10.5px = 7.3% (small
+#      radius, not the phase-23 fully-sharp frame). -> every 22%-of-
+#      height radius retunes: unselected silhouettes 3%, selected
+#      frames + ALL trim-handle outer corners 7% (main and secondary
+#      tracks now share one handle path), and the VEA segment outline
+#      follows (selected 7% so thumbnails never poke out behind the
+#      rounded handles, unselected 3%).
+#   3. Cancel / Save pills: the sample pills are 201x84px = 76x32dp
+#      with fully-rounded 16dp ends and ~17sp labels. -> height
+#      40dp -> 32dp, Save width 96dp -> 76dp, Cancel padding
+#      22dp -> 15dp (pill ~77dp), pill radius 20dp -> 16dp. The 17sp
+#      labels already match the sample - unchanged.
 #
-# Files: activity_video_editing.xml, ic_transition_cut_24.xml,
-#        ic_transition_bowtie_24.xml, VideoEditingActivity.kt,
-#        TrackTrimView.kt, SmartExportPlanner.kt,
-#        ExportSettingsDialog.kt.
+# Files: activity_video_editing.xml, ic_add_thin_24.xml,
+#        bg_cancel_pill.xml, bg_save_pill.xml, TrackTrimView.kt,
+#        VideoEditingActivity.kt.
 #
 # Idempotent: re-running skips anything already applied.
 # Apply + build: upload as scripts/apply-changes.sh; the apply-and-build
@@ -30,21 +36,32 @@
 ###############################################################################
 set -euo pipefail
 
+# ASCII purity of this script itself (spaces only, no tabs, no unicode)
+if LC_ALL=C grep -qn '[^ -~]' "$0"; then
+  echo "FATAL: non-ascii byte in this script"
+  exit 1
+fi
+
 LAY="app/src/main/res/layout/activity_video_editing.xml"
-TBTN="app/src/main/res/layout/item_transition_button.xml"
 VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 TTV="app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 PLAN="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-DLG="app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
 
-for f in "$LAY" "$TBTN" "$VEA" "$TTV" "$PLAN" "$DLG"; do
+for f in "$LAY" "$VEA" "$TTV" "$PLAN" \
+         "app/src/main/res/drawable/ic_add_thin_24.xml" \
+         "app/src/main/res/drawable/bg_cancel_pill.xml" \
+         "app/src/main/res/drawable/bg_save_pill.xml" \
+         "app/src/main/res/drawable/bg_add_media_tile.xml" \
+         "app/src/main/res/drawable/ic_transition_cut_24.xml" \
+         "app/src/main/res/drawable/ic_transition_bowtie_24.xml" \
+         "app/src/main/res/values/themes.xml"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: $f not found - run from the repository root at the expected commit"
     exit 1
   fi
 done
 
-echo "== phase 23: applying the 5 user items =="
+echo "== phase 24: applying the reference-image retune =="
 
 python3 - <<'PYEOF'
 import os
@@ -54,12 +71,11 @@ import xml.etree.ElementTree as ET
 from collections import Counter
 
 LAY = "app/src/main/res/layout/activity_video_editing.xml"
-TBTN = "app/src/main/res/layout/item_transition_button.xml"
 VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 TTV = "app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 PLAN = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-DLG = "app/src/main/java/com/tharunbirla/librecuts/ExportSettingsDialog.kt"
 D = "app/src/main/res/drawable/"
+THEMES = "app/src/main/res/values/themes.xml"
 
 edits_applied = 0
 edits_skipped = 0
@@ -99,28 +115,9 @@ def apply_edit(path, old, new, label):
     print("  [applied] " + label)
 
 
-def apply_replace_all(path, old, new, expect, label):
-    """Count-based idempotent multi-site replacement."""
-    global edits_applied, edits_skipped
-    src = rd(path)
-    c_old = cnt(src, old)
-    c_new = cnt(src, new)
-    if c_old == 0 and c_new == expect:
-        edits_skipped += 1
-        print("  [skip]    " + label)
-        return
-    if c_old == expect and c_new == 0:
-        wr(path, src.replace(old, new))
-        edits_applied += 1
-        print("  [applied] " + label)
-        return
-    FAILED.append(label + " (old " + str(c_old) + "/new " + str(c_new) + ")")
-    print("  [FAIL]    " + label + " (old " + str(c_old) + "/new " + str(c_new) + ")")
-
-
 def ensure_drawable(name, old_marks, content, label):
-    """Rewrite a small drawable when it still carries the pre-phase-23
-    marks; skip when the phase-23 bytes are already in place."""
+    """Rewrite a small drawable when it still carries its pre-phase-24
+    marks; skip when the phase-24 bytes are already in place."""
     global edits_applied, edits_skipped
     p = D + name
     cur = rd(p)
@@ -138,498 +135,284 @@ def ensure_drawable(name, old_marks, content, label):
 
 
 # =========================================================================
-# ITEM 1 - track corners: sharp while selected, rounded while not
+# EDITS
 # =========================================================================
 
-# 1a. TrackTrimView: the main-track selected+trim frame goes sharp
+# -- item 1: the + tile ----------------------------------------------------
+
+apply_edit(
+    LAY,
+    '<!-- phase 23: plus glyph shrunk again - padding 10dp ->\n'
+    '                     12dp so the glyph ink lands at ~28% of the 36dp tile\n'
+    '                     (the 10dp form still read big per the user) -->\n'
+    '                <ImageButton\n'
+    '                    android:id="@+id/btnTimelineAdd"\n'
+    '                    android:layout_width="36dp"\n'
+    '                    android:layout_height="36dp"\n'
+    '                    android:background="@drawable/bg_add_media_tile"\n'
+    '                    android:src="@drawable/ic_add_thin_24"\n'
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="12dp"\n'
+    '                    app:tint="@color/textColor" />',
+    '<!-- phase 24: reference retune - the tile shrinks to the sample\n'
+    '                     editor\'s 26dp (68px at 420dpi, ~47% of the track\n'
+    '                     height) and the padding drops to 8dp so the glyph\n'
+    '                     ink lands at ~8dp of the tile (sample: a 9dp glyph\n'
+    '                     inside a 26dp tile) -->\n'
+    '                <ImageButton\n'
+    '                    android:id="@+id/btnTimelineAdd"\n'
+    '                    android:layout_width="26dp"\n'
+    '                    android:layout_height="26dp"\n'
+    '                    android:background="@drawable/bg_add_media_tile"\n'
+    '                    android:src="@drawable/ic_add_thin_24"\n'
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="8dp"\n'
+    '                    app:tint="@color/textColor" />',
+    "LAY: add tile 36dp -> 26dp, padding 12dp -> 8dp")
+
+ensure_drawable(
+    "ic_add_thin_24.xml",
+    ["phase 22: the non-bold plus",
+     "M11,2L13,2L13,11L22,11L22,13L13,13L13,22L11,22L11,13L2,13L2,11L11,11Z"],
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<!-- phase 24: reference retune - the arms widen to 4 of the 20\n'
+    '     viewport units (arm/ink 20%, the sample editor\'s plus reads\n'
+    '     ~1.7dp arms on a 9dp glyph); the phase-22 2-unit arms rendered\n'
+    '     hairline-thin at the smaller 26dp tile, and the glyph span\n'
+    '     stays 20 of the 24 viewport units -->\n'
+    '<vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
+    '    android:width="24dp"\n'
+    '    android:height="24dp"\n'
+    '    android:viewportWidth="24"\n'
+    '    android:viewportHeight="24">\n'
+    '    <path\n'
+    '        android:fillColor="#FFFFFF"\n'
+    '        android:pathData="M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z" />\n'
+    '</vector>\n',
+    "drawable: ic_add_thin_24 arms 2 -> 4 units")
+
+# -- item 2: track radius retune -------------------------------------------
+
 apply_edit(
     TTV,
-    """                    // phase 21: reference track frame - a white rounded
-                    // rectangle stroke around the active range (phase
-                    // 20's sharp corners never matched the sample);
-                    // stroke and radius scale with the track height so
-                    // the silhouette holds at every density
-                    borderPaint.color = Color.parseColor("#FFFFFF")
-                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
-                    val frameInset = borderPaint.strokeWidth / 2f
-                    val frameRadius = height * 0.22f
-                    val frameRect = RectF(
-                        rectF.left + frameInset, rectF.top + frameInset,
-                        rectF.right - frameInset, rectF.bottom - frameInset
-                    )
-                    canvas.drawRoundRect(frameRect, frameRadius, frameRadius, borderPaint)""",
-    """                    // phase 23: the selected clip draws SHARP corners - the
-                    // trim frame and the handle blocks read as one clean
-                    // rectangle; the rounded corners return the moment the
-                    // selection drops (phase 21 drew this frame rounded,
-                    // which the user only wanted on unselected clips)
-                    borderPaint.color = Color.parseColor("#FFFFFF")
-                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
-                    val frameInset = borderPaint.strokeWidth / 2f
-                    val frameRect = RectF(
-                        rectF.left + frameInset, rectF.top + frameInset,
-                        rectF.right - frameInset, rectF.bottom - frameInset
-                    )
-                    canvas.drawRect(frameRect, borderPaint)""",
-    "TTV: selected main-track frame sharp (drawRect)")
+    '                    // phase 23: the selected clip draws SHARP corners - the\n'
+    '                    // trim frame and the handle blocks read as one clean\n'
+    '                    // rectangle; the rounded corners return the moment the\n'
+    '                    // selection drops (phase 21 drew this frame rounded,\n'
+    '                    // which the user only wanted on unselected clips)\n'
+    '                    borderPaint.color = Color.parseColor("#FFFFFF")\n'
+    '                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)\n'
+    '                    val frameInset = borderPaint.strokeWidth / 2f\n'
+    '                    val frameRect = RectF(\n'
+    '                        rectF.left + frameInset, rectF.top + frameInset,\n'
+    '                        rectF.right - frameInset, rectF.bottom - frameInset\n'
+    '                    )\n'
+    '                    canvas.drawRect(frameRect, borderPaint)',
+    '                    // phase 24: reference retune - the selected clip\'s trim\n'
+    '                    // frame is a rectangle with a SMALL radius (7% of the\n'
+    '                    // track height - the handle-corner radius measured on\n'
+    '                    // the sample editor\'s selected clip); phase 23\'s fully\n'
+    '                    // sharp frame read too hard next to the sample\'s\n'
+    '                    // barely-rounded 3% unselected silhouette\n'
+    '                    borderPaint.color = Color.parseColor("#FFFFFF")\n'
+    '                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)\n'
+    '                    val frameInset = borderPaint.strokeWidth / 2f\n'
+    '                    val frameRect = RectF(\n'
+    '                        rectF.left + frameInset, rectF.top + frameInset,\n'
+    '                        rectF.right - frameInset, rectF.bottom - frameInset\n'
+    '                    )\n'
+    '                    canvas.drawRoundRect(frameRect, height * 0.07f, height * 0.07f, borderPaint)',
+    "TTV: selected main trim frame sharp -> 7% radius")
 
-# 1b. TrackTrimView: main-track handles become plain rectangles; the
-# secondary tracks keep the phase-21 rounded handle look
 apply_edit(
     TTV,
-    """        if (isTrimEnabled) {
-            val currentHandleWidth = handleWidth * currentHandleScale
-            // phase 21: reference trim handles - the frame's left and
-            // right edges become thick white grab zones whose OUTER
-            // corners carry the frame radius so they fuse seamlessly
-            // into the rounded outline; amber is dropped so the whole
-            // frame reads white like the sample (grip marks stay)
-            handlePaint.color = Color.WHITE
-            val handleRadius = height * 0.22f
-            val handlePath = android.graphics.Path()
-            // Left handle - round only the outer (left) corners
-            handlePath.addRoundRect(
-                RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),
-                floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),
-                android.graphics.Path.Direction.CW
-            )
-            // Right handle - round only the outer (right) corners
-            handlePath.addRoundRect(
-                RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),
-                floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),
-                android.graphics.Path.Direction.CW
-            )
-            canvas.drawPath(handlePath, handlePaint)""",
-    """        if (isTrimEnabled) {
-            val currentHandleWidth = handleWidth * currentHandleScale
-            handlePaint.color = Color.WHITE
-            if (isMainVideoTrack) {
-                // phase 23: main-track trim handles are plain sharp
-                // rectangles - while the clip is selected the whole
-                // silhouette (frame + handle blocks) reads as one clean
-                // rectangle; the rounded corners live only on the
-                // UNSELECTED clip's thumbnail outline (grip marks stay)
-                canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)
-                canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)
-            } else {
-                // phase 21 look kept for secondary tracks: handle blocks
-                // with rounded OUTER corners fusing into their rounded
-                // outlines (audio / text / image tracks)
-                val handleRadius = height * 0.22f
-                val handlePath = android.graphics.Path()
-                // Left handle - round only the outer (left) corners
-                handlePath.addRoundRect(
-                    RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),
-                    floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),
-                    android.graphics.Path.Direction.CW
-                )
-                // Right handle - round only the outer (right) corners
-                handlePath.addRoundRect(
-                    RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),
-                    floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),
-                    android.graphics.Path.Direction.CW
-                )
-                canvas.drawPath(handlePath, handlePaint)
-            }""",
-    "TTV: main-track handles sharp, secondary keep rounded")
+    'val selRadius = height * 0.22f',
+    'val selRadius = height * 0.07f',
+    "TTV: selected main no-trim radius 22% -> 7%")
 
-# 1c. VideoEditingActivity: the thumbnail outline rounds only while the
-# clip is UNSELECTED; the selected clip clips to a square
+apply_edit(
+    TTV,
+    'canvas.drawRoundRect(rectF, height * 0.22f, height * 0.22f, trackPaint)',
+    'canvas.drawRoundRect(rectF, height * 0.03f, height * 0.03f, trackPaint)',
+    "TTV: secondary track fill radius 22% -> 3%")
+
+apply_edit(
+    TTV,
+    '                // phase 21: white rounded frame on every selected track\n'
+    '                // (selection still reads via the amber tint below)\n'
+    '                val trackRadius = height * 0.22f',
+    '                // phase 21: white rounded frame on every selected track\n'
+    '                // (selection still reads via the amber tint below);\n'
+    '                // phase 24: radius retuned 22% -> 7% of the track height\n'
+    '                val trackRadius = height * 0.07f',
+    "TTV: secondary selected frame radius 22% -> 7%")
+
+apply_edit(
+    TTV,
+    '                // phase 21: unselected tracks keep a soft white rounded\n'
+    '                // outline, slightly more present than the old 20% hairline\n'
+    '                val trackRadius = height * 0.22f',
+    '                // phase 21: unselected tracks keep a soft white rounded\n'
+    '                // outline, slightly more present than the old 20% hairline;\n'
+    '                // phase 24: radius retuned 22% -> 3% (the sample editor\'s\n'
+    '                // barely-rounded unselected strip)\n'
+    '                val trackRadius = height * 0.03f',
+    "TTV: secondary unselected outline radius 22% -> 3%")
+
+apply_edit(
+    TTV,
+    '            handlePaint.color = Color.WHITE\n'
+    '            if (isMainVideoTrack) {\n'
+    '                // phase 23: main-track trim handles are plain sharp\n'
+    '                // rectangles - while the clip is selected the whole\n'
+    '                // silhouette (frame + handle blocks) reads as one clean\n'
+    '                // rectangle; the rounded corners live only on the\n'
+    '                // UNSELECTED clip\'s thumbnail outline (grip marks stay)\n'
+    '                canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)\n'
+    '                canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)\n'
+    '            } else {\n'
+    '                // phase 21 look kept for secondary tracks: handle blocks\n'
+    '                // with rounded OUTER corners fusing into their rounded\n'
+    '                // outlines (audio / text / image tracks)\n'
+    '                val handleRadius = height * 0.22f\n'
+    '                val handlePath = android.graphics.Path()\n'
+    '                // Left handle - round only the outer (left) corners\n'
+    '                handlePath.addRoundRect(\n'
+    '                    RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),\n'
+    '                    floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),\n'
+    '                    android.graphics.Path.Direction.CW\n'
+    '                )\n'
+    '                // Right handle - round only the outer (right) corners\n'
+    '                handlePath.addRoundRect(\n'
+    '                    RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),\n'
+    '                    floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),\n'
+    '                    android.graphics.Path.Direction.CW\n'
+    '                )\n'
+    '                canvas.drawPath(handlePath, handlePaint)\n'
+    '            }',
+    '            handlePaint.color = Color.WHITE\n'
+    '            // phase 24: reference retune - every trim handle (main and\n'
+    '            // secondary tracks alike) is a full-height white block whose\n'
+    '            // OUTER corners carry the same small radius as the trim frame\n'
+    '            // (7% of the track height, measured on the sample editor\'s\n'
+    '            // selected clip); the inner edges stay straight against the\n'
+    '            // thumbnails (phase 23 drew the main-track handles fully\n'
+    '            // sharp, phase 21 rounded them at the oversized 22% radius)\n'
+    '            val handleRadius = height * 0.07f\n'
+    '            val handlePath = android.graphics.Path()\n'
+    '            // Left handle - round only the outer (left) corners\n'
+    '            handlePath.addRoundRect(\n'
+    '                RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),\n'
+    '                floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),\n'
+    '                android.graphics.Path.Direction.CW\n'
+    '            )\n'
+    '            // Right handle - round only the outer (right) corners\n'
+    '            handlePath.addRoundRect(\n'
+    '                RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),\n'
+    '                floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),\n'
+    '                android.graphics.Path.Direction.CW\n'
+    '            )\n'
+    '            canvas.drawPath(handlePath, handlePaint)',
+    "TTV: handles unified - rounded outer corners at 7% (both track kinds)")
+
 apply_edit(
     VEA,
-    """            // phase 22: clip the clip's thumbnails to the rounded
-            // silhouette of the white trim frame (the same 22%-of-height
-            // radius TrackTrimView draws for the frame and the handle
-            // outer corners); without it the square thumbnail corners
-            // poke out under the rounded handle corners
-            segmentView.clipToOutline = true
-            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, view.height * 0.22f)
-                }
-            }
-            segmentView.post { segmentView.invalidateOutline() }""",
-    """            // phase 23: the rounded thumbnail silhouette shows only while
-            // the clip is UNSELECTED (the user's "corners visible" state);
-            // the selected clip goes square so the sharp trim frame and
-            // the handle blocks read as one clean rectangle (phase 22
-            // rounded this outline unconditionally)
-            val segmentSelected = selectedVideoIndex == index
-            segmentView.clipToOutline = true
-            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f
-                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)
-                }
-            }
-            segmentView.post { segmentView.invalidateOutline() }""",
-    "VEA: segment outline conditional on selection")
+    '            // phase 23: the rounded thumbnail silhouette shows only while\n'
+    '            // the clip is UNSELECTED (the user\'s "corners visible" state);\n'
+    '            // the selected clip goes square so the sharp trim frame and\n'
+    '            // the handle blocks read as one clean rectangle (phase 22\n'
+    '            // rounded this outline unconditionally)\n'
+    '            val segmentSelected = selectedVideoIndex == index\n'
+    '            segmentView.clipToOutline = true\n'
+    '            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {\n'
+    '                override fun getOutline(view: View, outline: android.graphics.Outline) {\n'
+    '                    val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f\n'
+    '                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)\n'
+    '                }\n'
+    '            }',
+    '            // phase 24: reference retune - the UNSELECTED clip keeps a\n'
+    '            // barely-rounded silhouette (3% of the height, the sample\n'
+    '            // editor\'s ~4px-on-55dp corner) while the SELECTED clip\'s\n'
+    '            // silhouette matches the 7% handle-corner radius so the\n'
+    '            // thumbnails never poke out behind the rounded handles\n'
+    '            val segmentSelected = selectedVideoIndex == index\n'
+    '            segmentView.clipToOutline = true\n'
+    '            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {\n'
+    '                override fun getOutline(view: View, outline: android.graphics.Outline) {\n'
+    '                    val outlineRadius = if (segmentSelected) view.height * 0.07f else view.height * 0.03f\n'
+    '                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)\n'
+    '                }\n'
+    '            }',
+    "VEA: segment outline radius - selected 7% / unselected 3%")
 
-# =========================================================================
-# ITEM 2 - the + glyph shrinks again (padding 10dp -> 12dp)
-# =========================================================================
+# -- item 3: Cancel / Save pills -------------------------------------------
 
 apply_edit(
     LAY,
-    """                <!-- phase 21: plus glyph shrunk - padding 8dp -> 10dp so
-                     the glyph lands at ~37% of the tile (the reference
-                     ratio) instead of dominating the rounded square -->
-                <ImageButton
-                    android:id="@+id/btnTimelineAdd"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:background="@drawable/bg_add_media_tile"
-                    android:src="@drawable/ic_add_thin_24"
-                    android:contentDescription="Add Media"
-                    android:elevation="8dp"
-                    android:padding="10dp"
-                    app:tint="@color/textColor" />""",
-    """                <!-- phase 23: plus glyph shrunk again - padding 10dp ->
-                     12dp so the glyph ink lands at ~28% of the 36dp tile
-                     (the 10dp form still read big per the user) -->
-                <ImageButton
-                    android:id="@+id/btnTimelineAdd"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
-                    android:background="@drawable/bg_add_media_tile"
-                    android:src="@drawable/ic_add_thin_24"
-                    android:contentDescription="Add Media"
-                    android:elevation="8dp"
-                    android:padding="12dp"
-                    app:tint="@color/textColor" />""",
-    "LAY: btnTimelineAdd padding 10dp -> 12dp")
+    '            <LinearLayout\n'
+    '                android:id="@+id/btnClose"\n'
+    '                android:layout_width="wrap_content"\n'
+    '                android:layout_height="40dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:gravity="center"\n'
+    '                android:paddingHorizontal="22dp"\n'
+    '                android:background="@drawable/bg_cancel_pill"',
+    '            <LinearLayout\n'
+    '                android:id="@+id/btnClose"\n'
+    '                android:layout_width="wrap_content"\n'
+    '                android:layout_height="32dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:gravity="center"\n'
+    '                android:paddingHorizontal="15dp"\n'
+    '                android:background="@drawable/bg_cancel_pill"',
+    "LAY: Cancel pill height 40dp -> 32dp, padding 22dp -> 15dp")
 
-# =========================================================================
-# ITEM 3 - transition glyphs stop reading bold
-# =========================================================================
+apply_edit(
+    LAY,
+    '            <LinearLayout\n'
+    '                android:id="@+id/layoutSaveSplit"\n'
+    '                android:layout_width="96dp"\n'
+    '                android:layout_height="40dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:background="@drawable/bg_save_pill"',
+    '            <LinearLayout\n'
+    '                android:id="@+id/layoutSaveSplit"\n'
+    '                android:layout_width="76dp"\n'
+    '                android:layout_height="32dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:background="@drawable/bg_save_pill"',
+    "LAY: Save pill 96x40dp -> 76x32dp")
 
 ensure_drawable(
-    "ic_transition_cut_24.xml",
-    ['M10.5,6L13.5,6L13.5,18L10.5,18Z', 'android:fillColor="#000000"'],
-    """<?xml version="1.0" encoding="utf-8"?>
-<!-- phase 23: empty-state transition glyph - the cut bar slimmed from
-     3dp to 2dp so the mark reads thin instead of bold (user request;
-     the 24dp box and the 12dp height stay unchanged) -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:fillColor="#000000"
-        android:pathData="M11,6L13,6L13,18L11,18Z" />
-</vector>
-""",
-    "drawable: cut bar slimmed to 2dp")
+    "bg_cancel_pill.xml",
+    ["phase 21: reference top-bar Cancel pill", '<corners android:radius="20dp" />'],
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<!-- phase 24: reference retune - the pill shrinks to the sample\n'
+    '     editor\'s 32dp height, so the full-round radius is 16dp now\n'
+    '     (phase 21: charcoal #333333 capsule behind white text) -->\n'
+    '<shape xmlns:android="http://schemas.android.com/apk/res/android"\n'
+    '    android:shape="rectangle">\n'
+    '    <solid android:color="#333333" />\n'
+    '    <corners android:radius="16dp" />\n'
+    '</shape>\n',
+    "drawable: bg_cancel_pill radius 20dp -> 16dp")
 
 ensure_drawable(
-    "ic_transition_bowtie_24.xml",
-    ['M6.5,8.5L12,12L6.5,15.5Z M17.5,8.5L12,12L17.5,15.5Z',
-     'android:fillColor="#000000"'],
-    """<?xml version="1.0" encoding="utf-8"?>
-<!-- phase 23: applied-transition glyph - the bowtie switched from a
-     filled black shape to a 1dp-thin stroked outline so it stops
-     reading bold (user request); the two triangles still meet at the
-     center point, now drawn a touch taller (8dp) so the thin stroke
-     keeps the same visual presence -->
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
-    <path
-        android:strokeColor="#000000"
-        android:strokeWidth="1"
-        android:strokeLineJoin="round"
-        android:pathData="M6.5,8L12,12L6.5,16Z M17.5,8L12,12L17.5,16Z" />
-</vector>
-""",
-    "drawable: bowtie as 1dp outline")
+    "bg_save_pill.xml",
+    ["phase 21: reference top-bar Save pill", '<corners android:radius="20dp" />'],
+    '<?xml version="1.0" encoding="utf-8"?>\n'
+    '<!-- phase 24: reference retune - the pill shrinks to the sample\n'
+    '     editor\'s 32dp height, so the full-round radius is 16dp now\n'
+    '     (phase 21: vivid amber capsule behind bold black text) -->\n'
+    '<shape xmlns:android="http://schemas.android.com/apk/res/android"\n'
+    '    android:shape="rectangle">\n'
+    '    <solid android:color="@color/colorPrimary" />\n'
+    '    <corners android:radius="16dp" />\n'
+    '</shape>\n',
+    "drawable: bg_save_pill radius 20dp -> 16dp")
 
-# =========================================================================
-# ITEM 4 - Save / Cancel labels grow (15sp -> 17sp)
-# =========================================================================
-
-apply_edit(
-    LAY,
-    """                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/cancel"
-                    android:textColor="@color/textColor"
-                    android:textSize="15sp"
-                    android:fontFamily="sans-serif-medium" />""",
-    """                <TextView
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:text="@string/cancel"
-                    android:textColor="@color/textColor"
-                    android:textSize="17sp"
-                    android:fontFamily="sans-serif-medium" />""",
-    "LAY: Cancel label 15sp -> 17sp")
-
-apply_edit(
-    LAY,
-    """                <TextView
-                    android:id="@+id/btnSaveText"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:gravity="center"
-                    android:text="@string/save"
-                    android:textColor="@color/onAmber"
-                    android:fontFamily="sans-serif"
-                    android:textStyle="bold"
-                    android:textSize="15sp\"""",
-    """                <TextView
-                    android:id="@+id/btnSaveText"
-                    android:layout_width="match_parent"
-                    android:layout_height="match_parent"
-                    android:gravity="center"
-                    android:text="@string/save"
-                    android:textColor="@color/onAmber"
-                    android:fontFamily="sans-serif"
-                    android:textStyle="bold"
-                    android:textSize="17sp\"""",
-    "LAY: Save label 15sp -> 17sp")
-
-# =========================================================================
-# ITEM 5 - the speaker button's global mute reaches every command
-# =========================================================================
-
-# 5a. SmartAnalysis learns about the global mute so the export dialog's
-# live preview can honour it too
-apply_edit(
-    PLAN,
-    """    data class SmartAnalysis(
-        val clips: List<SmartClipInfo>,
-        val transitions: Map<Int, Long>,
-        val hasAudio: Boolean,
-        val displayHeight: Int,""",
-    """    data class SmartAnalysis(
-        val clips: List<SmartClipInfo>,
-        val transitions: Map<Int, Long>,
-        val hasAudio: Boolean,
-        val muted: Boolean,
-        val displayHeight: Int,""",
-    "PLAN: SmartAnalysis.muted field")
-
-apply_edit(
-    PLAN,
-    """        fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", "", reason)""",
-    """        fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, false, 0, 0, 0, 0, "", "", "", reason)""",
-    "PLAN: fail() positional args widened")
-
-apply_edit(
-    PLAN,
-    """            transitions = clampedTransitions,
-            hasAudio = audioRef != null,
-            displayHeight = displayHeight,""",
-    """            transitions = clampedTransitions,
-            hasAudio = audioRef != null,
-            muted = ops.any { it is EditOperation.MuteAudio },
-            displayHeight = displayHeight,""",
-    "PLAN: analysis populates muted")
-
-# 5b. transition piece: no real audio, no silence track, no audio map,
-# no audio encoder while the speaker button muted the project
-apply_edit(
-    PLAN,
-    """            val realAudio = planHasAudio && right.params.hasAudio && !right.muted""",
-    """            val realAudio = planHasAudio && !audioMuted && right.params.hasAudio && !right.muted""",
-    "PLAN: transition piece realAudio honours the global mute")
-
-apply_edit(
-    PLAN,
-    """            } else if (planHasAudio) {
-                sb.append(" -f lavfi -t ")
-                    .append(String.format(java.util.Locale.US, "%.6f", dSec))
-                sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-            }
-            sb.append(" -map 0:v:0")
-            if (planHasAudio) sb.append(" -map 1:a:0")
-            sb.append(" -vf \\\"").append(vf).append("\\\"")
-            sb.append(" ").append(transVEnc)
-            if (planHasAudio) sb.append(" ").append(pieceAEnc)""",
-    """            } else if (planHasAudio && !audioMuted) {
-                sb.append(" -f lavfi -t ")
-                    .append(String.format(java.util.Locale.US, "%.6f", dSec))
-                sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
-            }
-            sb.append(" -map 0:v:0")
-            if (planHasAudio && !audioMuted) sb.append(" -map 1:a:0")
-            sb.append(" -vf \\\"").append(vf).append("\\\"")
-            sb.append(" ").append(transVEnc)
-            if (planHasAudio && !audioMuted) sb.append(" ").append(pieceAEnc)""",
-    "PLAN: transition piece audio maps gated")
-
-# 5c. transition rotation remux: a video-only tmp must not map 0:a:0
-# (ffmpeg fails on a missing stream - this would have broken every
-# rotated muted export)
-apply_edit(
-    PLAN,
-    """                rot.append(" -map 0:v:0")
-                if (planHasAudio) rot.append(" -map 0:a:0")
-                rot.append(" -c copy \\\"").append(seg.absolutePath).append("\\\"")""",
-    """                rot.append(" -map 0:v:0")
-                if (planHasAudio && !audioMuted) rot.append(" -map 0:a:0")
-                rot.append(" -c copy \\\"").append(seg.absolutePath).append("\\\"")""",
-    "PLAN: transition rotation remux gated")
-
-# 5d. per-clip segments: silence generation and audio mapping both stop
-# while muted (video-only segments; the concat already mapped video only)
-apply_edit(
-    PLAN,
-    """            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)""",
-    """            val silenceAudio = planHasAudio && !audioMuted && (!clip.params.hasAudio || clip.muted)""",
-    "PLAN: silenceAudio honours the global mute")
-
-apply_edit(
-    PLAN,
-    """                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0")
-                }
-                if (scaleFilter != null) {""",
-    """                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio && !audioMuted) {
-                    sb.append(" -map 0:a:0")
-                }
-                if (scaleFilter != null) {""",
-    "PLAN: per-segment encode audio map gated")
-
-apply_edit(
-    PLAN,
-    """                sb.append(" ").append(vEncSimple)
-                if (silenceAudio) {
-                    sb.append(" ").append(aEncSilence)
-                } else if (planHasAudio) {
-                    sb.append(" ").append(aEncSimple)
-                }
-                if (preserveMetadata) sb.append(" -map_metadata 0")""",
-    """                sb.append(" ").append(vEncSimple)
-                if (silenceAudio) {
-                    sb.append(" ").append(aEncSilence)
-                } else if (planHasAudio && !audioMuted) {
-                    sb.append(" ").append(aEncSimple)
-                }
-                if (preserveMetadata) sb.append(" -map_metadata 0")""",
-    "PLAN: per-segment encode audio flags gated")
-
-apply_edit(
-    PLAN,
-    """                } else if (planHasAudio) {
-                    sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
-                } else {
-                    sb.append(" -map 0:v:0 -c copy")
-                }""",
-    """                } else if (planHasAudio && !audioMuted) {
-                    sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
-                } else {
-                    sb.append(" -map 0:v:0 -c copy")
-                }""",
-    "PLAN: full-range stream copy gated")
-
-apply_edit(
-    PLAN,
-    """                } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0 -c copy -avoid_negative_ts make_zero")
-                } else {""",
-    """                } else if (planHasAudio && !audioMuted) {
-                    sb.append(" -map 0:a:0 -c copy -avoid_negative_ts make_zero")
-                } else {""",
-    "PLAN: keyframe cut gated")
-
-apply_edit(
-    PLAN,
-    """                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
-                    sb.append(" -map 0:a:0")
-                }
-                sb.append(" -vf \\\"").append(fpsFilter)""",
-    """                sb.append(" -map 0:v:0")
-                if (silenceAudio) {
-                    sb.append(" -map 1:a:0")
-                } else if (planHasAudio && !audioMuted) {
-                    sb.append(" -map 0:a:0")
-                }
-                sb.append(" -vf \\\"").append(fpsFilter)""",
-    "PLAN: span re-encode audio map gated")
-
-apply_edit(
-    PLAN,
-    """                sb.append(enc)
-                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)""",
-    """                sb.append(enc)
-                if (silenceAudio || (planHasAudio && !audioMuted)) sb.append(" ").append(aEnc)""",
-    "PLAN: span re-encode audio flags gated")
-
-# 5e. ExportSettingsDialog: the command preview shows exactly what the
-# planner will run - no -map 0:a:0, no audio flags, plus a mute note
-apply_replace_all(
-    DLG,
-    'if (a.hasAudio) sb.append(" -map 0:a:0")',
-    'if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")',
-    6,
-    "DLG: all 6 preview -map 0:a:0 sites gated on mute")
-
-apply_replace_all(
-    DLG,
-    'if (a.hasAudio) sb.append(" ").append(aFlags)',
-    'if (a.hasAudio && !a.muted) sb.append(" ").append(aFlags)',
-    2,
-    "DLG: both preview audio-flag sites gated on mute")
-
-apply_edit(
-    DLG,
-    """            if (a.transitions.isNotEmpty()) {
-                sb.append("\\ntransitions apply only to the merged single-file export")
-            }
-            return sb.toString()""",
-    """            if (a.transitions.isNotEmpty()) {
-                sb.append("\\ntransitions apply only to the merged single-file export")
-            }
-            // phase 23: mute note - every separate output drops its audio
-            if (a.muted) sb.append("\\n(muted: original audio muted - no audio track in the output)")
-            return sb.toString()""",
-    "DLG: separate-files summary mute note")
-
-apply_edit(
-    DLG,
-    """        sb.append("; final assembly is a lossless concat)")
-        return sb.toString()""",
-    """        sb.append("; final assembly is a lossless concat)")
-        // phase 23: the speaker button's global mute drops the audio
-        // track from every displayed command too (the real planner
-        // already maps video only when MuteAudio is present)
-        if (a.muted) sb.append("\\n(muted: original audio muted - no audio track in the output)")
-        return sb.toString()""",
-    "DLG: copy-summary mute note")
-
-apply_edit(
-    DLG,
-    """        sb.append(")")
-        return sb.toString()
-    }
-
-    /** Size estimate that follows the smart plan (copied vs re-encoded parts). */""",
-    """        sb.append(")")
-        // phase 23: mute note - the commands above carry no audio maps
-        if (a.muted) sb.append("\\n(muted: original audio muted - no audio track in the output)")
-        return sb.toString()
-    }
-
-    /** Size estimate that follows the smart plan (copied vs re-encoded parts). */""",
-    "DLG: encode-summary mute note")
-
-print("")
 print("edits applied: " + str(edits_applied) + ", skipped: " + str(edits_skipped))
 if FAILED:
     print("EDIT FAILURES: " + str(len(FAILED)))
@@ -657,118 +440,116 @@ def cntf(path, needle):
     return cnt(rd(path), needle)
 
 
-# -- item 1: corners -------------------------------------------------------
+# -- item 1: the + tile ----------------------------------------------------
+L = rd(LAY)
+NEW_TILE = (
+    '<ImageButton\n'
+    '                    android:id="@+id/btnTimelineAdd"\n'
+    '                    android:layout_width="26dp"\n'
+    '                    android:layout_height="26dp"\n'
+    '                    android:background="@drawable/bg_add_media_tile"\n'
+    '                    android:src="@drawable/ic_add_thin_24"\n'
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="8dp"\n'
+    '                    app:tint="@color/textColor" />')
+gate("LAY: add tile is the 26dp form with 8dp padding",
+     cnt(L, NEW_TILE) == 1)
+OLD_TILE = (
+    '<ImageButton\n'
+    '                    android:id="@+id/btnTimelineAdd"\n'
+    '                    android:layout_width="36dp"\n'
+    '                    android:layout_height="36dp"')
+gate("LAY: the 36dp tile form is gone",
+     cnt(L, OLD_TILE) == 0)
+gate("drawable: plus glyph has the 4-unit arms",
+     cntf(D + "ic_add_thin_24.xml", "M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z") == 1
+     and cntf(D + "ic_add_thin_24.xml", "M11,2L13,2L13,11L22,11L22,13L13,13L13,22L11,22L11,13L2,13L2,11L11,11Z") == 0)
+gate("drawable: tile border + radius survive (phase 20/22)",
+     cntf(D + "bg_add_media_tile.xml", 'android:width="1.5dp"') == 1
+     and cntf(D + "bg_add_media_tile.xml", '<corners android:radius="4dp" />') == 1
+     and cntf(D + "bg_add_media_tile.xml", '<solid android:color="#2A2A2A" />') == 1)
+
+# -- item 2: track radius retune -------------------------------------------
 W = rd(TTV)
-gate("TTV: selected main frame is sharp",
-     cnt(W, "canvas.drawRect(frameRect, borderPaint)") == 1)
-gate("TTV: main handles are sharp rectangles",
-     cnt(W, "canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)") == 1
-     and cnt(W, "canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)") == 1)
-gate("TTV: sharp handles only on the main track",
-     cnt(W, "handlePaint.color = Color.WHITE\n            if (isMainVideoTrack) {") == 1)
-gate("TTV: secondary handles keep the rounded phase-21 look",
+gate("TTV: every 22% radius is gone",
+     cnt(W, "height * 0.22f") == 0)
+gate("TTV: four 3% sites (fill x2, unselected outline, hairline stroke)",
+     cnt(W, "height * 0.03f") == 4)
+gate("TTV: five 7% occurrences (frame x2, selRadius, secondary selected, handles)",
+     cnt(W, "height * 0.07f") == 5)
+gate("TTV: selected main trim frame is the rounded 7% form",
+     cnt(W, "canvas.drawRoundRect(frameRect, height * 0.07f, height * 0.07f, borderPaint)") == 1)
+gate("TTV: 7 rounded-rect draw sites, zero plain drawRect left",
+     cnt(W, "canvas.drawRoundRect") == 7 and cnt(W, "canvas.drawRect") == 0)
+gate("TTV: one unified handle path (rounded outer corners)",
      cnt(W, "handlePath.addRoundRect") == 2
-     and cnt(W, "canvas.drawPath(handlePath, handlePaint)") == 1)
-gate("TTV: 6 rounded sites left (was 7), 3 sharp sites (was 0)",
-     cnt(W, "canvas.drawRoundRect") == 6 and cnt(W, "canvas.drawRect") == 3)
-gate("TTV: grip marks survive",
-     cnt(W, "#4D000000") == 1 and cnt(W, "canvas.drawLine") == 7)
+     and cnt(W, "canvas.drawPath(handlePath, handlePaint)") == 1
+     and cnt(W, "val handleRadius = height * 0.07f") == 1)
+gate("TTV: main/secondary handle split removed",
+     cnt(W, "handlePaint.color = Color.WHITE\n            if (isMainVideoTrack) {") == 0
+     and cnt(W, "if (isMainVideoTrack) {") == 1)
 gate("TTV: handleWidth still scales with track height",
      cnt(W, "get() = (height * 0.30f).coerceAtLeast(24f)") == 1)
+gate("TTV: grip marks survive",
+     cnt(W, "#4D000000") == 1)
+gate("TTV: frame stroke widths survive",
+     cnt(W, "(height * 0.05f).coerceAtLeast(4f)") == 3)
 
 V = rd(VEA)
-gate("VEA: segment outline radius conditional on selection",
-     cnt(V, "val segmentSelected = selectedVideoIndex == index") == 1
-     and cnt(V, "val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f") == 1)
-gate("VEA: unconditional rounded outline gone",
-     cnt(V, "outline.setRoundRect(0, 0, view.width, view.height, view.height * 0.22f)") == 0)
+gate("VEA: segment outline radius 7% selected / 3% unselected",
+     cnt(V, "val outlineRadius = if (segmentSelected) view.height * 0.07f else view.height * 0.03f") == 1)
+gate("VEA: the 0f/22% conditional is gone",
+     cnt(V, "if (segmentSelected) 0f else view.height * 0.22f") == 0)
+gate("VEA: selection binding survives",
+     cnt(V, "val segmentSelected = selectedVideoIndex == index") == 1)
 
-# -- item 2: plus glyph ----------------------------------------------------
-L = rd(LAY)
-gate("LAY: add tile padding is 12dp (glyph ~28% of the tile)",
-     cnt(L, 'android:padding="12dp"') == 1)
-gate("LAY: thin plus still wired (phase 22 survival)",
-     cnt(L, "@drawable/ic_add_thin_24") == 1
-     and cnt(L, "@drawable/bg_add_media_tile") == 1)
-
-# -- item 3: transition glyphs ---------------------------------------------
-gate("drawable: cut bar is the 2dp form",
-     cntf(D + "ic_transition_cut_24.xml", "M11,6L13,6L13,18L11,18Z") == 1
-     and cntf(D + "ic_transition_cut_24.xml", "M10.5,6") == 0)
-gate("drawable: bowtie is the stroked outline form",
-     cntf(D + "ic_transition_bowtie_24.xml", 'android:strokeColor="#000000"') == 1
-     and cntf(D + "ic_transition_bowtie_24.xml", 'android:strokeWidth="1"') == 1
-     and cntf(D + "ic_transition_bowtie_24.xml", "M6.5,8L12,12L6.5,16Z M17.5,8L12,12L17.5,16Z") == 1
-     and cntf(D + "ic_transition_bowtie_24.xml", 'android:fillColor="#000000"') == 0)
-gate("transition chip still hosts the glyphs (phase 21 survival)",
-     cntf(TBTN, "@drawable/ic_transition_cut_24") == 1
-     and cntf(TBTN, "@drawable/bg_transition_tile") == 1)
-
-# -- item 4: Save / Cancel text size ---------------------------------------
-gate("LAY: Cancel label is 17sp",
-     cnt(L, 'android:text="@string/cancel"\n                    android:textColor="@color/textColor"\n                    android:textSize="17sp"') == 1)
-gate("LAY: Save label is 17sp",
-     cnt(L, 'android:textStyle="bold"\n                    android:textSize="17sp"') == 1)
-gate("LAY: exactly two 17sp labels (Cancel + Save)",
+# -- item 3: pills ---------------------------------------------------------
+NEW_CANCEL = (
+    '            <LinearLayout\n'
+    '                android:id="@+id/btnClose"\n'
+    '                android:layout_width="wrap_content"\n'
+    '                android:layout_height="32dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:gravity="center"\n'
+    '                android:paddingHorizontal="15dp"')
+NEW_SAVE = (
+    '            <LinearLayout\n'
+    '                android:id="@+id/layoutSaveSplit"\n'
+    '                android:layout_width="76dp"\n'
+    '                android:layout_height="32dp"\n'
+    '                android:orientation="horizontal"\n'
+    '                android:background="@drawable/bg_save_pill"')
+gate("LAY: Cancel pill is the 32dp / 15dp-padding form",
+     cnt(L, NEW_CANCEL) == 1)
+gate("LAY: Save pill is the 76x32dp form",
+     cnt(L, NEW_SAVE) == 1)
+gate("LAY: pill 17sp labels unchanged (sample ~17sp)",
      cnt(L, 'android:textSize="17sp"') == 2)
+gate("drawable: both pill radii are 16dp",
+     cntf(D + "bg_cancel_pill.xml", '<corners android:radius="16dp" />') == 1
+     and cntf(D + "bg_save_pill.xml", '<corners android:radius="16dp" />') == 1)
+gate("drawable: pill fills unchanged",
+     cntf(D + "bg_cancel_pill.xml", '<solid android:color="#333333" />') == 1
+     and cntf(D + "bg_save_pill.xml", '<solid android:color="@color/colorPrimary" />') == 1)
 
-# -- item 5: global mute ----------------------------------------------------
-P = rd(PLAN)
-gate("PLAN: SmartAnalysis carries the muted flag",
-     cnt(P, "val hasAudio: Boolean,\n        val muted: Boolean,\n        val displayHeight: Int,") == 1
-     and cnt(P, "muted = ops.any { it is EditOperation.MuteAudio },") == 1
-     and cnt(P, 'SmartAnalysis(emptyList(), emptyMap(), false, false, 0, 0, 0, 0, "", "", "", reason)') == 1)
-gate("PLAN: transition piece audio fully gated",
-     cnt(P, "val realAudio = planHasAudio && !audioMuted && right.params.hasAudio && !right.muted") == 1
-     and cnt(P, 'if (planHasAudio && !audioMuted) sb.append(" -map 1:a:0")') == 1)
-gate("PLAN: rotation remux gated (rotated muted export would fail otherwise)",
-     cnt(P, 'if (planHasAudio && !audioMuted) rot.append(" -map 0:a:0")') == 1)
-gate("PLAN: silence generation gated",
-     cnt(P, "val silenceAudio = planHasAudio && !audioMuted && (!clip.params.hasAudio || clip.muted)") == 1)
-gate("PLAN: no ungated planHasAudio branch remains",
-     cnt(P, "} else if (planHasAudio) {") == 0)
-gate("PLAN: 17 gated audio sites (5 pre-existing + 12 new)",
-     cnt(P, "!audioMuted") == 17,
-     "found " + str(cnt(P, "!audioMuted")))
-gate("PLAN: concat + finalize still gated (pre-existing)",
-     cnt(P, 'val audioMap = if (planHasAudio && !audioMuted) " -map 0:a:0" else ""') == 1
-     and cnt(P, "if (planHasAudio && !audioMuted) sb.append(\" -map 0:a:0\")") >= 2)
-
-G = rd(DLG)
-gate("DLG: all 6 preview audio maps gated, none ungated",
-     cnt(G, 'if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")') == 6
-     and cnt(G, 'if (a.hasAudio) sb.append(" -map 0:a:0")') == 0)
-gate("DLG: both preview audio-flag sites gated",
-     cnt(G, 'if (a.hasAudio && !a.muted) sb.append(" ").append(aFlags)') == 2
-     and cnt(G, 'if (a.hasAudio) sb.append(" ").append(aFlags)') == 0)
-gate("DLG: the mute note appears in all three summaries",
-     cnt(G, "(muted: original audio muted - no audio track in the output)") == 3)
-
-# -- survival of earlier phases --------------------------------------------
-gate("phase 19a scope fix intact",
-     cnt(P, "val rightStartMs = right.trimStartMs") >= 1)
-gate("phase 22 ceil() frame tiling intact",
-     cnt(V, "kotlin.math.ceil(frameSpanMs * pixelsPerMs / 15f)") == 1)
-gate("phase 21 btnClose cast intact",
-     cnt(V, "findViewById<View>(R.id.btnClose)") == 1)
-gate("phase 21 transition glyph wiring intact",
-     cnt(V, "R.drawable.ic_transition_bowtie_24") == 1
-     and cnt(V, "R.drawable.ic_transition_cut_24") == 1)
-gate("phase 21 top bar order intact (Cancel < RES < Save)",
-     L.find("@+id/btnClose") < L.find("@+id/tvResolutionBadge") < L.find("@+id/layoutSaveSplit"))
-gate("phase 21 player row order intact (play < undo < redo < mute)",
-     L.find("@+id/btnPlayPause") < L.find("@+id/btnUndo") < L.find("@+id/btnRedo") < L.find("@+id/btnMute"))
-gate("phase 22 tile radii intact",
-     cntf(D + "bg_add_media_tile.xml", 'android:radius="4dp"') == 1
-     and cntf(D + "bg_transition_tile.xml", 'android:radius="3dp"') == 1)
-gate("phase 20 slider style intact",
-     cntf("app/src/main/res/values/themes.xml", "Widget.CutLoss.Slider") >= 2)
-gate("phase 20 Keep Editing light text intact",
-     cntf("app/src/main/res/layout/dialog_unsaved_changes.xml",
-          'android:textColor="@color/textColor"') >= 1)
+# -- prior-phase survival ---------------------------------------------------
+gate("phase 15: fps tolerance gate survives",
+     cntf(PLAN, "fpsCloseEnough") >= 2)
+gate("phase 19a: framesDir hoist survives",
+     cntf(PLAN, 'val framesDir = File(workDir, "trans_" + gap)') == 1)
+gate("phase 20: slider style survives",
+     cntf(THEMES, '<item name="sliderStyle">@style/Widget.CutLoss.Slider</item>') == 2
+     and cntf(THEMES, '<style name="Widget.CutLoss.Slider"') == 1)
+gate("phase 23: transition cut bar is the 2dp form",
+     cntf(D + "ic_transition_cut_24.xml", "M11,6L13,6L13,18L11,18Z") == 1)
+gate("phase 23: transition bowtie is the stroked outline form",
+     cntf(D + "ic_transition_bowtie_24.xml", 'android:strokeWidth="1"') == 1)
+gate("phase 23: global mute field survives",
+     cntf(PLAN, "val muted: Boolean,\n        val hasAudio: Boolean") == 1)
 
 # -- XML well-formedness ----------------------------------------------------
-for p in [LAY, TBTN, D + "ic_transition_cut_24.xml", D + "ic_transition_bowtie_24.xml"]:
+for p in [LAY, D + "ic_add_thin_24.xml", D + "bg_cancel_pill.xml", D + "bg_save_pill.xml"]:
     try:
         ET.parse(p)
         passed += 1
@@ -903,13 +684,13 @@ def scan(src):
     return errs
 
 
-for p in [VEA, TTV, PLAN, DLG]:
+for p in [VEA, TTV]:
     errs = scan(rd(p))
     gate("kotlin-lite brace/paren balance: " + p, not errs, "; ".join(errs[:3]))
 
 # -- no NEW non-ascii vs HEAD (multiset compare per touched file) -----------
-TOUCHED = [LAY, VEA, TTV, PLAN, DLG,
-           D + "ic_transition_cut_24.xml", D + "ic_transition_bowtie_24.xml"]
+TOUCHED = [LAY, VEA, TTV,
+           D + "ic_add_thin_24.xml", D + "bg_cancel_pill.xml", D + "bg_save_pill.xml"]
 
 
 def non_ascii_multiset(s):
@@ -936,4 +717,4 @@ if failed:
 print("ALL GATES GREEN (" + str(passed) + " checks)")
 PYEOF
 
-echo "== phase 23 done =="
+echo "== phase 24 done =="
