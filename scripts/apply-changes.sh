@@ -1,26 +1,39 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 25 -- the two follow-ups from the user's new sample-editor
-# screenshots (two 542x2412 left-crops + a 194x327 handle close-up, all
-# read at 420dpi / 2.625x, the same phone that runs the app):
+# CutLoss phase 26 -- the two follow-ups from the user's Oct-28 08:05 app
+# screenshots (1080x2412, 420dpi / 2.625x, the phone that runs the app):
 #
-#   1. Trim-handle grip lines: ONE per handle, not two. The user's
-#      close-up crop is pixel-identical to the sample editor's selected
-#      strip (matched at offset 1760,331): a 50px white handle block
-#      carrying a SINGLE centered 3px gray line (#4D000000 over white =
-#      the measured 179 gray) spanning the middle 30% of the strip
-#      (35%..65%). The app currently draws twin lines at midX +/- 4
-#      which read as two vertical bars side by side. -> one centered
-#      drawLine per handle at 0.35f..0.65f; stroke width, color and the
-#      white handle blocks stay as they are (they already match).
-#   2. The + glyph: slimmer arms. The cleaner re-measure of the sample
-#      tile (26dp tile, 9dp glyph) reads ~3.5px arms = ~1.3dp; the
-#      phase-24 4-unit arms render ~1.7dp and read bold next to the
-#      sample. -> ic_add_thin_24 arms slim 4 -> 3 viewport units
-#      (~1.25dp rendered). The 26dp tile + 8dp padding from phase 24
-#      (which this build also carries) already match the sample tile.
+#   1. The + glyph finally shrinks for real. Pixel measurement of the
+#      running phase-24/25 build shows the tile IS 26dp (66px, matches the
+#      sample) but the plus ink renders ~19dp - 77% of the tile, filling
+#      the interior border to border - while the sample editor draws a
+#      ~9dp glyph (35%). Root cause: the 8dp XML padding on the
+#      ImageButton does not constrain the vector on-device (the drawable
+#      scales to the interior instead of the padded box), so every
+#      padding-based tuning silently failed. Fix: bake the size into the
+#      drawable itself - ic_add_thin_24 intrinsic drops 24dp -> 11dp
+#      (viewport stays 24 with the phase-25 3-unit arms, so ink span =
+#      20/24 x 11dp = 9.2dp, arms = 3/24 x 11dp = 1.4dp) and the button
+#      gains scaleType=center + 0dp padding so the intrinsic size is
+#      authoritative no matter how padding behaves. The two Kotlin
+#      pre-layout fallbacks 36.dpToPx() -> 26.dpToPx() to match the tile.
 #
-# Files: TrackTrimView.kt, ic_add_thin_24.xml.
+#   2. Preview + bottom row stop shifting between the unselected and the
+#      video-selected states. Measured on the user's screenshots: the
+#      preview container's bottom edge sits 20px (~8dp) higher when a
+#      clip is selected, dragging the preview, the 00:05/00:20 badge and
+#      the fullscreen button up with it. Cause: (a) the six editing
+#      toolbar includes carry marginTop 8dp while the resting dock
+#      (editingControlsScroll) carries 6dp, and (b) the dock's INNER
+#      LinearLayout (editingControlsWrapper) is toggled GONE while the
+#      HorizontalScrollView itself stays VISIBLE, so its 6dp margin keeps
+#      reserving height next to the visible toolbar. Fix: all six include
+#      margins drop to 6dp, and all 11 Kotlin toggle sites now toggle the
+#      editingControlsScroll view itself (GONE drops the margin too), so
+#      both states occupy exactly 6dp + one row of content.
+#
+# Files: VideoEditingActivity.kt, activity_video_editing.xml,
+#        ic_add_thin_24.xml.
 #
 # Idempotent: re-running skips anything already applied.
 # Apply + build: upload as scripts/apply-changes.sh; the apply-and-build
@@ -34,18 +47,19 @@ if LC_ALL=C grep -qn '[^ -~]' "$0"; then
   exit 1
 fi
 
-TTV="app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
+VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 LAY="app/src/main/res/layout/activity_video_editing.xml"
 ICADD="app/src/main/res/drawable/ic_add_thin_24.xml"
+TTV="app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 
-for f in "$TTV" "$LAY" "$ICADD"; do
+for f in "$VEA" "$LAY" "$ICADD" "$TTV"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: $f not found - run from the repository root at the expected commit"
     exit 1
   fi
 done
 
-echo "== phase 25: single grip line + slimmer plus arms =="
+echo "== phase 26: small plus glyph + state-toggle alignment =="
 
 python3 - <<'PYEOF'
 import os
@@ -54,9 +68,10 @@ import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-TTV = "app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
+VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 LAY = "app/src/main/res/layout/activity_video_editing.xml"
 ICADD = "app/src/main/res/drawable/ic_add_thin_24.xml"
+TTV = "app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
 
 edits_applied = 0
 edits_skipped = 0
@@ -96,67 +111,45 @@ def apply_edit(path, old, new, label):
     print("  [applied] " + label)
 
 
-# ---------------------------------------------------------------------------
-# Edit 1: TrackTrimView grip lines - twin lines at midX +/- 4 become ONE
-# centered line per handle, spanning the middle 30% of the track height
-# (0.35f..0.65f), matching the sample editor's single 3px gray line.
-# The anchor reproduces the current bytes exactly, including the
-# trailing-whitespace-only line between the two handle blocks.
-# ---------------------------------------------------------------------------
-OLD_GRIP = (
-    '            // Draw vertical grip lines on the handles\n'
-    '            val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {\n'
-    '                color = Color.parseColor("#4D000000") // Subtle dark overlay for grips\n'
-    '                style = Paint.Style.STROKE\n'
-    '                strokeWidth = 3f\n'
-    '            }\n'
-    '            // Left handle grip lines\n'
-    '            val leftMidX = startX + currentHandleWidth / 2f\n'
-    '            canvas.drawLine(leftMidX - 4f, height * 0.3f, leftMidX - 4f, height * 0.7f, gripPaint)\n'
-    '            canvas.drawLine(leftMidX + 4f, height * 0.3f, leftMidX + 4f, height * 0.7f, gripPaint)\n'
-    '            \n'
-    '            // Right handle grip lines\n'
-    '            val rightMidX = endX - currentHandleWidth / 2f\n'
-    '            canvas.drawLine(rightMidX - 4f, height * 0.3f, rightMidX - 4f, height * 0.7f, gripPaint)\n'
-    '            canvas.drawLine(rightMidX + 4f, height * 0.3f, rightMidX + 4f, height * 0.7f, gripPaint)\n'
-)
-NEW_GRIP = (
-    '            // Draw the vertical grip line on each handle\n'
-    '            val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {\n'
-    '                color = Color.parseColor("#4D000000") // Subtle dark overlay for grips\n'
-    '                style = Paint.Style.STROKE\n'
-    '                strokeWidth = 3f\n'
-    '            }\n'
-    '            // phase 25: reference retune - ONE centered grip line per\n'
-    '            // handle: the sample editor draws a single 3px gray line at\n'
-    '            // the handle\'s center spanning the middle 30% of the track\n'
-    '            // height (35%..65%), and the twin lines at midX +/- 4 read\n'
-    '            // as two vertical bars side by side on the white handle\n'
-    '            // Left handle grip line\n'
-    '            val leftMidX = startX + currentHandleWidth / 2f\n'
-    '            canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)\n'
-    '            \n'
-    '            // Right handle grip line\n'
-    '            val rightMidX = endX - currentHandleWidth / 2f\n'
-    '            canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)\n'
-)
-apply_edit(TTV, OLD_GRIP, NEW_GRIP, "TTV: one centered grip line per handle (0.35..0.65)")
+def apply_edit_multi(path, old, new, label, exp_old):
+    """Multi-site idempotent edit: replaces every occurrence when the
+    anchor count matches exp_old exactly; skips when nothing is left to
+    replace. The final gates verify the resulting counts globally, so a
+    wrong tree can never pass silently."""
+    global edits_applied, edits_skipped
+    src = rd(path)
+    n = src.count(old)
+    if n == 0:
+        edits_skipped += 1
+        print("  [skip]    " + label)
+        return
+    if n != exp_old:
+        FAILED.append(label + " (anchor count " + str(n) + " != " + str(exp_old) + ")")
+        print("  [FAIL]    " + label + " (anchor count " + str(n) + " != " + str(exp_old) + ")")
+        return
+    wr(path, src.replace(old, new))
+    edits_applied += 1
+    print("  [applied] " + label)
+
 
 # ---------------------------------------------------------------------------
-# Edit 2: ic_add_thin_24 - the plus arms slim from 4 to 3 of the 20
-# viewport units (arm centers stay at 12; span stays 2..22). Full-content
-# rewrite so the explanatory comment follows the geometry.
+# Edit 1: ic_add_thin_24 - the drawable itself shrinks to an 11dp intrinsic
+# so the glyph renders ~9dp of ink no matter how the button pads it.
+# The path is byte-identical to phase 25 (3-unit arms, span 2..22).
 # ---------------------------------------------------------------------------
 NEW_ICADD = '''<?xml version="1.0" encoding="utf-8"?>
-<!-- phase 25: the arms slim to 3 of the 20 viewport units - the
-     cleaner re-measure of the sample editor's plus reads a 9dp glyph
-     with ~1.3dp arms (about 3.5px at 420dpi); the phase-24 4-unit arms
-     rendered ~1.7dp and read bold next to the sample. The glyph span
-     stays 20 of the 24 viewport units; the 26dp tile + 8dp padding
-     from phase 24 already match the sample tile. -->
+<!-- phase 26: the drawable itself shrinks to an 11dp intrinsic so the
+     glyph renders ~9dp of ink no matter how the button pads it. The
+     on-device measurement of the phase-24/25 build showed the 8dp XML
+     padding did not constrain the vector: the plus filled ~77% of the
+     26dp tile (~19dp ink) while the sample editor draws ~9dp (35%).
+     Viewport stays 24 with the phase-25 3-unit arms, so ink span =
+     20/24 x 11dp = 9.2dp and arms = 3/24 x 11dp = 1.4dp. The ImageButton
+     also gains scaleType=center + 0dp padding (layout edit) so the
+     intrinsic size is authoritative. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
+    android:width="11dp"
+    android:height="11dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
@@ -164,18 +157,94 @@ NEW_ICADD = '''<?xml version="1.0" encoding="utf-8"?>
         android:pathData="M10.5,2L13.5,2L13.5,10.5L22,10.5L22,13.5L13.5,13.5L13.5,22L10.5,22L10.5,13.5L2,13.5L2,10.5L10.5,10.5Z" />
 </vector>
 '''
-OLD_PATH = 'M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z'
 cur_ic = rd(ICADD)
 if cur_ic == NEW_ICADD:
     edits_skipped += 1
-    print("  [skip]    ic_add_thin_24: 3-unit arms")
-elif cnt(cur_ic, OLD_PATH) == 1 and cnt(cur_ic, "pathData") == 1:
+    print("  [skip]    ic_add_thin_24: 11dp intrinsic")
+elif cnt(cur_ic, "M10.5,2L13.5,2") == 1 and cnt(cur_ic, "pathData") == 1 and cnt(cur_ic, 'android:width="24dp"') == 1:
     wr(ICADD, NEW_ICADD)
     edits_applied += 1
-    print("  [applied] ic_add_thin_24: 3-unit arms")
+    print("  [applied] ic_add_thin_24: 11dp intrinsic")
 else:
     FAILED.append("ic_add_thin_24 rewrite (unexpected content)")
     print("  [FAIL]    ic_add_thin_24 rewrite (unexpected content)")
+
+# ---------------------------------------------------------------------------
+# Edit 2: the add-tile ImageButton - padding 8dp -> 0dp and a new
+# scaleType=center so the 11dp drawable renders at its intrinsic size,
+# centered in the 26dp tile, immune to padding semantics.
+# ---------------------------------------------------------------------------
+OLD_TILE_ATTRS = (
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="8dp"\n'
+    '                    app:tint="@color/textColor" />\n'
+)
+NEW_TILE_ATTRS = (
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="0dp"\n'
+    '                    android:scaleType="center"\n'
+    '                    app:tint="@color/textColor" />\n'
+)
+apply_edit(LAY, OLD_TILE_ATTRS, NEW_TILE_ATTRS, "LAY: add tile scaleType=center + 0dp padding")
+
+# ---------------------------------------------------------------------------
+# Edit 3: the six editing-toolbar includes drop marginTop 8dp -> 6dp so
+# every mode toolbar aligns with the resting dock's 6dp margin.
+# ---------------------------------------------------------------------------
+apply_edit_multi(LAY,
+                 'android:layout_marginTop="8dp"',
+                 'android:layout_marginTop="6dp"',
+                 "LAY: six toolbar include margins 8dp -> 6dp",
+                 6)
+
+# ---------------------------------------------------------------------------
+# Edits 4-8: the eleven Kotlin toggle sites switch from the dock's inner
+# LinearLayout (editingControlsWrapper) to the dock itself
+# (editingControlsScroll), so a visible mode toolbar replaces the dock's
+# FULL footprint (6dp margin included) instead of leaving it reserved.
+# The wrapper field itself survives - setEditingButtonsEnabled still
+# walks its children for the alpha/enable sweep.
+# ---------------------------------------------------------------------------
+apply_edit_multi(VEA,
+                 '\n        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE',
+                 '\n        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE',
+                 "VEA: 3 findViewById GONE sites -> toggle the dock",
+                 3)
+apply_edit_multi(VEA,
+                 '\n        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.VISIBLE',
+                 '\n        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE',
+                 "VEA: 2 findViewById VISIBLE sites -> toggle the dock",
+                 2)
+apply_edit_multi(VEA,
+                 '\n        editingControlsWrapper.visibility = View.GONE',
+                 '\n        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE',
+                 "VEA: 3 field-based GONE sites -> toggle the dock",
+                 3)
+apply_edit_multi(VEA,
+                 '\n        editingControlsWrapper.visibility = View.VISIBLE',
+                 '\n        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE',
+                 "VEA: 2 field-based VISIBLE sites -> toggle the dock",
+                 2)
+apply_edit_multi(VEA,
+                 '\n            editingControlsWrapper.visibility = View.VISIBLE',
+                 '\n            findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE',
+                 "VEA: nested VISIBLE site (speed toolbar exit) -> toggle the dock",
+                 1)
+
+# ---------------------------------------------------------------------------
+# Edits 9-10: the pre-layout fallbacks for the add button's size follow
+# the phase-24 tile: 36dp -> 26dp.
+# ---------------------------------------------------------------------------
+apply_edit(VEA,
+           "val btnWidth = btnTimelineAdd.width.takeIf { it > 0 } ?: 36.dpToPx()",
+           "val btnWidth = btnTimelineAdd.width.takeIf { it > 0 } ?: 26.dpToPx()",
+           "VEA: add-button width fallback 36dp -> 26dp")
+apply_edit(VEA,
+           "val btnHeight = btnTimelineAdd.height.takeIf { it > 0 } ?: 36.dpToPx()",
+           "val btnHeight = btnTimelineAdd.height.takeIf { it > 0 } ?: 26.dpToPx()",
+           "VEA: add-button height fallback 36dp -> 26dp")
 
 print("  edits applied: " + str(edits_applied) + ", skipped: " + str(edits_skipped))
 if FAILED:
@@ -203,68 +272,22 @@ def cntf(p, needle):
     return cnt(rd(p), needle)
 
 
-ttv = rd(TTV)
 ic = rd(ICADD)
+lay = rd(LAY)
+vea = rd(VEA)
 
-# byte-exact survival anchor for the phase-24 add tile
-ADD_BLOCK = (
-    '                <ImageButton\n'
-    '                    android:id="@+id/btnTimelineAdd"\n'
-    '                    android:layout_width="26dp"\n'
-    '                    android:layout_height="26dp"\n'
-    '                    android:background="@drawable/bg_add_media_tile"\n'
-    '                    android:src="@drawable/ic_add_thin_24"\n'
-    '                    android:contentDescription="Add Media"\n'
-    '                    android:elevation="8dp"\n'
-    '                    android:padding="8dp"\n'
-    '                    app:tint="@color/textColor" />\n'
-)
+# -- gate group 1: the + glyph -----------------------------------------------
+gate("ic_add_thin_24: intrinsic is 11dp, old 24dp gone",
+     cnt(ic, 'android:width="11dp"') == 1 and cnt(ic, 'android:height="11dp"') == 1
+     and cnt(ic, 'android:width="24dp"') == 0 and cnt(ic, 'android:height="24dp"') == 0)
+gate("ic_add_thin_24: viewport 24 + white fill survive",
+     cnt(ic, 'android:viewportWidth="24"') == 1 and cnt(ic, 'android:viewportHeight="24"') == 1
+     and cnt(ic, 'android:fillColor="#FFFFFF"') == 1)
 
-# -- gate group 1: the grip lines -------------------------------------------
-gate("TTV: exactly one left grip drawLine at 0.35f..0.65f",
-     cnt(ttv, "canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)") == 1)
-gate("TTV: exactly one right grip drawLine at 0.35f..0.65f",
-     cnt(ttv, "canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)") == 1)
-gate("TTV: no twin-line offsets survive",
-     cnt(ttv, "leftMidX - 4f") == 0 and cnt(ttv, "leftMidX + 4f") == 0
-     and cnt(ttv, "rightMidX - 4f") == 0 and cnt(ttv, "rightMidX + 4f") == 0)
-gate("TTV: no 0.3f/0.7f grip spans survive",
-     cnt(ttv, "height * 0.3f") == 0 and cnt(ttv, "height * 0.7f") == 0)
-gate("TTV: exactly two grip drawLine calls",
-     cnt(ttv, "gripPaint)") == 2)
-gate("TTV: grip stroke width + color survive",
-     cnt(ttv, "strokeWidth = 3f") == 2 and cnt(ttv, "#4D000000") == 1)
-gate("TTV: height*0.35f total is 3 (1 wave + 2 grips), height*0.65f is 2",
-     cnt(ttv, "height * 0.35f") == 3 and cnt(ttv, "height * 0.65f") == 2)
-gate("TTV: total drawLine count is 5 (3 wave + 2 grip)",
-     cnt(ttv, "drawLine(") == 5)
-gate("TTV: handle width property untouched (0.30f once)",
-     cnt(ttv, "0.30f") == 1 and cnt(ttv, "coerceAtLeast(24f)") == 1)
-
-# -- gate group 2: phase-19..24 survival ------------------------------------
-gate("phase 24: handle blocks keep the 7% rounded-outer-corner path",
-     cnt(ttv, "floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius)") == 1
-     and cnt(ttv, "floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f)") == 1)
-gate("phase 24: all 7%-radius sites survive",
-     cnt(ttv, "0.07f") == 5)
-gate("phase 24: 3% unselected silhouette survives",
-     cnt(ttv, "0.03f") == 4)
-gate("phase 24: the + tile stays 26dp with 8dp padding",
-     ADD_BLOCK in rd(LAY))
-gate("phase 20: the add tile drawable still exists",
-     os.path.exists("app/src/main/res/drawable/bg_add_media_tile.xml"))
-
-# -- gate group 3: the plus glyph --------------------------------------------
 NEW_PATH = "M10.5,2L13.5,2L13.5,10.5L22,10.5L22,13.5L13.5,13.5L13.5,22L10.5,22L10.5,13.5L2,13.5L2,10.5L10.5,10.5Z"
-gate("ic_add_thin_24: new 3-unit-arm path present exactly once",
-     cnt(ic, NEW_PATH) == 1)
-gate("ic_add_thin_24: old 4-unit-arm path gone",
-     cnt(ic, OLD_PATH) == 0)
-gate("ic_add_thin_24: 24dp frame + 24 viewport + white fill",
-     cnt(ic, 'android:width="24dp"') == 1 and cnt(ic, 'android:height="24dp"') == 1
-     and cnt(ic, 'android:viewportWidth="24"') == 1 and cnt(ic, 'android:fillColor="#FFFFFF"') == 1)
+gate("ic_add_thin_24: phase-25 3-unit-arm path unchanged",
+     cnt(ic, NEW_PATH) == 1 and cnt(ic, "pathData") == 1)
 
-# path arithmetic sanity: parse the path, verify the plus is centered
 nums = []
 for tok in NEW_PATH.replace("M", " ").replace("L", " ").replace("Z", " ").replace(",", " ").split():
     nums.append(float(tok))
@@ -276,8 +299,68 @@ gate("ic_add_thin_24: arms are 3 units wide and centered at 12",
      10.5 in xs and 13.5 in xs and 10.5 in ys and 13.5 in ys
      and (13.5 - 10.5) == 3.0)
 
+# -- gate group 2: the add-tile button ---------------------------------------
+NEW_TILE_BLOCK = (
+    '                <ImageButton\n'
+    '                    android:id="@+id/btnTimelineAdd"\n'
+    '                    android:layout_width="26dp"\n'
+    '                    android:layout_height="26dp"\n'
+    '                    android:background="@drawable/bg_add_media_tile"\n'
+    '                    android:src="@drawable/ic_add_thin_24"\n'
+    '                    android:contentDescription="Add Media"\n'
+    '                    android:elevation="8dp"\n'
+    '                    android:padding="0dp"\n'
+    '                    android:scaleType="center"\n'
+    '                    app:tint="@color/textColor" />\n'
+)
+gate("LAY: add tile keeps 26dp + gains 0dp padding + scaleType=center",
+     NEW_TILE_BLOCK in lay)
+gate("LAY: exactly one scaleType=center and one padding=0dp in the file",
+     cnt(lay, 'android:scaleType="center"') == 1 and cnt(lay, 'android:padding="0dp"') == 1)
+
+# -- gate group 3: state-toggle alignment ------------------------------------
+gate("LAY: no 8dp toolbar include margins survive",
+     cnt(lay, 'android:layout_marginTop="8dp"') == 0)
+gate("LAY: seven 6dp top margins (six includes + the dock)",
+     cnt(lay, 'android:layout_marginTop="6dp"') == 7)
+gate("LAY: all six editing-toolbar includes survive",
+     cnt(lay, 'layout="@layout/text_editing_toolbar"') == 1
+     and cnt(lay, 'layout="@layout/image_editing_toolbar"') == 1
+     and cnt(lay, 'layout="@layout/video_editing_toolbar"') == 1
+     and cnt(lay, 'layout="@layout/audio_editing_toolbar"') == 1
+     and cnt(lay, 'layout="@layout/speed_editing_toolbar"') == 1
+     and cnt(lay, 'layout="@layout/keyframe_editing_toolbar"') == 1)
+gate("LAY: the dock id and its docked background survive",
+     cnt(lay, '@+id/editingControlsScroll') == 1
+     and cnt(lay, '@drawable/bg_bottom_nav_docked') == 1)
+
+gate("VEA: no editingControlsWrapper.visibility toggles survive",
+     cnt(vea, "editingControlsWrapper.visibility") == 0)
+gate("VEA: exactly 6 dock-GONE toggle sites",
+     cnt(vea, "findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE") == 6)
+gate("VEA: exactly 5 dock-VISIBLE toggle sites",
+     cnt(vea, "findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE") == 5)
+gate("VEA: 14 total editingControlsScroll references (11 new + 3 pre-existing)",
+     cnt(vea, "R.id.editingControlsScroll") == 14)
+gate("VEA: the wrapper field survives for the alpha/enable sweep",
+     cnt(vea, "private lateinit var editingControlsWrapper: LinearLayout") == 1
+     and cnt(vea, "editingControlsWrapper.alpha") == 1
+     and cnt(vea, "editingControlsWrapper.childCount") == 1)
+gate("VEA: gallery-mode INVISIBLE on the dock untouched",
+     cnt(vea, "R.id.editingControlsScroll).visibility = View.INVISIBLE") == 1)
+gate("VEA: video toolbar enter/exit toggles untouched",
+     cnt(vea, "videoEditingToolbar?.visibility = View.VISIBLE") == 2
+     and cnt(vea, "videoEditingToolbar?.visibility = View.GONE") == 2)
+gate("VEA: add-button fallbacks are 26dp, no 36dp left",
+     cnt(vea, "26.dpToPx()") == 2 and cnt(vea, "36.dpToPx()") == 0)
+
+# -- right-commit sanity: the phase-25 grip lines survive untouched ---------
+gate("TTV: phase-25 single centered grip lines survive",
+     cntf(TTV, "canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)") == 1
+     and cntf(TTV, "canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)") == 1)
+
 # -- XML well-formedness ----------------------------------------------------
-for p in [ICADD]:
+for p in [ICADD, LAY]:
     try:
         ET.parse(p)
         passed += 1
@@ -413,11 +496,13 @@ def scan(src):
     return errs
 
 
-errs = scan(rd(TTV))
-gate("kotlin-lite brace/paren balance: " + TTV, not errs, "; ".join(errs[:3]))
+errs = scan(rd(VEA))
+gate("kotlin-lite brace/paren balance: " + VEA, not errs, "; ".join(errs[:3]))
 
 # -- ASCII purity + no NEW non-ascii vs HEAD --------------------------------
-gate("TTV is pure ASCII", not [c for c in rd(TTV) if ord(c) > 126])
+# (VEA already carries 11 non-ascii lines at HEAD, so only the multiset
+# comparison applies to it; LAY and the drawable are fully ASCII.)
+gate("LAY is pure ASCII", not [c for c in lay if ord(c) > 126])
 gate("ic_add_thin_24 is pure ASCII", not [c for c in ic if ord(c) > 126])
 
 
@@ -425,7 +510,7 @@ def non_ascii_multiset(s):
     return Counter(c for c in s if ord(c) > 127)
 
 
-for p in [TTV, ICADD]:
+for p in [VEA, LAY, ICADD]:
     try:
         head = subprocess.run(["git", "show", "HEAD:" + p],
                               capture_output=True, text=True, encoding="utf-8").stdout
@@ -444,4 +529,4 @@ if failed:
 print("ALL GATES GREEN (" + str(passed) + " checks)")
 PYEOF
 
-echo "== phase 25 done =="
+echo "== phase 26 done =="
