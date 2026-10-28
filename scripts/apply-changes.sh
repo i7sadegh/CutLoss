@@ -1,34 +1,26 @@
 #!/usr/bin/env bash
 ###############################################################################
-# CutLoss phase 24 -- reference-image retune of the three UI groups the
-# user measured on the sample editor (two 1080x2412 screenshots, read at
-# 420dpi / 2.625x, strip = 144px = 55dp):
+# CutLoss phase 25 -- the two follow-ups from the user's new sample-editor
+# screenshots (two 542x2412 left-crops + a 194x327 handle close-up, all
+# read at 420dpi / 2.625x, the same phone that runs the app):
 #
-#   1. The + add-media tile: the sample tile is 68px = 26dp (incl. its
-#      1.5dp border) with a 9dp plus glyph whose arms are ~1.7dp; the
-#      current 36dp tile with a 12dp glyph reads big. -> tile 26dp,
-#      padding 8dp (glyph ink ~8.3dp), and the ic_add_thin_24 arms widen
-#      2 -> 4 viewport units (arm/ink 20% = the sample's 19%) so the
-#      stroke no longer renders hairline at the smaller size. The tile
-#      radius stays 4dp and the border 1.5dp - both already match.
-#   2. Track radius, both states: the sample's UNSELECTED strip corner
-#      is ~4px = 2.8% of the strip height (barely rounded), and its
-#      SELECTED trim-handle outer corners are ~10.5px = 7.3% (small
-#      radius, not the phase-23 fully-sharp frame). -> every 22%-of-
-#      height radius retunes: unselected silhouettes 3%, selected
-#      frames + ALL trim-handle outer corners 7% (main and secondary
-#      tracks now share one handle path), and the VEA segment outline
-#      follows (selected 7% so thumbnails never poke out behind the
-#      rounded handles, unselected 3%).
-#   3. Cancel / Save pills: the sample pills are 201x84px = 76x32dp
-#      with fully-rounded 16dp ends and ~17sp labels. -> height
-#      40dp -> 32dp, Save width 96dp -> 76dp, Cancel padding
-#      22dp -> 15dp (pill ~77dp), pill radius 20dp -> 16dp. The 17sp
-#      labels already match the sample - unchanged.
+#   1. Trim-handle grip lines: ONE per handle, not two. The user's
+#      close-up crop is pixel-identical to the sample editor's selected
+#      strip (matched at offset 1760,331): a 50px white handle block
+#      carrying a SINGLE centered 3px gray line (#4D000000 over white =
+#      the measured 179 gray) spanning the middle 30% of the strip
+#      (35%..65%). The app currently draws twin lines at midX +/- 4
+#      which read as two vertical bars side by side. -> one centered
+#      drawLine per handle at 0.35f..0.65f; stroke width, color and the
+#      white handle blocks stay as they are (they already match).
+#   2. The + glyph: slimmer arms. The cleaner re-measure of the sample
+#      tile (26dp tile, 9dp glyph) reads ~3.5px arms = ~1.3dp; the
+#      phase-24 4-unit arms render ~1.7dp and read bold next to the
+#      sample. -> ic_add_thin_24 arms slim 4 -> 3 viewport units
+#      (~1.25dp rendered). The 26dp tile + 8dp padding from phase 24
+#      (which this build also carries) already match the sample tile.
 #
-# Files: activity_video_editing.xml, ic_add_thin_24.xml,
-#        bg_cancel_pill.xml, bg_save_pill.xml, TrackTrimView.kt,
-#        VideoEditingActivity.kt.
+# Files: TrackTrimView.kt, ic_add_thin_24.xml.
 #
 # Idempotent: re-running skips anything already applied.
 # Apply + build: upload as scripts/apply-changes.sh; the apply-and-build
@@ -42,26 +34,18 @@ if LC_ALL=C grep -qn '[^ -~]' "$0"; then
   exit 1
 fi
 
-LAY="app/src/main/res/layout/activity_video_editing.xml"
-VEA="app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 TTV="app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
-PLAN="app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
+LAY="app/src/main/res/layout/activity_video_editing.xml"
+ICADD="app/src/main/res/drawable/ic_add_thin_24.xml"
 
-for f in "$LAY" "$VEA" "$TTV" "$PLAN" \
-         "app/src/main/res/drawable/ic_add_thin_24.xml" \
-         "app/src/main/res/drawable/bg_cancel_pill.xml" \
-         "app/src/main/res/drawable/bg_save_pill.xml" \
-         "app/src/main/res/drawable/bg_add_media_tile.xml" \
-         "app/src/main/res/drawable/ic_transition_cut_24.xml" \
-         "app/src/main/res/drawable/ic_transition_bowtie_24.xml" \
-         "app/src/main/res/values/themes.xml"; do
+for f in "$TTV" "$LAY" "$ICADD"; do
   if [ ! -f "$f" ]; then
     echo "FATAL: $f not found - run from the repository root at the expected commit"
     exit 1
   fi
 done
 
-echo "== phase 24: applying the reference-image retune =="
+echo "== phase 25: single grip line + slimmer plus arms =="
 
 python3 - <<'PYEOF'
 import os
@@ -70,12 +54,9 @@ import subprocess
 import xml.etree.ElementTree as ET
 from collections import Counter
 
-LAY = "app/src/main/res/layout/activity_video_editing.xml"
-VEA = "app/src/main/java/com/tharunbirla/librecuts/VideoEditingActivity.kt"
 TTV = "app/src/main/java/com/tharunbirla/librecuts/customviews/TrackTrimView.kt"
-PLAN = "app/src/main/java/com/tharunbirla/librecuts/services/SmartExportPlanner.kt"
-D = "app/src/main/res/drawable/"
-THEMES = "app/src/main/res/values/themes.xml"
+LAY = "app/src/main/res/layout/activity_video_editing.xml"
+ICADD = "app/src/main/res/drawable/ic_add_thin_24.xml"
 
 edits_applied = 0
 edits_skipped = 0
@@ -115,335 +96,119 @@ def apply_edit(path, old, new, label):
     print("  [applied] " + label)
 
 
-def ensure_drawable(name, old_marks, content, label):
-    """Rewrite a small drawable when it still carries its pre-phase-24
-    marks; skip when the phase-24 bytes are already in place."""
-    global edits_applied, edits_skipped
-    p = D + name
-    cur = rd(p)
-    if cur == content:
-        edits_skipped += 1
-        print("  [skip]    " + label)
-        return
-    if all(m in cur for m in old_marks):
-        wr(p, content)
-        edits_applied += 1
-        print("  [applied] " + label)
-        return
-    FAILED.append(label + " (unexpected current content)")
-    print("  [FAIL]    " + label + " (unexpected current content)")
+# ---------------------------------------------------------------------------
+# Edit 1: TrackTrimView grip lines - twin lines at midX +/- 4 become ONE
+# centered line per handle, spanning the middle 30% of the track height
+# (0.35f..0.65f), matching the sample editor's single 3px gray line.
+# The anchor reproduces the current bytes exactly, including the
+# trailing-whitespace-only line between the two handle blocks.
+# ---------------------------------------------------------------------------
+OLD_GRIP = (
+    '            // Draw vertical grip lines on the handles\n'
+    '            val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {\n'
+    '                color = Color.parseColor("#4D000000") // Subtle dark overlay for grips\n'
+    '                style = Paint.Style.STROKE\n'
+    '                strokeWidth = 3f\n'
+    '            }\n'
+    '            // Left handle grip lines\n'
+    '            val leftMidX = startX + currentHandleWidth / 2f\n'
+    '            canvas.drawLine(leftMidX - 4f, height * 0.3f, leftMidX - 4f, height * 0.7f, gripPaint)\n'
+    '            canvas.drawLine(leftMidX + 4f, height * 0.3f, leftMidX + 4f, height * 0.7f, gripPaint)\n'
+    '            \n'
+    '            // Right handle grip lines\n'
+    '            val rightMidX = endX - currentHandleWidth / 2f\n'
+    '            canvas.drawLine(rightMidX - 4f, height * 0.3f, rightMidX - 4f, height * 0.7f, gripPaint)\n'
+    '            canvas.drawLine(rightMidX + 4f, height * 0.3f, rightMidX + 4f, height * 0.7f, gripPaint)\n'
+)
+NEW_GRIP = (
+    '            // Draw the vertical grip line on each handle\n'
+    '            val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {\n'
+    '                color = Color.parseColor("#4D000000") // Subtle dark overlay for grips\n'
+    '                style = Paint.Style.STROKE\n'
+    '                strokeWidth = 3f\n'
+    '            }\n'
+    '            // phase 25: reference retune - ONE centered grip line per\n'
+    '            // handle: the sample editor draws a single 3px gray line at\n'
+    '            // the handle\'s center spanning the middle 30% of the track\n'
+    '            // height (35%..65%), and the twin lines at midX +/- 4 read\n'
+    '            // as two vertical bars side by side on the white handle\n'
+    '            // Left handle grip line\n'
+    '            val leftMidX = startX + currentHandleWidth / 2f\n'
+    '            canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)\n'
+    '            \n'
+    '            // Right handle grip line\n'
+    '            val rightMidX = endX - currentHandleWidth / 2f\n'
+    '            canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)\n'
+)
+apply_edit(TTV, OLD_GRIP, NEW_GRIP, "TTV: one centered grip line per handle (0.35..0.65)")
 
+# ---------------------------------------------------------------------------
+# Edit 2: ic_add_thin_24 - the plus arms slim from 4 to 3 of the 20
+# viewport units (arm centers stay at 12; span stays 2..22). Full-content
+# rewrite so the explanatory comment follows the geometry.
+# ---------------------------------------------------------------------------
+NEW_ICADD = '''<?xml version="1.0" encoding="utf-8"?>
+<!-- phase 25: the arms slim to 3 of the 20 viewport units - the
+     cleaner re-measure of the sample editor's plus reads a 9dp glyph
+     with ~1.3dp arms (about 3.5px at 420dpi); the phase-24 4-unit arms
+     rendered ~1.7dp and read bold next to the sample. The glyph span
+     stays 20 of the 24 viewport units; the 26dp tile + 8dp padding
+     from phase 24 already match the sample tile. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M10.5,2L13.5,2L13.5,10.5L22,10.5L22,13.5L13.5,13.5L13.5,22L10.5,22L10.5,13.5L2,13.5L2,10.5L10.5,10.5Z" />
+</vector>
+'''
+OLD_PATH = 'M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z'
+cur_ic = rd(ICADD)
+if cur_ic == NEW_ICADD:
+    edits_skipped += 1
+    print("  [skip]    ic_add_thin_24: 3-unit arms")
+elif cnt(cur_ic, OLD_PATH) == 1 and cnt(cur_ic, "pathData") == 1:
+    wr(ICADD, NEW_ICADD)
+    edits_applied += 1
+    print("  [applied] ic_add_thin_24: 3-unit arms")
+else:
+    FAILED.append("ic_add_thin_24 rewrite (unexpected content)")
+    print("  [FAIL]    ic_add_thin_24 rewrite (unexpected content)")
 
-# =========================================================================
-# EDITS
-# =========================================================================
-
-# -- item 1: the + tile ----------------------------------------------------
-
-apply_edit(
-    LAY,
-    '<!-- phase 23: plus glyph shrunk again - padding 10dp ->\n'
-    '                     12dp so the glyph ink lands at ~28% of the 36dp tile\n'
-    '                     (the 10dp form still read big per the user) -->\n'
-    '                <ImageButton\n'
-    '                    android:id="@+id/btnTimelineAdd"\n'
-    '                    android:layout_width="36dp"\n'
-    '                    android:layout_height="36dp"\n'
-    '                    android:background="@drawable/bg_add_media_tile"\n'
-    '                    android:src="@drawable/ic_add_thin_24"\n'
-    '                    android:contentDescription="Add Media"\n'
-    '                    android:elevation="8dp"\n'
-    '                    android:padding="12dp"\n'
-    '                    app:tint="@color/textColor" />',
-    '<!-- phase 24: reference retune - the tile shrinks to the sample\n'
-    '                     editor\'s 26dp (68px at 420dpi, ~47% of the track\n'
-    '                     height) and the padding drops to 8dp so the glyph\n'
-    '                     ink lands at ~8dp of the tile (sample: a 9dp glyph\n'
-    '                     inside a 26dp tile) -->\n'
-    '                <ImageButton\n'
-    '                    android:id="@+id/btnTimelineAdd"\n'
-    '                    android:layout_width="26dp"\n'
-    '                    android:layout_height="26dp"\n'
-    '                    android:background="@drawable/bg_add_media_tile"\n'
-    '                    android:src="@drawable/ic_add_thin_24"\n'
-    '                    android:contentDescription="Add Media"\n'
-    '                    android:elevation="8dp"\n'
-    '                    android:padding="8dp"\n'
-    '                    app:tint="@color/textColor" />',
-    "LAY: add tile 36dp -> 26dp, padding 12dp -> 8dp")
-
-ensure_drawable(
-    "ic_add_thin_24.xml",
-    ["phase 22: the non-bold plus",
-     "M11,2L13,2L13,11L22,11L22,13L13,13L13,22L11,22L11,13L2,13L2,11L11,11Z"],
-    '<?xml version="1.0" encoding="utf-8"?>\n'
-    '<!-- phase 24: reference retune - the arms widen to 4 of the 20\n'
-    '     viewport units (arm/ink 20%, the sample editor\'s plus reads\n'
-    '     ~1.7dp arms on a 9dp glyph); the phase-22 2-unit arms rendered\n'
-    '     hairline-thin at the smaller 26dp tile, and the glyph span\n'
-    '     stays 20 of the 24 viewport units -->\n'
-    '<vector xmlns:android="http://schemas.android.com/apk/res/android"\n'
-    '    android:width="24dp"\n'
-    '    android:height="24dp"\n'
-    '    android:viewportWidth="24"\n'
-    '    android:viewportHeight="24">\n'
-    '    <path\n'
-    '        android:fillColor="#FFFFFF"\n'
-    '        android:pathData="M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z" />\n'
-    '</vector>\n',
-    "drawable: ic_add_thin_24 arms 2 -> 4 units")
-
-# -- item 2: track radius retune -------------------------------------------
-
-apply_edit(
-    TTV,
-    '                    // phase 23: the selected clip draws SHARP corners - the\n'
-    '                    // trim frame and the handle blocks read as one clean\n'
-    '                    // rectangle; the rounded corners return the moment the\n'
-    '                    // selection drops (phase 21 drew this frame rounded,\n'
-    '                    // which the user only wanted on unselected clips)\n'
-    '                    borderPaint.color = Color.parseColor("#FFFFFF")\n'
-    '                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)\n'
-    '                    val frameInset = borderPaint.strokeWidth / 2f\n'
-    '                    val frameRect = RectF(\n'
-    '                        rectF.left + frameInset, rectF.top + frameInset,\n'
-    '                        rectF.right - frameInset, rectF.bottom - frameInset\n'
-    '                    )\n'
-    '                    canvas.drawRect(frameRect, borderPaint)',
-    '                    // phase 24: reference retune - the selected clip\'s trim\n'
-    '                    // frame is a rectangle with a SMALL radius (7% of the\n'
-    '                    // track height - the handle-corner radius measured on\n'
-    '                    // the sample editor\'s selected clip); phase 23\'s fully\n'
-    '                    // sharp frame read too hard next to the sample\'s\n'
-    '                    // barely-rounded 3% unselected silhouette\n'
-    '                    borderPaint.color = Color.parseColor("#FFFFFF")\n'
-    '                    borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)\n'
-    '                    val frameInset = borderPaint.strokeWidth / 2f\n'
-    '                    val frameRect = RectF(\n'
-    '                        rectF.left + frameInset, rectF.top + frameInset,\n'
-    '                        rectF.right - frameInset, rectF.bottom - frameInset\n'
-    '                    )\n'
-    '                    canvas.drawRoundRect(frameRect, height * 0.07f, height * 0.07f, borderPaint)',
-    "TTV: selected main trim frame sharp -> 7% radius")
-
-apply_edit(
-    TTV,
-    'val selRadius = height * 0.22f',
-    'val selRadius = height * 0.07f',
-    "TTV: selected main no-trim radius 22% -> 7%")
-
-apply_edit(
-    TTV,
-    'canvas.drawRoundRect(rectF, height * 0.22f, height * 0.22f, trackPaint)',
-    'canvas.drawRoundRect(rectF, height * 0.03f, height * 0.03f, trackPaint)',
-    "TTV: secondary track fill radius 22% -> 3%")
-
-apply_edit(
-    TTV,
-    '                // phase 21: white rounded frame on every selected track\n'
-    '                // (selection still reads via the amber tint below)\n'
-    '                val trackRadius = height * 0.22f',
-    '                // phase 21: white rounded frame on every selected track\n'
-    '                // (selection still reads via the amber tint below);\n'
-    '                // phase 24: radius retuned 22% -> 7% of the track height\n'
-    '                val trackRadius = height * 0.07f',
-    "TTV: secondary selected frame radius 22% -> 7%")
-
-apply_edit(
-    TTV,
-    '                // phase 21: unselected tracks keep a soft white rounded\n'
-    '                // outline, slightly more present than the old 20% hairline\n'
-    '                val trackRadius = height * 0.22f',
-    '                // phase 21: unselected tracks keep a soft white rounded\n'
-    '                // outline, slightly more present than the old 20% hairline;\n'
-    '                // phase 24: radius retuned 22% -> 3% (the sample editor\'s\n'
-    '                // barely-rounded unselected strip)\n'
-    '                val trackRadius = height * 0.03f',
-    "TTV: secondary unselected outline radius 22% -> 3%")
-
-apply_edit(
-    TTV,
-    '            handlePaint.color = Color.WHITE\n'
-    '            if (isMainVideoTrack) {\n'
-    '                // phase 23: main-track trim handles are plain sharp\n'
-    '                // rectangles - while the clip is selected the whole\n'
-    '                // silhouette (frame + handle blocks) reads as one clean\n'
-    '                // rectangle; the rounded corners live only on the\n'
-    '                // UNSELECTED clip\'s thumbnail outline (grip marks stay)\n'
-    '                canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)\n'
-    '                canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)\n'
-    '            } else {\n'
-    '                // phase 21 look kept for secondary tracks: handle blocks\n'
-    '                // with rounded OUTER corners fusing into their rounded\n'
-    '                // outlines (audio / text / image tracks)\n'
-    '                val handleRadius = height * 0.22f\n'
-    '                val handlePath = android.graphics.Path()\n'
-    '                // Left handle - round only the outer (left) corners\n'
-    '                handlePath.addRoundRect(\n'
-    '                    RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),\n'
-    '                    floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),\n'
-    '                    android.graphics.Path.Direction.CW\n'
-    '                )\n'
-    '                // Right handle - round only the outer (right) corners\n'
-    '                handlePath.addRoundRect(\n'
-    '                    RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),\n'
-    '                    floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),\n'
-    '                    android.graphics.Path.Direction.CW\n'
-    '                )\n'
-    '                canvas.drawPath(handlePath, handlePaint)\n'
-    '            }',
-    '            handlePaint.color = Color.WHITE\n'
-    '            // phase 24: reference retune - every trim handle (main and\n'
-    '            // secondary tracks alike) is a full-height white block whose\n'
-    '            // OUTER corners carry the same small radius as the trim frame\n'
-    '            // (7% of the track height, measured on the sample editor\'s\n'
-    '            // selected clip); the inner edges stay straight against the\n'
-    '            // thumbnails (phase 23 drew the main-track handles fully\n'
-    '            // sharp, phase 21 rounded them at the oversized 22% radius)\n'
-    '            val handleRadius = height * 0.07f\n'
-    '            val handlePath = android.graphics.Path()\n'
-    '            // Left handle - round only the outer (left) corners\n'
-    '            handlePath.addRoundRect(\n'
-    '                RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),\n'
-    '                floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),\n'
-    '                android.graphics.Path.Direction.CW\n'
-    '            )\n'
-    '            // Right handle - round only the outer (right) corners\n'
-    '            handlePath.addRoundRect(\n'
-    '                RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),\n'
-    '                floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),\n'
-    '                android.graphics.Path.Direction.CW\n'
-    '            )\n'
-    '            canvas.drawPath(handlePath, handlePaint)',
-    "TTV: handles unified - rounded outer corners at 7% (both track kinds)")
-
-apply_edit(
-    VEA,
-    '            // phase 23: the rounded thumbnail silhouette shows only while\n'
-    '            // the clip is UNSELECTED (the user\'s "corners visible" state);\n'
-    '            // the selected clip goes square so the sharp trim frame and\n'
-    '            // the handle blocks read as one clean rectangle (phase 22\n'
-    '            // rounded this outline unconditionally)\n'
-    '            val segmentSelected = selectedVideoIndex == index\n'
-    '            segmentView.clipToOutline = true\n'
-    '            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {\n'
-    '                override fun getOutline(view: View, outline: android.graphics.Outline) {\n'
-    '                    val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f\n'
-    '                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)\n'
-    '                }\n'
-    '            }',
-    '            // phase 24: reference retune - the UNSELECTED clip keeps a\n'
-    '            // barely-rounded silhouette (3% of the height, the sample\n'
-    '            // editor\'s ~4px-on-55dp corner) while the SELECTED clip\'s\n'
-    '            // silhouette matches the 7% handle-corner radius so the\n'
-    '            // thumbnails never poke out behind the rounded handles\n'
-    '            val segmentSelected = selectedVideoIndex == index\n'
-    '            segmentView.clipToOutline = true\n'
-    '            segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {\n'
-    '                override fun getOutline(view: View, outline: android.graphics.Outline) {\n'
-    '                    val outlineRadius = if (segmentSelected) view.height * 0.07f else view.height * 0.03f\n'
-    '                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)\n'
-    '                }\n'
-    '            }',
-    "VEA: segment outline radius - selected 7% / unselected 3%")
-
-# -- item 3: Cancel / Save pills -------------------------------------------
-
-apply_edit(
-    LAY,
-    '            <LinearLayout\n'
-    '                android:id="@+id/btnClose"\n'
-    '                android:layout_width="wrap_content"\n'
-    '                android:layout_height="40dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:gravity="center"\n'
-    '                android:paddingHorizontal="22dp"\n'
-    '                android:background="@drawable/bg_cancel_pill"',
-    '            <LinearLayout\n'
-    '                android:id="@+id/btnClose"\n'
-    '                android:layout_width="wrap_content"\n'
-    '                android:layout_height="32dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:gravity="center"\n'
-    '                android:paddingHorizontal="15dp"\n'
-    '                android:background="@drawable/bg_cancel_pill"',
-    "LAY: Cancel pill height 40dp -> 32dp, padding 22dp -> 15dp")
-
-apply_edit(
-    LAY,
-    '            <LinearLayout\n'
-    '                android:id="@+id/layoutSaveSplit"\n'
-    '                android:layout_width="96dp"\n'
-    '                android:layout_height="40dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:background="@drawable/bg_save_pill"',
-    '            <LinearLayout\n'
-    '                android:id="@+id/layoutSaveSplit"\n'
-    '                android:layout_width="76dp"\n'
-    '                android:layout_height="32dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:background="@drawable/bg_save_pill"',
-    "LAY: Save pill 96x40dp -> 76x32dp")
-
-ensure_drawable(
-    "bg_cancel_pill.xml",
-    ["phase 21: reference top-bar Cancel pill", '<corners android:radius="20dp" />'],
-    '<?xml version="1.0" encoding="utf-8"?>\n'
-    '<!-- phase 24: reference retune - the pill shrinks to the sample\n'
-    '     editor\'s 32dp height, so the full-round radius is 16dp now\n'
-    '     (phase 21: charcoal #333333 capsule behind white text) -->\n'
-    '<shape xmlns:android="http://schemas.android.com/apk/res/android"\n'
-    '    android:shape="rectangle">\n'
-    '    <solid android:color="#333333" />\n'
-    '    <corners android:radius="16dp" />\n'
-    '</shape>\n',
-    "drawable: bg_cancel_pill radius 20dp -> 16dp")
-
-ensure_drawable(
-    "bg_save_pill.xml",
-    ["phase 21: reference top-bar Save pill", '<corners android:radius="20dp" />'],
-    '<?xml version="1.0" encoding="utf-8"?>\n'
-    '<!-- phase 24: reference retune - the pill shrinks to the sample\n'
-    '     editor\'s 32dp height, so the full-round radius is 16dp now\n'
-    '     (phase 21: vivid amber capsule behind bold black text) -->\n'
-    '<shape xmlns:android="http://schemas.android.com/apk/res/android"\n'
-    '    android:shape="rectangle">\n'
-    '    <solid android:color="@color/colorPrimary" />\n'
-    '    <corners android:radius="16dp" />\n'
-    '</shape>\n',
-    "drawable: bg_save_pill radius 20dp -> 16dp")
-
-print("edits applied: " + str(edits_applied) + ", skipped: " + str(edits_skipped))
+print("  edits applied: " + str(edits_applied) + ", skipped: " + str(edits_skipped))
 if FAILED:
-    print("EDIT FAILURES: " + str(len(FAILED)))
-    for f in FAILED:
-        print("  - " + f)
+    print("EDITS FAILED: " + "; ".join(FAILED))
     sys.exit(1)
 
-# =========================================================================
-# GATES
-# =========================================================================
+# ===========================================================================
+# Gates
+# ===========================================================================
 passed = 0
 failed = 0
 
 
-def gate(label, cond, detail=""):
+def gate(label, ok, note=""):
     global passed, failed
-    if cond:
+    if ok:
         passed += 1
+        print("  [gate ok] " + label)
     else:
         failed += 1
-        print("  [GATE FAIL] " + label + (" " + detail if detail else ""))
+        print("  [GATE FAIL] " + label + (" -> " + note if note else ""))
 
 
-def cntf(path, needle):
-    return cnt(rd(path), needle)
+def cntf(p, needle):
+    return cnt(rd(p), needle)
 
 
-# -- item 1: the + tile ----------------------------------------------------
-L = rd(LAY)
-NEW_TILE = (
-    '<ImageButton\n'
+ttv = rd(TTV)
+ic = rd(ICADD)
+
+# byte-exact survival anchor for the phase-24 add tile
+ADD_BLOCK = (
+    '                <ImageButton\n'
     '                    android:id="@+id/btnTimelineAdd"\n'
     '                    android:layout_width="26dp"\n'
     '                    android:layout_height="26dp"\n'
@@ -452,107 +217,71 @@ NEW_TILE = (
     '                    android:contentDescription="Add Media"\n'
     '                    android:elevation="8dp"\n'
     '                    android:padding="8dp"\n'
-    '                    app:tint="@color/textColor" />')
-gate("LAY: add tile is the 26dp form with 8dp padding",
-     cnt(L, NEW_TILE) == 1)
-OLD_TILE = (
-    '<ImageButton\n'
-    '                    android:id="@+id/btnTimelineAdd"\n'
-    '                    android:layout_width="36dp"\n'
-    '                    android:layout_height="36dp"')
-gate("LAY: the 36dp tile form is gone",
-     cnt(L, OLD_TILE) == 0)
-gate("drawable: plus glyph has the 4-unit arms",
-     cntf(D + "ic_add_thin_24.xml", "M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z") == 1
-     and cntf(D + "ic_add_thin_24.xml", "M11,2L13,2L13,11L22,11L22,13L13,13L13,22L11,22L11,13L2,13L2,11L11,11Z") == 0)
-gate("drawable: tile border + radius survive (phase 20/22)",
-     cntf(D + "bg_add_media_tile.xml", 'android:width="1.5dp"') == 1
-     and cntf(D + "bg_add_media_tile.xml", '<corners android:radius="4dp" />') == 1
-     and cntf(D + "bg_add_media_tile.xml", '<solid android:color="#2A2A2A" />') == 1)
+    '                    app:tint="@color/textColor" />\n'
+)
 
-# -- item 2: track radius retune -------------------------------------------
-W = rd(TTV)
-gate("TTV: every 22% radius is gone",
-     cnt(W, "height * 0.22f") == 0)
-gate("TTV: four 3% sites (fill x2, unselected outline, hairline stroke)",
-     cnt(W, "height * 0.03f") == 4)
-gate("TTV: five 7% occurrences (frame x2, selRadius, secondary selected, handles)",
-     cnt(W, "height * 0.07f") == 5)
-gate("TTV: selected main trim frame is the rounded 7% form",
-     cnt(W, "canvas.drawRoundRect(frameRect, height * 0.07f, height * 0.07f, borderPaint)") == 1)
-gate("TTV: 7 rounded-rect draw sites, zero plain drawRect left",
-     cnt(W, "canvas.drawRoundRect") == 7 and cnt(W, "canvas.drawRect") == 0)
-gate("TTV: one unified handle path (rounded outer corners)",
-     cnt(W, "handlePath.addRoundRect") == 2
-     and cnt(W, "canvas.drawPath(handlePath, handlePaint)") == 1
-     and cnt(W, "val handleRadius = height * 0.07f") == 1)
-gate("TTV: main/secondary handle split removed",
-     cnt(W, "handlePaint.color = Color.WHITE\n            if (isMainVideoTrack) {") == 0
-     and cnt(W, "if (isMainVideoTrack) {") == 1)
-gate("TTV: handleWidth still scales with track height",
-     cnt(W, "get() = (height * 0.30f).coerceAtLeast(24f)") == 1)
-gate("TTV: grip marks survive",
-     cnt(W, "#4D000000") == 1)
-gate("TTV: frame stroke widths survive",
-     cnt(W, "(height * 0.05f).coerceAtLeast(4f)") == 3)
+# -- gate group 1: the grip lines -------------------------------------------
+gate("TTV: exactly one left grip drawLine at 0.35f..0.65f",
+     cnt(ttv, "canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)") == 1)
+gate("TTV: exactly one right grip drawLine at 0.35f..0.65f",
+     cnt(ttv, "canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)") == 1)
+gate("TTV: no twin-line offsets survive",
+     cnt(ttv, "leftMidX - 4f") == 0 and cnt(ttv, "leftMidX + 4f") == 0
+     and cnt(ttv, "rightMidX - 4f") == 0 and cnt(ttv, "rightMidX + 4f") == 0)
+gate("TTV: no 0.3f/0.7f grip spans survive",
+     cnt(ttv, "height * 0.3f") == 0 and cnt(ttv, "height * 0.7f") == 0)
+gate("TTV: exactly two grip drawLine calls",
+     cnt(ttv, "gripPaint)") == 2)
+gate("TTV: grip stroke width + color survive",
+     cnt(ttv, "strokeWidth = 3f") == 2 and cnt(ttv, "#4D000000") == 1)
+gate("TTV: height*0.35f total is 3 (1 wave + 2 grips), height*0.65f is 2",
+     cnt(ttv, "height * 0.35f") == 3 and cnt(ttv, "height * 0.65f") == 2)
+gate("TTV: total drawLine count is 5 (3 wave + 2 grip)",
+     cnt(ttv, "drawLine(") == 5)
+gate("TTV: handle width property untouched (0.30f once)",
+     cnt(ttv, "0.30f") == 1 and cnt(ttv, "coerceAtLeast(24f)") == 1)
 
-V = rd(VEA)
-gate("VEA: segment outline radius 7% selected / 3% unselected",
-     cnt(V, "val outlineRadius = if (segmentSelected) view.height * 0.07f else view.height * 0.03f") == 1)
-gate("VEA: the 0f/22% conditional is gone",
-     cnt(V, "if (segmentSelected) 0f else view.height * 0.22f") == 0)
-gate("VEA: selection binding survives",
-     cnt(V, "val segmentSelected = selectedVideoIndex == index") == 1)
+# -- gate group 2: phase-19..24 survival ------------------------------------
+gate("phase 24: handle blocks keep the 7% rounded-outer-corner path",
+     cnt(ttv, "floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius)") == 1
+     and cnt(ttv, "floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f)") == 1)
+gate("phase 24: all 7%-radius sites survive",
+     cnt(ttv, "0.07f") == 5)
+gate("phase 24: 3% unselected silhouette survives",
+     cnt(ttv, "0.03f") == 4)
+gate("phase 24: the + tile stays 26dp with 8dp padding",
+     ADD_BLOCK in rd(LAY))
+gate("phase 20: the add tile drawable still exists",
+     os.path.exists("app/src/main/res/drawable/bg_add_media_tile.xml"))
 
-# -- item 3: pills ---------------------------------------------------------
-NEW_CANCEL = (
-    '            <LinearLayout\n'
-    '                android:id="@+id/btnClose"\n'
-    '                android:layout_width="wrap_content"\n'
-    '                android:layout_height="32dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:gravity="center"\n'
-    '                android:paddingHorizontal="15dp"')
-NEW_SAVE = (
-    '            <LinearLayout\n'
-    '                android:id="@+id/layoutSaveSplit"\n'
-    '                android:layout_width="76dp"\n'
-    '                android:layout_height="32dp"\n'
-    '                android:orientation="horizontal"\n'
-    '                android:background="@drawable/bg_save_pill"')
-gate("LAY: Cancel pill is the 32dp / 15dp-padding form",
-     cnt(L, NEW_CANCEL) == 1)
-gate("LAY: Save pill is the 76x32dp form",
-     cnt(L, NEW_SAVE) == 1)
-gate("LAY: pill 17sp labels unchanged (sample ~17sp)",
-     cnt(L, 'android:textSize="17sp"') == 2)
-gate("drawable: both pill radii are 16dp",
-     cntf(D + "bg_cancel_pill.xml", '<corners android:radius="16dp" />') == 1
-     and cntf(D + "bg_save_pill.xml", '<corners android:radius="16dp" />') == 1)
-gate("drawable: pill fills unchanged",
-     cntf(D + "bg_cancel_pill.xml", '<solid android:color="#333333" />') == 1
-     and cntf(D + "bg_save_pill.xml", '<solid android:color="@color/colorPrimary" />') == 1)
+# -- gate group 3: the plus glyph --------------------------------------------
+NEW_PATH = "M10.5,2L13.5,2L13.5,10.5L22,10.5L22,13.5L13.5,13.5L13.5,22L10.5,22L10.5,13.5L2,13.5L2,10.5L10.5,10.5Z"
+gate("ic_add_thin_24: new 3-unit-arm path present exactly once",
+     cnt(ic, NEW_PATH) == 1)
+gate("ic_add_thin_24: old 4-unit-arm path gone",
+     cnt(ic, OLD_PATH) == 0)
+gate("ic_add_thin_24: 24dp frame + 24 viewport + white fill",
+     cnt(ic, 'android:width="24dp"') == 1 and cnt(ic, 'android:height="24dp"') == 1
+     and cnt(ic, 'android:viewportWidth="24"') == 1 and cnt(ic, 'android:fillColor="#FFFFFF"') == 1)
 
-# -- prior-phase survival ---------------------------------------------------
-gate("phase 15: fps tolerance gate survives",
-     cntf(PLAN, "fpsCloseEnough") >= 2)
-gate("phase 19a: framesDir hoist survives",
-     cntf(PLAN, 'val framesDir = File(workDir, "trans_" + gap)') == 1)
-gate("phase 20: slider style survives",
-     cntf(THEMES, '<item name="sliderStyle">@style/Widget.CutLoss.Slider</item>') == 2
-     and cntf(THEMES, '<style name="Widget.CutLoss.Slider"') == 1)
-gate("phase 23: transition cut bar is the 2dp form",
-     cntf(D + "ic_transition_cut_24.xml", "M11,6L13,6L13,18L11,18Z") == 1)
-gate("phase 23: transition bowtie is the stroked outline form",
-     cntf(D + "ic_transition_bowtie_24.xml", 'android:strokeWidth="1"') == 1)
-gate("phase 23: global mute field survives",
-     cntf(PLAN, "val muted: Boolean,\n        val hasAudio: Boolean") == 1)
+# path arithmetic sanity: parse the path, verify the plus is centered
+nums = []
+for tok in NEW_PATH.replace("M", " ").replace("L", " ").replace("Z", " ").replace(",", " ").split():
+    nums.append(float(tok))
+xs = nums[0::2]
+ys = nums[1::2]
+gate("ic_add_thin_24: glyph spans 2..22 in both axes (20 of 24 units)",
+     min(xs) == 2.0 and max(xs) == 22.0 and min(ys) == 2.0 and max(ys) == 22.0)
+gate("ic_add_thin_24: arms are 3 units wide and centered at 12",
+     10.5 in xs and 13.5 in xs and 10.5 in ys and 13.5 in ys
+     and (13.5 - 10.5) == 3.0)
 
 # -- XML well-formedness ----------------------------------------------------
-for p in [LAY, D + "ic_add_thin_24.xml", D + "bg_cancel_pill.xml", D + "bg_save_pill.xml"]:
+for p in [ICADD]:
     try:
         ET.parse(p)
         passed += 1
+        print("  [gate ok] XML well-formed: " + p)
     except Exception as e:
         failed += 1
         print("  [GATE FAIL] XML malformed: " + p + " -> " + str(e))
@@ -684,20 +413,19 @@ def scan(src):
     return errs
 
 
-for p in [VEA, TTV]:
-    errs = scan(rd(p))
-    gate("kotlin-lite brace/paren balance: " + p, not errs, "; ".join(errs[:3]))
+errs = scan(rd(TTV))
+gate("kotlin-lite brace/paren balance: " + TTV, not errs, "; ".join(errs[:3]))
 
-# -- no NEW non-ascii vs HEAD (multiset compare per touched file) -----------
-TOUCHED = [LAY, VEA, TTV,
-           D + "ic_add_thin_24.xml", D + "bg_cancel_pill.xml", D + "bg_save_pill.xml"]
+# -- ASCII purity + no NEW non-ascii vs HEAD --------------------------------
+gate("TTV is pure ASCII", not [c for c in rd(TTV) if ord(c) > 126])
+gate("ic_add_thin_24 is pure ASCII", not [c for c in ic if ord(c) > 126])
 
 
 def non_ascii_multiset(s):
     return Counter(c for c in s if ord(c) > 127)
 
 
-for p in TOUCHED:
+for p in [TTV, ICADD]:
     try:
         head = subprocess.run(["git", "show", "HEAD:" + p],
                               capture_output=True, text=True, encoding="utf-8").stdout
@@ -705,7 +433,6 @@ for p in TOUCHED:
         gate("non-ascii compare " + p, False, str(e))
         continue
     if head == "" and os.path.exists(p):
-        # file may be new vs HEAD - only compare when HEAD has it
         passed += 1
         continue
     gate("no new non-ascii vs HEAD: " + p,
@@ -717,4 +444,4 @@ if failed:
 print("ALL GATES GREEN (" + str(passed) + " checks)")
 PYEOF
 
-echo "== phase 24 done =="
+echo "== phase 25 done =="
