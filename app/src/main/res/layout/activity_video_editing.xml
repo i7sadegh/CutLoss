@@ -489,7 +489,8 @@
                     android:src="@drawable/ic_add_thin_24"
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
-                    android:padding="8dp"
+                    android:padding="0dp"
+                    android:scaleType="center"
                     app:tint="@color/textColor" />
 
                 <com.tharunbirla.librecuts.customviews.CustomVideoSeeker
@@ -547,7 +548,7 @@
             layout="@layout/text_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <!-- Image Editing Toolbar (inline mode, hidden by default) -->
@@ -556,7 +557,7 @@
             layout="@layout/image_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <!-- Video Editing Toolbar (inline mode, hidden by default) -->
@@ -565,7 +566,7 @@
             layout="@layout/video_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <!-- Audio Editing Toolbar (inline mode, hidden by default) -->
@@ -574,7 +575,7 @@
             layout="@layout/audio_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <!-- Speed Editing Toolbar (inline mode, hidden by default) -->
@@ -583,7 +584,7 @@
             layout="@layout/speed_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <!-- Keyframe Editing Toolbar (inline mode, hidden by default) -->
@@ -592,7 +593,7 @@
             layout="@layout/keyframe_editing_toolbar"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="6dp"
             android:visibility="gone" />
 
         <HorizontalScrollView

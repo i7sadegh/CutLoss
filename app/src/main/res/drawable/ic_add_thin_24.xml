@@ -1,13 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 25: the arms slim to 3 of the 20 viewport units - the
-     cleaner re-measure of the sample editor's plus reads a 9dp glyph
-     with ~1.3dp arms (about 3.5px at 420dpi); the phase-24 4-unit arms
-     rendered ~1.7dp and read bold next to the sample. The glyph span
-     stays 20 of the 24 viewport units; the 26dp tile + 8dp padding
-     from phase 24 already match the sample tile. -->
+<!-- phase 26: the drawable itself shrinks to an 11dp intrinsic so the
+     glyph renders ~9dp of ink no matter how the button pads it. The
+     on-device measurement of the phase-24/25 build showed the 8dp XML
+     padding did not constrain the vector: the plus filled ~77% of the
+     26dp tile (~19dp ink) while the sample editor draws ~9dp (35%).
+     Viewport stays 24 with the phase-25 3-unit arms, so ink span =
+     20/24 x 11dp = 9.2dp and arms = 3/24 x 11dp = 1.4dp. The ImageButton
+     also gains scaleType=center + 0dp padding (layout edit) so the
+     intrinsic size is authoritative. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="24dp"
-    android:height="24dp"
+    android:width="11dp"
+    android:height="11dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path

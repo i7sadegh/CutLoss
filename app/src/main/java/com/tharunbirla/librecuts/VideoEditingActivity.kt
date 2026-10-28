@@ -2042,7 +2042,7 @@ class VideoEditingActivity : AppCompatActivity() {
             toolbar.findViewById<ImageButton>(R.id.btnTextBackgroundTab)?.setColorFilter(getColor(R.color.toolTextInactive))
             setupColorPicker(toolbar)
         }
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         findViewById<View>(R.id.timelineContainer)?.visibility = View.GONE
         findViewById<View>(R.id.timelineDivider)?.visibility = View.GONE
         if (::player.isInitialized && player.isPlaying) {
@@ -2053,7 +2053,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun exitTextEditingMode() {
         isTextEditingActive = false
         textEditingToolbar?.visibility = View.GONE
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.VISIBLE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
         findViewById<View>(R.id.timelineContainer)?.visibility = View.VISIBLE
         findViewById<View>(R.id.timelineDivider)?.visibility = View.VISIBLE
         setActiveToolButton(0)
@@ -2289,7 +2289,7 @@ class VideoEditingActivity : AppCompatActivity() {
             toolbar.findViewById<View>(R.id.imageScaleSliderRow)?.visibility = View.GONE
             toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
         }
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         if (::player.isInitialized && player.isPlaying) {
             player.pause()
         }
@@ -2347,7 +2347,7 @@ class VideoEditingActivity : AppCompatActivity() {
             toolbar.findViewById<View>(R.id.imageScaleSliderRow)?.visibility = View.GONE
             toolbar.findViewById<android.widget.ImageButton>(R.id.btnImageScale)?.setColorFilter(androidx.core.content.ContextCompat.getColor(this, R.color.toolTextInactive))
         }
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         if (::player.isInitialized && player.isPlaying) {
             player.pause()
         }
@@ -2356,7 +2356,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun exitImageEditingMode() {
         isImageEditingActive = false
         imageEditingToolbar?.visibility = View.GONE
-        findViewById<LinearLayout>(R.id.editingControlsWrapper)?.visibility = View.VISIBLE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
         setActiveToolButton(0)
     }
 
@@ -2364,7 +2364,7 @@ class VideoEditingActivity : AppCompatActivity() {
         closeActiveEditingModes()
         viewModel.selectOperation(null)
         videoEditingToolbar?.visibility = View.VISIBLE
-        editingControlsWrapper.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         videoEditingToolbar?.findViewById<View>(R.id.btnVideoDeleteContainer)?.visibility = View.VISIBLE
         selectedVideoIndex?.let { index ->
             videoEditingToolbar?.let { toolbar ->
@@ -2554,7 +2554,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     private fun exitVideoEditingMode() {
         videoEditingToolbar?.visibility = View.GONE
-        editingControlsWrapper.visibility = View.VISIBLE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
         setActiveToolButton(0)
     }
 
@@ -2563,7 +2563,7 @@ class VideoEditingActivity : AppCompatActivity() {
         closeActiveEditingModes()
         selectedVideoIndex = null
         audioEditingToolbar?.visibility = View.VISIBLE
-        editingControlsWrapper.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         audioEditingToolbar?.let { toolbar ->
             val slider = toolbar.findViewById<com.google.android.material.slider.Slider>(R.id.audioVolumeSlider)
             val tvValue = toolbar.findViewById<TextView>(R.id.tvAudioVolumeValue)
@@ -2630,7 +2630,7 @@ class VideoEditingActivity : AppCompatActivity() {
 
     private fun exitAudioEditingMode() {
         audioEditingToolbar?.visibility = View.GONE
-        editingControlsWrapper.visibility = View.VISIBLE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
         viewModel.selectOperation(null)
         
         if (audioPreviewPlayer?.isPlaying == true) {
@@ -2708,7 +2708,7 @@ class VideoEditingActivity : AppCompatActivity() {
     private fun showSpeedEditingToolbar(index: Int, item: com.tharunbirla.librecuts.models.EditOperation.MergeItem) {
         closeActiveEditingModes()
         speedEditingToolbar?.visibility = View.VISIBLE
-        editingControlsWrapper.visibility = View.GONE
+        findViewById<View>(R.id.editingControlsScroll)?.visibility = View.GONE
         
         updateSpeedUi(item.speed)
         
@@ -2722,7 +2722,7 @@ class VideoEditingActivity : AppCompatActivity() {
         if (selectedVideoIndex != null) {
             videoEditingToolbar?.visibility = View.VISIBLE
         } else {
-            editingControlsWrapper.visibility = View.VISIBLE
+            findViewById<View>(R.id.editingControlsScroll)?.visibility = View.VISIBLE
         }
     }
 
@@ -5062,7 +5062,7 @@ class VideoEditingActivity : AppCompatActivity() {
         // Position the button 8dp to the right of the end of the last clip
         val snapX = totalTrackWidthPx - scrollX + 8.dpToPx()
 
-        val btnWidth = btnTimelineAdd.width.takeIf { it > 0 } ?: 36.dpToPx()
+        val btnWidth = btnTimelineAdd.width.takeIf { it > 0 } ?: 26.dpToPx()
         val rightMargin = 16.dpToPx()
         val maxBtnX = timelineWidth - btnWidth - rightMargin
 
@@ -5083,7 +5083,7 @@ class VideoEditingActivity : AppCompatActivity() {
         val rulerHeight = rulerView.height.takeIf { it > 0 } ?: 28.dpToPx()
         val seqTrackTop = seqTrack.top
         val seqTrackHeight = seqTrack.height.takeIf { it > 0 } ?: 64.dpToPx()
-        val btnHeight = btnTimelineAdd.height.takeIf { it > 0 } ?: 36.dpToPx()
+        val btnHeight = btnTimelineAdd.height.takeIf { it > 0 } ?: 26.dpToPx()
 
         val btnY = rulerHeight + seqTrackTop - vScroll.scrollY + (seqTrackHeight - btnHeight) / 2
 
