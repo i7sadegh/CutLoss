@@ -143,20 +143,19 @@ class TrackTrimView @JvmOverloads constructor(
                 if (isTrimEnabled) {
                     // Dim bounds removed to prevent covering adjacent clips
                     
-                    // phase 21: reference track frame - a white rounded
-                    // rectangle stroke around the active range (phase
-                    // 20's sharp corners never matched the sample);
-                    // stroke and radius scale with the track height so
-                    // the silhouette holds at every density
+                    // phase 23: the selected clip draws SHARP corners - the
+                    // trim frame and the handle blocks read as one clean
+                    // rectangle; the rounded corners return the moment the
+                    // selection drops (phase 21 drew this frame rounded,
+                    // which the user only wanted on unselected clips)
                     borderPaint.color = Color.parseColor("#FFFFFF")
                     borderPaint.strokeWidth = (height * 0.05f).coerceAtLeast(4f)
                     val frameInset = borderPaint.strokeWidth / 2f
-                    val frameRadius = height * 0.22f
                     val frameRect = RectF(
                         rectF.left + frameInset, rectF.top + frameInset,
                         rectF.right - frameInset, rectF.bottom - frameInset
                     )
-                    canvas.drawRoundRect(frameRect, frameRadius, frameRadius, borderPaint)
+                    canvas.drawRect(frameRect, borderPaint)
                 } else {
                     // Main track selection highlight without trimmer handles/ghosts
                     // (phase 21: rounded white frame + rounded amber tint)
@@ -345,27 +344,35 @@ class TrackTrimView @JvmOverloads constructor(
 
         if (isTrimEnabled) {
             val currentHandleWidth = handleWidth * currentHandleScale
-            // phase 21: reference trim handles - the frame's left and
-            // right edges become thick white grab zones whose OUTER
-            // corners carry the frame radius so they fuse seamlessly
-            // into the rounded outline; amber is dropped so the whole
-            // frame reads white like the sample (grip marks stay)
             handlePaint.color = Color.WHITE
-            val handleRadius = height * 0.22f
-            val handlePath = android.graphics.Path()
-            // Left handle - round only the outer (left) corners
-            handlePath.addRoundRect(
-                RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),
-                floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),
-                android.graphics.Path.Direction.CW
-            )
-            // Right handle - round only the outer (right) corners
-            handlePath.addRoundRect(
-                RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),
-                floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),
-                android.graphics.Path.Direction.CW
-            )
-            canvas.drawPath(handlePath, handlePaint)
+            if (isMainVideoTrack) {
+                // phase 23: main-track trim handles are plain sharp
+                // rectangles - while the clip is selected the whole
+                // silhouette (frame + handle blocks) reads as one clean
+                // rectangle; the rounded corners live only on the
+                // UNSELECTED clip's thumbnail outline (grip marks stay)
+                canvas.drawRect(startX, 0f, startX + currentHandleWidth, height.toFloat(), handlePaint)
+                canvas.drawRect(endX - currentHandleWidth, 0f, endX, height.toFloat(), handlePaint)
+            } else {
+                // phase 21 look kept for secondary tracks: handle blocks
+                // with rounded OUTER corners fusing into their rounded
+                // outlines (audio / text / image tracks)
+                val handleRadius = height * 0.22f
+                val handlePath = android.graphics.Path()
+                // Left handle - round only the outer (left) corners
+                handlePath.addRoundRect(
+                    RectF(startX, 0f, startX + currentHandleWidth, height.toFloat()),
+                    floatArrayOf(handleRadius, handleRadius, 0f, 0f, 0f, 0f, handleRadius, handleRadius),
+                    android.graphics.Path.Direction.CW
+                )
+                // Right handle - round only the outer (right) corners
+                handlePath.addRoundRect(
+                    RectF(endX - currentHandleWidth, 0f, endX, height.toFloat()),
+                    floatArrayOf(0f, 0f, handleRadius, handleRadius, handleRadius, handleRadius, 0f, 0f),
+                    android.graphics.Path.Direction.CW
+                )
+                canvas.drawPath(handlePath, handlePaint)
+            }
 
             // Draw vertical grip lines on the handles
             val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

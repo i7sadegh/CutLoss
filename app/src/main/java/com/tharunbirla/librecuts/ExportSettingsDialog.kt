@@ -406,6 +406,8 @@ class ExportSettingsDialog(
             if (a.transitions.isNotEmpty()) {
                 sb.append("\ntransitions apply only to the merged single-file export")
             }
+            // phase 23: mute note - every separate output drops its audio
+            if (a.muted) sb.append("\n(muted: original audio muted - no audio track in the output)")
             return sb.toString()
         }
         var copySec = 0.0
@@ -427,7 +429,7 @@ class ExportSettingsDialog(
         val outFmt = effectiveVideoFormat()
         val sb = StringBuilder()
         sb.append("ffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-        if (a.hasAudio) sb.append(" -map 0:a:0")
+        if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
         if (selPreserveMetadata) sb.append(" -map_metadata 1")
         sb.append(" -c copy -bsf:v dump_extra")
         if (selFastStart && (outFmt == "mp4" || outFmt == "mov")) sb.append(" -movflags +faststart")
@@ -443,6 +445,10 @@ class ExportSettingsDialog(
                 .append(" transition(s) (the second clip keeps playing through each one; only that short window re-encodes)")
         }
         sb.append("; final assembly is a lossless concat)")
+        // phase 23: the speaker button's global mute drops the audio
+        // track from every displayed command too (the real planner
+        // already maps video only when MuteAudio is present)
+        if (a.muted) sb.append("\n(muted: original audio muted - no audio track in the output)")
         return sb.toString()
     }
 
@@ -514,38 +520,38 @@ class ExportSettingsDialog(
         if (selKeyframeCut) {
             // two-step: the lossless cut first, ONE finalize command after
             sb.append("ffmpeg -ss S -t D -i input -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
+            if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
             sb.append(" -c copy -avoid_negative_ts make_zero seg_N.mp4   (lossless cut, one per segment)")
             if (!selSeparateFiles) {
                 if (a.transitions.isNotEmpty()) {
                     sb.append("\nffmpeg -framerate FPS -i frame_%04d.jpg -ss S -t D -i clip2 -vf \"scale,setsar,fps,format\" <matched enc> seg_T.mp4   (transition: clip2 keeps playing under clip1's frozen last frame)")
                 }
                 sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-                if (a.hasAudio) sb.append(" -map 0:a:0")
+                if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
                 if (selPreserveMetadata) sb.append(" -map_metadata 1")
                 sb.append(" -c copy -bsf:v dump_extra cut.mp4")
             }
             sb.append("\nffmpeg -i ").append(if (selSeparateFiles) "seg_N" else "cut.mp4")
             sb.append(" -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
+            if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
             if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
             if (fpsChange) sb.append(" -r ").append(selFps)
             if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
-            if (a.hasAudio) sb.append(" ").append(aFlags)
+            if (a.hasAudio && !a.muted) sb.append(" ").append(aFlags)
             if (fastOk) sb.append(" -movflags +faststart")
             sb.append(" output").append(if (selSeparateFiles) "_N" else "").append(outExt)
         } else {
             sb.append("ffmpeg [-ss S] [-t D] -i input -map 0:v:0")
-            if (a.hasAudio) sb.append(" -map 0:a:0")
+            if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
             if (scaleSpec.isNotEmpty()) sb.append(" -vf \"").append(scaleSpec).append("\"")
             if (fpsChange) sb.append(" -r ").append(selFps)
             if (needsVideo) sb.append(" ").append(vFlags) else sb.append(" -c:v copy")
-            if (a.hasAudio) sb.append(" ").append(aFlags)
+            if (a.hasAudio && !a.muted) sb.append(" ").append(aFlags)
             if (fastOk) sb.append(" -movflags +faststart")
             sb.append(" seg_N").append(outExt).append("   (frame-accurate, one per segment)")
             if (!selSeparateFiles) {
                 sb.append("\nffmpeg -f concat -safe 0 -i concat_list.txt -i seg_0 -map 0:v:0")
-                if (a.hasAudio) sb.append(" -map 0:a:0")
+                if (a.hasAudio && !a.muted) sb.append(" -map 0:a:0")
                 if (selPreserveMetadata) sb.append(" -map_metadata 1")
                 sb.append(" -c copy -bsf:v dump_extra")
                 if (fastOk) sb.append(" -movflags +faststart")
@@ -570,6 +576,8 @@ class ExportSettingsDialog(
             }
         }
         sb.append(")")
+        // phase 23: mute note - the commands above carry no audio maps
+        if (a.muted) sb.append("\n(muted: original audio muted - no audio track in the output)")
         return sb.toString()
     }
 

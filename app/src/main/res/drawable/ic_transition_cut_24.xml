@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 21: empty-state transition glyph - a plain vertical cut
-     bar (the reference app's "no transition / hard cut" mark),
-     black on the white tile: 3dp wide, 12dp tall in the 24dp box -->
+<!-- phase 23: empty-state transition glyph - the cut bar slimmed from
+     3dp to 2dp so the mark reads thin instead of bold (user request;
+     the 24dp box and the 12dp height stay unchanged) -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -9,5 +9,5 @@
     android:viewportHeight="24">
     <path
         android:fillColor="#000000"
-        android:pathData="M10.5,6L13.5,6L13.5,18L10.5,18Z" />
+        android:pathData="M11,6L13,6L13,18L11,18Z" />
 </vector>

@@ -42,7 +42,7 @@
                     android:layout_height="wrap_content"
                     android:text="@string/cancel"
                     android:textColor="@color/textColor"
-                    android:textSize="15sp"
+                    android:textSize="17sp"
                     android:fontFamily="sans-serif-medium" />
             </LinearLayout>
 
@@ -112,7 +112,7 @@
                     android:textColor="@color/onAmber"
                     android:fontFamily="sans-serif"
                     android:textStyle="bold"
-                    android:textSize="15sp"
+                    android:textSize="17sp"
                     android:clickable="true"
                     android:focusable="true"
                     android:background="?attr/selectableItemBackground" />
@@ -476,9 +476,9 @@
                      design - a dark rounded square with a thin white
                      border and a white plus glyph (was an amber
                      circle with a black plus) -->
-                <!-- phase 21: plus glyph shrunk - padding 8dp -> 10dp so
-                     the glyph lands at ~37% of the tile (the reference
-                     ratio) instead of dominating the rounded square -->
+                <!-- phase 23: plus glyph shrunk again - padding 10dp ->
+                     12dp so the glyph ink lands at ~28% of the 36dp tile
+                     (the 10dp form still read big per the user) -->
                 <ImageButton
                     android:id="@+id/btnTimelineAdd"
                     android:layout_width="36dp"
@@ -487,7 +487,7 @@
                     android:src="@drawable/ic_add_thin_24"
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
-                    android:padding="10dp"
+                    android:padding="12dp"
                     app:tint="@color/textColor" />
 
                 <com.tharunbirla.librecuts.customviews.CustomVideoSeeker

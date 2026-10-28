@@ -124,6 +124,7 @@ object SmartExportPlanner {
         val clips: List<SmartClipInfo>,
         val transitions: Map<Int, Long>,
         val hasAudio: Boolean,
+        val muted: Boolean,
         val displayHeight: Int,
         val displayWidth: Int,
         val shortSide: Int,
@@ -188,7 +189,7 @@ object SmartExportPlanner {
 
     private fun analyzeInternal(context: Context, project: VideoProject, sourceFilePath: String): SmartAnalysis {
         fun fail(reason: String): SmartAnalysis =
-            SmartAnalysis(emptyList(), emptyMap(), false, 0, 0, 0, 0, "", "", "", reason)
+            SmartAnalysis(emptyList(), emptyMap(), false, false, 0, 0, 0, 0, "", "", "", reason)
 
         if (isImagePath(sourceFilePath)) return fail("image source")
         val ops = project.operations
@@ -307,6 +308,7 @@ object SmartExportPlanner {
             },
             transitions = clampedTransitions,
             hasAudio = audioRef != null,
+            muted = ops.any { it is EditOperation.MuteAudio },
             displayHeight = displayHeight,
             displayWidth = displayWidth,
             shortSide = Math.min(displayWidth, displayHeight),
@@ -1102,7 +1104,7 @@ object SmartExportPlanner {
             // re-encode form only inside the encode plans with changed
             // audio settings. Generated silence just for a muted or
             // audio-less right clip.
-            val realAudio = planHasAudio && right.params.hasAudio && !right.muted
+            val realAudio = planHasAudio && !audioMuted && right.params.hasAudio && !right.muted
             val pieceAEnc = if (realAudio) {
                 if (perSegmentEncode && (aCodecSet || aBitrateSet)) aEncSimple else "-c:a copy"
             } else {
@@ -1149,16 +1151,16 @@ object SmartExportPlanner {
                 if (rightStartMs > 0L) sb.append(" -ss ").append(ms(rightStartMs))
                 sb.append(" -t ").append(String.format(java.util.Locale.US, "%.6f", dSec))
                 sb.append(" -i \"").append(right.path).append("\"")
-            } else if (planHasAudio) {
+            } else if (planHasAudio && !audioMuted) {
                 sb.append(" -f lavfi -t ")
                     .append(String.format(java.util.Locale.US, "%.6f", dSec))
                 sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
             }
             sb.append(" -map 0:v:0")
-            if (planHasAudio) sb.append(" -map 1:a:0")
+            if (planHasAudio && !audioMuted) sb.append(" -map 1:a:0")
             sb.append(" -vf \"").append(vf).append("\"")
             sb.append(" ").append(transVEnc)
-            if (planHasAudio) sb.append(" ").append(pieceAEnc)
+            if (planHasAudio && !audioMuted) sb.append(" ").append(pieceAEnc)
             // Phase 17: the timescale flag must match the container the
             // segment is actually written to (outExt in the encode plans,
             // segExt next to the stream copies) - video_track_timescale
@@ -1174,7 +1176,7 @@ object SmartExportPlanner {
                 val rot = StringBuilder("-y -display_rotation:v ").append(-refParams.rotation)
                 rot.append(" -i \"").append(tmp.absolutePath).append("\"")
                 rot.append(" -map 0:v:0")
-                if (planHasAudio) rot.append(" -map 0:a:0")
+                if (planHasAudio && !audioMuted) rot.append(" -map 0:a:0")
                 rot.append(" -c copy \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, dSec)))
                 commands.add(Pair(rot.toString(), 0.5))
@@ -1199,7 +1201,7 @@ object SmartExportPlanner {
             val spanMs = spanEnd - spanStart
             val fullRange = handoffMs == null &&
                 spanStart <= 60L && spanEnd >= clip.durationMs - 60L
-            val silenceAudio = planHasAudio && (!clip.params.hasAudio || clip.muted)
+            val silenceAudio = planHasAudio && !audioMuted && (!clip.params.hasAudio || clip.muted)
 
             if (perSegmentEncode) {
                 val seg = nextSegmentFile(outExt)
@@ -1220,7 +1222,7 @@ object SmartExportPlanner {
                 sb.append(" -map 0:v:0")
                 if (silenceAudio) {
                     sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
+                } else if (planHasAudio && !audioMuted) {
                     sb.append(" -map 0:a:0")
                 }
                 if (scaleFilter != null) {
@@ -1230,7 +1232,7 @@ object SmartExportPlanner {
                 sb.append(" ").append(vEncSimple)
                 if (silenceAudio) {
                     sb.append(" ").append(aEncSilence)
-                } else if (planHasAudio) {
+                } else if (planHasAudio && !audioMuted) {
                     sb.append(" ").append(aEncSimple)
                 }
                 if (preserveMetadata) sb.append(" -map_metadata 0")
@@ -1246,7 +1248,7 @@ object SmartExportPlanner {
                     sb.append(" -f lavfi -t ").append(ms(spanMs))
                     sb.append(" -i anullsrc=r=").append(aRate).append(":cl=").append(aChanLabel)
                     sb.append(" -map 0:v:0 -map 1:a:0 -c:v copy ").append(aEnc)
-                } else if (planHasAudio) {
+                } else if (planHasAudio && !audioMuted) {
                     sb.append(" -map 0:v:0 -map 0:a:0 -c copy")
                 } else {
                     sb.append(" -map 0:v:0 -c copy")
@@ -1271,7 +1273,7 @@ object SmartExportPlanner {
                 if (silenceAudio) {
                     sb.append(" -map 1:a:0")
                     sb.append(" -c:v copy -avoid_negative_ts make_zero").append(" ").append(aEnc)
-                } else if (planHasAudio) {
+                } else if (planHasAudio && !audioMuted) {
                     sb.append(" -map 0:a:0 -c copy -avoid_negative_ts make_zero")
                 } else {
                     sb.append(" -c copy -avoid_negative_ts make_zero")
@@ -1292,12 +1294,12 @@ object SmartExportPlanner {
                 sb.append(" -map 0:v:0")
                 if (silenceAudio) {
                     sb.append(" -map 1:a:0")
-                } else if (planHasAudio) {
+                } else if (planHasAudio && !audioMuted) {
                     sb.append(" -map 0:a:0")
                 }
                 sb.append(" -vf \"").append(fpsFilter).append(",setsar=").append(sarSpec).append("\" ")
                 sb.append(enc)
-                if (silenceAudio || planHasAudio) sb.append(" ").append(aEnc)
+                if (silenceAudio || (planHasAudio && !audioMuted)) sb.append(" ").append(aEnc)
                 sb.append(segTbn)
                 sb.append(" \"").append(seg.absolutePath).append("\"")
                 commands.add(Pair(sb.toString(), Math.max(0.5, spanMs / 1000.0)))

@@ -1,13 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 21: applied-transition glyph - two triangles meeting at
-     the center (the reference app's bowtie mark), black on the
-     white tile: 11dp wide, 7dp tall in the 24dp box -->
+<!-- phase 23: applied-transition glyph - the bowtie switched from a
+     filled black shape to a 1dp-thin stroked outline so it stops
+     reading bold (user request); the two triangles still meet at the
+     center point, now drawn a touch taller (8dp) so the thin stroke
+     keeps the same visual presence -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
     android:viewportWidth="24"
     android:viewportHeight="24">
     <path
-        android:fillColor="#000000"
-        android:pathData="M6.5,8.5L12,12L6.5,15.5Z M17.5,8.5L12,12L17.5,15.5Z" />
+        android:strokeColor="#000000"
+        android:strokeWidth="1"
+        android:strokeLineJoin="round"
+        android:pathData="M6.5,8L12,12L6.5,16Z M17.5,8L12,12L17.5,16Z" />
 </vector>

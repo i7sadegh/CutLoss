@@ -4522,15 +4522,17 @@ class VideoEditingActivity : AppCompatActivity() {
             val segmentView = layoutInflater.inflate(R.layout.item_sequence_segment, sequenceTrackContainer, false) as FrameLayout
             segmentView.clipChildren = false
             segmentView.clipToPadding = false
-            // phase 22: clip the clip's thumbnails to the rounded
-            // silhouette of the white trim frame (the same 22%-of-height
-            // radius TrackTrimView draws for the frame and the handle
-            // outer corners); without it the square thumbnail corners
-            // poke out under the rounded handle corners
+            // phase 23: the rounded thumbnail silhouette shows only while
+            // the clip is UNSELECTED (the user's "corners visible" state);
+            // the selected clip goes square so the sharp trim frame and
+            // the handle blocks read as one clean rectangle (phase 22
+            // rounded this outline unconditionally)
+            val segmentSelected = selectedVideoIndex == index
             segmentView.clipToOutline = true
             segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, view.height * 0.22f)
+                    val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f
+                    outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)
                 }
             }
             segmentView.post { segmentView.invalidateOutline() }
