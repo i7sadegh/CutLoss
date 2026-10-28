@@ -372,21 +372,24 @@ class TrackTrimView @JvmOverloads constructor(
             )
             canvas.drawPath(handlePath, handlePaint)
 
-            // Draw vertical grip lines on the handles
+            // Draw the vertical grip line on each handle
             val gripPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = Color.parseColor("#4D000000") // Subtle dark overlay for grips
                 style = Paint.Style.STROKE
                 strokeWidth = 3f
             }
-            // Left handle grip lines
+            // phase 25: reference retune - ONE centered grip line per
+            // handle: the sample editor draws a single 3px gray line at
+            // the handle's center spanning the middle 30% of the track
+            // height (35%..65%), and the twin lines at midX +/- 4 read
+            // as two vertical bars side by side on the white handle
+            // Left handle grip line
             val leftMidX = startX + currentHandleWidth / 2f
-            canvas.drawLine(leftMidX - 4f, height * 0.3f, leftMidX - 4f, height * 0.7f, gripPaint)
-            canvas.drawLine(leftMidX + 4f, height * 0.3f, leftMidX + 4f, height * 0.7f, gripPaint)
+            canvas.drawLine(leftMidX, height * 0.35f, leftMidX, height * 0.65f, gripPaint)
             
-            // Right handle grip lines
+            // Right handle grip line
             val rightMidX = endX - currentHandleWidth / 2f
-            canvas.drawLine(rightMidX - 4f, height * 0.3f, rightMidX - 4f, height * 0.7f, gripPaint)
-            canvas.drawLine(rightMidX + 4f, height * 0.3f, rightMidX + 4f, height * 0.7f, gripPaint)
+            canvas.drawLine(rightMidX, height * 0.35f, rightMidX, height * 0.65f, gripPaint)
         }
     }
 

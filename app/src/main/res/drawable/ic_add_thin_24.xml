@@ -1,9 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 24: reference retune - the arms widen to 4 of the 20
-     viewport units (arm/ink 20%, the sample editor's plus reads
-     ~1.7dp arms on a 9dp glyph); the phase-22 2-unit arms rendered
-     hairline-thin at the smaller 26dp tile, and the glyph span
-     stays 20 of the 24 viewport units -->
+<!-- phase 25: the arms slim to 3 of the 20 viewport units - the
+     cleaner re-measure of the sample editor's plus reads a 9dp glyph
+     with ~1.3dp arms (about 3.5px at 420dpi); the phase-24 4-unit arms
+     rendered ~1.7dp and read bold next to the sample. The glyph span
+     stays 20 of the 24 viewport units; the 26dp tile + 8dp padding
+     from phase 24 already match the sample tile. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
@@ -11,5 +12,5 @@
     android:viewportHeight="24">
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M10,2L14,2L14,10L22,10L22,14L14,14L14,22L10,22L10,14L2,14L2,10L10,10Z" />
+        android:pathData="M10.5,2L13.5,2L13.5,10.5L22,10.5L22,13.5L13.5,13.5L13.5,22L10.5,22L10.5,13.5L2,13.5L2,10.5L10.5,10.5Z" />
 </vector>
