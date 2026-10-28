@@ -4522,16 +4522,16 @@ class VideoEditingActivity : AppCompatActivity() {
             val segmentView = layoutInflater.inflate(R.layout.item_sequence_segment, sequenceTrackContainer, false) as FrameLayout
             segmentView.clipChildren = false
             segmentView.clipToPadding = false
-            // phase 23: the rounded thumbnail silhouette shows only while
-            // the clip is UNSELECTED (the user's "corners visible" state);
-            // the selected clip goes square so the sharp trim frame and
-            // the handle blocks read as one clean rectangle (phase 22
-            // rounded this outline unconditionally)
+            // phase 24: reference retune - the UNSELECTED clip keeps a
+            // barely-rounded silhouette (3% of the height, the sample
+            // editor's ~4px-on-55dp corner) while the SELECTED clip's
+            // silhouette matches the 7% handle-corner radius so the
+            // thumbnails never poke out behind the rounded handles
             val segmentSelected = selectedVideoIndex == index
             segmentView.clipToOutline = true
             segmentView.outlineProvider = object : android.view.ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: android.graphics.Outline) {
-                    val outlineRadius = if (segmentSelected) 0f else view.height * 0.22f
+                    val outlineRadius = if (segmentSelected) view.height * 0.07f else view.height * 0.03f
                     outline.setRoundRect(0, 0, view.width, view.height, outlineRadius)
                 }
             }

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 21: reference top-bar Cancel pill - a charcoal capsule
-     (#333333, 20dp radius on the 40dp pill) behind white text -->
+<!-- phase 24: reference retune - the pill shrinks to the sample
+     editor's 32dp height, so the full-round radius is 16dp now
+     (phase 21: charcoal #333333 capsule behind white text) -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <solid android:color="#333333" />
-    <corners android:radius="20dp" />
+    <corners android:radius="16dp" />
 </shape>

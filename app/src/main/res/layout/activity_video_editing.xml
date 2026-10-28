@@ -29,10 +29,10 @@
             <LinearLayout
                 android:id="@+id/btnClose"
                 android:layout_width="wrap_content"
-                android:layout_height="40dp"
+                android:layout_height="32dp"
                 android:orientation="horizontal"
                 android:gravity="center"
-                android:paddingHorizontal="22dp"
+                android:paddingHorizontal="15dp"
                 android:background="@drawable/bg_cancel_pill"
                 android:elevation="2dp"
                 android:contentDescription="Cancel">
@@ -96,8 +96,8 @@
                  bold black text (was the wide muted Export lozenge) -->
             <LinearLayout
                 android:id="@+id/layoutSaveSplit"
-                android:layout_width="96dp"
-                android:layout_height="40dp"
+                android:layout_width="76dp"
+                android:layout_height="32dp"
                 android:orientation="horizontal"
                 android:background="@drawable/bg_save_pill"
                 android:clipToOutline="true"
@@ -476,18 +476,20 @@
                      design - a dark rounded square with a thin white
                      border and a white plus glyph (was an amber
                      circle with a black plus) -->
-                <!-- phase 23: plus glyph shrunk again - padding 10dp ->
-                     12dp so the glyph ink lands at ~28% of the 36dp tile
-                     (the 10dp form still read big per the user) -->
+                <!-- phase 24: reference retune - the tile shrinks to the sample
+                     editor's 26dp (68px at 420dpi, ~47% of the track
+                     height) and the padding drops to 8dp so the glyph
+                     ink lands at ~8dp of the tile (sample: a 9dp glyph
+                     inside a 26dp tile) -->
                 <ImageButton
                     android:id="@+id/btnTimelineAdd"
-                    android:layout_width="36dp"
-                    android:layout_height="36dp"
+                    android:layout_width="26dp"
+                    android:layout_height="26dp"
                     android:background="@drawable/bg_add_media_tile"
                     android:src="@drawable/ic_add_thin_24"
                     android:contentDescription="Add Media"
                     android:elevation="8dp"
-                    android:padding="12dp"
+                    android:padding="8dp"
                     app:tint="@color/textColor" />
 
                 <com.tharunbirla.librecuts.customviews.CustomVideoSeeker

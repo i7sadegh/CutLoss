@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- phase 21: reference top-bar Save pill - the vivid amber capsule
-     (colorPrimary, 20dp radius on the 40dp pill) behind bold black
-     text -->
+<!-- phase 24: reference retune - the pill shrinks to the sample
+     editor's 32dp height, so the full-round radius is 16dp now
+     (phase 21: vivid amber capsule behind bold black text) -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="rectangle">
     <solid android:color="@color/colorPrimary" />
-    <corners android:radius="20dp" />
+    <corners android:radius="16dp" />
 </shape>
